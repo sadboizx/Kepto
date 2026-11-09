@@ -24,7 +24,9 @@ struct ScrubPreviewPlayer: View {
     @State private var duration: Double = 0
     @State private var isScrubbing = false
     @State private var scrubFraction: Double = 0
-    @State private var sprite: UIImage?
+    /// Pre-cropped sprite cells (one per preview frame), built once when
+    /// the sprite loads. The drag handler only picks one by index (O(1)).
+    @State private var frames: [UIImage] = []
     @State private var timeObserver: Any?
     /// Mute toggle state (mirrors player.isMuted).
     @State private var isMuted = false
@@ -67,7 +69,16 @@ struct ScrubPreviewPlayer: View {
             startPlayer()
             Task {
                 guard item.hasScrubSprite, let api = viewModel.api else { return }
-                sprite = try? await api.fetchSprite(for: item)
+                guard let sprite = try? await api.fetchSprite(for: item) else { return }
+                // Crop all cells once, here — not inside the drag
+                // handler. The old code cropped a CGImage on every
+                // finger move, so the preview lagged behind the drag.
+                frames = Self.cropFrames(
+                    sprite: sprite,
+                    cols: item.previewCols ?? 0,
+                    rows: item.previewRows ?? 0,
+                    count: item.previewCount ?? 0
+                )
             }
         }
         .onDisappear {
@@ -189,23 +200,34 @@ struct ScrubPreviewPlayer: View {
 
     // MARK: - Sprite frame
 
-    /// Crops one cell out of the sprite for the given timestamp.
-    /// Frame index = floor(seconds / interval), clamped to the last frame;
-    /// col = index % cols, row = index / cols.
-    private func frameImage(for seconds: Double) -> UIImage? {
-        guard let sprite,
-              let cols = item.previewCols, let rows = item.previewRows,
-              let interval = item.previewInterval, let count = item.previewCount,
-              cols > 0, rows > 0, interval > 0, count > 0,
-              let cg = sprite.cgImage else { return nil }
-        let index = min(max(Int(seconds / interval), 0), count - 1)
+    /// Crops every sprite cell once (when the sprite loads). The old code
+    /// cropped inside the drag handler, so each finger move paid a CGImage
+    /// crop + UIImage alloc on the main thread and the preview lagged
+    /// behind the finger. Now the drag only picks a pre-cropped frame.
+    private static func cropFrames(sprite: UIImage, cols: Int, rows: Int, count: Int) -> [UIImage] {
+        guard cols > 0, rows > 0, count > 0, let cg = sprite.cgImage else { return [] }
         let cellWidth = cg.width / cols
         let cellHeight = cg.height / rows
-        let rect = CGRect(x: (index % cols) * cellWidth,
-                          y: (index / cols) * cellHeight,
-                          width: cellWidth, height: cellHeight)
-        guard let cropped = cg.cropping(to: rect) else { return nil }
-        return UIImage(cgImage: cropped, scale: sprite.scale, orientation: sprite.imageOrientation)
+        var out: [UIImage] = []
+        out.reserveCapacity(count)
+        for index in 0..<count {
+            let rect = CGRect(x: (index % cols) * cellWidth,
+                              y: (index / cols) * cellHeight,
+                              width: cellWidth, height: cellHeight)
+            guard let cropped = cg.cropping(to: rect) else { continue }
+            out.append(UIImage(cgImage: cropped, scale: sprite.scale, orientation: sprite.imageOrientation))
+        }
+        return out
+    }
+
+    /// The pre-cropped frame for the given timestamp.
+    /// Frame index = floor(seconds / interval), clamped to the last frame.
+    private func frameImage(for seconds: Double) -> UIImage? {
+        guard !frames.isEmpty,
+              let interval = item.previewInterval, let count = item.previewCount,
+              interval > 0, count > 0 else { return nil }
+        let index = min(max(Int(seconds / interval), 0), min(count, frames.count) - 1)
+        return frames[index]
     }
 
     // MARK: - Playback

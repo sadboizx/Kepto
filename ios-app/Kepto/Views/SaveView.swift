@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// NOTE (v6): this sheet is no longer presented anywhere — saving is
+/// direct now (the "+" menu's URL input, Clipboard, and the Share
+/// Extension handoff all call `LibraryViewModel.save` directly, with
+/// no sheet in between). Kept in the project only because the GitHub
+/// connector cannot delete files from the repo; delete it in the
+/// GitHub UI if you want it gone (nothing references it).
+///
 /// Save: paste a social link, POST /api/save, and show the result.
 /// Ingest runs in the background — a saved item is `pending` until
 /// the ingest service finishes, then it appears as `ready` in the library.

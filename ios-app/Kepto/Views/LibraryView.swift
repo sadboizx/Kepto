@@ -12,20 +12,23 @@ import UIKit
 /// (see `KeptoAPI.fetchThumbnail`) and keeps them in memory only.
 struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @State private var showingSave = false
     @State private var showingSettings = false
     @State private var searchTask: Task<Void, Never>?
-    @State private var incomingShareURL: String?
     @State private var clipboardAlert = false
+    /// URL-input alert (shown by the "+" menu's "Lưu link mới").
+    @State private var showingURLInput = false
+    @State private var urlInput = ""
+    /// One-line notice after a direct save (e.g. "already saved").
+    @State private var saveNotice: String?
 
     private let collectionColumns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12),
     ]
     private let videoColumns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 1),
+        GridItem(.flexible(), spacing: 1),
+        GridItem(.flexible(), spacing: 1),
     ]
 
     var body: some View {
@@ -75,18 +78,29 @@ struct LibraryView: View {
                 await viewModel.selectSection(viewModel.selectedSection)
             }
             .onChange(of: viewModel.pendingShareURL) { _, newValue in
-                // A link handed over by the Share Extension: open the
-                // Save sheet for it (auto-save on appear).
-                if let newValue { incomingShareURL = newValue }
+                // A link handed over by the Share Extension: save it
+                // directly (no sheet) and clear the handoff.
+                if let newValue {
+                    viewModel.pendingShareURL = nil
+                    Task { await saveDirect(newValue) }
+                }
             }
-            .sheet(isPresented: $showingSave) {
-                SaveView()
+            .alert("Lưu link", isPresented: $showingURLInput) {
+                TextField("Dán link TikTok, Instagram…", text: $urlInput)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Button("Lưu") {
+                    let url = urlInput
+                    urlInput = ""
+                    Task { await saveDirect(url) }
+                }
+                Button("Hủy", role: .cancel) { urlInput = "" }
             }
-            .sheet(isPresented: .constant(incomingShareURL != nil), onDismiss: {
-                incomingShareURL = nil
-                viewModel.pendingShareURL = nil
-            }) {
-                SaveView(initialURL: incomingShareURL ?? "", autoSave: true)
+            .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
+                Button("OK") { saveNotice = nil }
+            } message: {
+                Text(saveNotice ?? "")
             }
             .sheet(isPresented: $showingSettings, onDismiss: {
                 viewModel.reloadConfig()
@@ -108,17 +122,19 @@ struct LibraryView: View {
     }
 
     /// Floating "+" button (bottom-right): opens a menu to save a new
-    /// link, or save the link currently on the clipboard. (No Photo
-    /// Library entry: Kepto saves by link, it has no local-file upload.)
+    /// link, or save the link currently on the clipboard. Choosing
+    /// either starts the save right away — no further sheet or menu.
+    /// (No Photo Library entry: Kepto saves by link, it has no
+    /// local-file upload.)
     private var addButton: some View {
         Menu {
             Button {
-                showingSave = true
+                showingURLInput = true
             } label: {
                 Label("Lưu link mới", systemImage: "link.badge.plus")
             }
             Button {
-                saveFromClipboard()
+                Task { await saveDirectFromClipboard() }
             } label: {
                 Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
             }
@@ -135,15 +151,29 @@ struct LibraryView: View {
         .padding(.bottom, 20)
     }
 
-    /// Reads the first http(s) URL on the clipboard and opens the Save
-    /// sheet for it (auto-save on); warns when there is no link.
-    private func saveFromClipboard() {
+    /// Saves a link right away, with no sheet in between. On success the
+    /// home grid switches to Tất cả so the new item is visible at the
+    /// top; a duplicate shows a short notice instead of a second copy.
+    /// A failure surfaces through the view model's error alert.
+    private func saveDirect(_ rawURL: String) async {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let result = await viewModel.save(url: trimmed) else { return }
+        await viewModel.selectSection(.all)
+        if result.duplicate {
+            saveNotice = "Link này đã lưu trước đó."
+        }
+    }
+
+    /// Reads the first http(s) URL on the clipboard and saves it right
+    /// away; warns when there is no link.
+    private func saveDirectFromClipboard() async {
         guard let text = UIPasteboard.general.string,
               let url = Self.firstURL(in: text) else {
             clipboardAlert = true
             return
         }
-        incomingShareURL = url.absoluteString
+        await saveDirect(url.absoluteString)
     }
 
     private static func firstURL(in text: String) -> URL? {
@@ -199,7 +229,7 @@ struct LibraryView: View {
             } description: {
                 Text("Save a link and it will appear here grouped by its creator.")
             } actions: {
-                Button("Save a link") { showingSave = true }
+                Button("Save a link") { showingURLInput = true }
                     .buttonStyle(.borderedProminent)
             }
         } else {
@@ -262,7 +292,7 @@ struct LibraryView: View {
                 } description: {
                     Text(emptyDescription)
                 } actions: {
-                    Button("Save a link") { showingSave = true }
+                    Button("Save a link") { showingURLInput = true }
                         .buttonStyle(.borderedProminent)
                 }
             }
@@ -293,47 +323,82 @@ struct LibraryView: View {
     }
 }
 
-/// One collection card (home grid): cover thumbnail, @username, video count.
+/// One collection card (TikTok-style, measured from TikTok's Collections
+/// tab): a SQUARE cover (1:1) with the name overlaid at the bottom — the
+/// bookmark icon above the name, the lock at bottom-right — and no text
+/// or count below the card. Side padding 16, gap 12, corner radius 12.
 private struct CollectionCard: View {
     let collection: CollectionInfo
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .bottomLeading) {
-                if let coverId = collection.coverItemId {
-                    AuthenticatedThumbnail(itemId: coverId)
-                } else {
-                    ZStack {
-                        Color(.systemGray5)
-                        Image(systemName: "photo")
-                            .foregroundStyle(.secondary)
-                    }
+        ZStack(alignment: .bottomLeading) {
+            if let coverId = collection.coverItemId {
+                AuthenticatedThumbnail(itemId: coverId)
+            } else {
+                ZStack {
+                    Color(.systemGray5)
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .aspectRatio(4 / 5, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(collection.displayName)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                Text("\(collection.count) video\(collection.count == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            // Bottom gradient so the white overlay text stays legible.
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.65)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Image(systemName: "bookmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(nameLine)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if let handle = handleLine {
+                        Text(handle)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                Image(systemName: "lock")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white)
             }
-            .padding(.top, 6)
+            .padding(12)
         }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var nameLine: String {
+        if let author = collection.author, !author.isEmpty { return author }
+        return collection.displayName
+    }
+
+    private var handleLine: String? {
+        guard let username = collection.authorUsername, !username.isEmpty else { return nil }
+        // When there is no display name, displayName already is @username.
+        if collection.author == nil || collection.author?.isEmpty == true { return nil }
+        return "(@\(username))"
     }
 }
 
-/// One video cell in the 3-column grid (TikTok profile style): portrait
-/// thumbnail with a duration badge, a spinner while pending, and a red
-/// dot when ingest failed.
+/// One video cell in the 3-column grid (TikTok profile style, measured
+/// from the video: 3:4 cells, 1pt gaps): portrait thumbnail with a
+/// bottom-left badge — play triangle + view count (duration when the
+/// view count is unknown, e.g. older saves) — a spinner while pending,
+/// and a red dot when ingest failed.
 struct VideoGridCell: View {
     let item: Item
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack(alignment: .bottomLeading) {
             AuthenticatedThumbnail(item: item)
                 .aspectRatio(3 / 4, contentMode: .fill)
                 .clipped()
@@ -344,25 +409,31 @@ struct VideoGridCell: View {
                         .tint(.white)
                 }
             }
-            if let duration = item.formattedDuration, item.status == .ready {
-                Text(duration)
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(Color.black.opacity(0.65))
-                    .clipShape(Capsule())
-                    .padding(6)
+            if let badge = badgeText, item.status == .ready {
+                HStack(spacing: 3) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 9))
+                    Text(badge)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                }
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
+                .padding(6)
             }
             if item.status == .failed {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 8, height: 8)
                     .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
         }
         .background(Color(.systemGray5))
+    }
+
+    private var badgeText: String? {
+        item.formattedViewCount ?? item.formattedDuration
     }
 }
 

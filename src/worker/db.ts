@@ -35,6 +35,7 @@ export interface Item {
   preview_rows: number | null;
   preview_interval: number | null;
   preview_count: number | null;
+  view_count: number | null;
   status: "pending" | "ready" | "failed";
   ingest_error: string | null;
   created_at: string;
@@ -238,6 +239,7 @@ export interface IngestResult {
   preview_rows?: number | null;
   preview_interval?: number | null;
   preview_count?: number | null;
+  view_count?: number | null;
 }
 
 export async function markReady(db: D1Database, r: IngestResult): Promise<void> {
@@ -249,8 +251,8 @@ export async function markReady(db: D1Database, r: IngestResult): Promise<void> 
          author_avatar_url = ?9, posted_at = ?10, duration = ?11,
          width = ?12, height = ?13, file_size = ?14, sha256 = ?15,
          preview_cols = ?16, preview_rows = ?17, preview_interval = ?18,
-         preview_count = ?19, status = 'ready', ingest_error = NULL
-       WHERE id = ?20`,
+         preview_count = ?19, view_count = ?20, status = 'ready', ingest_error = NULL
+       WHERE id = ?21`,
     )
     .bind(
       r.r2_key,
@@ -272,6 +274,7 @@ export async function markReady(db: D1Database, r: IngestResult): Promise<void> 
       r.preview_rows ?? null,
       r.preview_interval ?? null,
       r.preview_count ?? null,
+      r.view_count ?? null,
       r.item_id,
     )
     .run();

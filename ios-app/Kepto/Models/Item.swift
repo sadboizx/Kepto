@@ -75,6 +75,9 @@ struct Item: Codable, Identifiable, Equatable {
     let previewRows: Int?
     let previewInterval: Double?
     let previewCount: Int?
+    /// View count from the extractor (TikTok), when the metadata probe
+    /// could read it. Null for older saves and for probes that failed.
+    let viewCount: Int?
     let status: ItemStatus
     let ingestError: String?
     let createdAt: String
@@ -133,6 +136,24 @@ struct Item: Codable, Identifiable, Equatable {
         }
         return error
     }
+
+    /// View count formatted TikTok-style: 584, 1,395, 20.2K.
+    var formattedViewCount: String? {
+        guard let viewCount else { return nil }
+        if viewCount >= 10_000 {
+            let k = Double(viewCount) / 1000
+            var s = String(format: "%.1f", k)
+            if s.hasSuffix(".0") { s = String(s.dropLast(2)) }
+            return s + "K"
+        }
+        return Self.groupingFormatter.string(from: NSNumber(value: viewCount))
+    }
+
+    private static let groupingFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f
+    }()
 
     /// Duration in seconds formatted as m:ss, e.g. 52 -> "0:52".
     var formattedDuration: String? {
