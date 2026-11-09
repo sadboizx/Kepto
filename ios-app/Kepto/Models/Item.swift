@@ -244,6 +244,36 @@ struct CollectionsResponse: Decodable {
     let collections: [CollectionInfo]
 }
 
+/// One user-created collection ("My collections", TikTok-style "Add to
+/// collection"). Unlike the per-creator collections (automatic, one per
+/// username), these are lists the user creates and adds videos to by
+/// hand. `coverItemId` is the newest video with a thumbnail.
+struct MyCollection: Codable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let count: Int
+    let coverItemId: String?
+    let createdAt: String
+}
+
+struct MyCollectionsResponse: Decodable {
+    let ok: Bool
+    let collections: [MyCollection]
+}
+
+struct MyCollectionResponse: Decodable {
+    let ok: Bool
+    let collection: MyCollection
+}
+
+/// Result of POST /api/my-collections/:id/items: `added` is false when
+/// the video was already in the collection (no second copy).
+struct AddToCollectionResponse: Decodable {
+    let ok: Bool
+    let added: Bool?
+    let duplicate: Bool?
+}
+
 struct HealthResponse: Decodable {
     let ok: Bool
     let service: String?

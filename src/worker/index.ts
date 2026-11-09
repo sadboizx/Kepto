@@ -14,6 +14,12 @@
  * - GET  /api/list            ?platform=&q=&status=&author_username=&limit=&cursor=
  * - GET  /api/collections     one row per author username (the Library's
  *                             home screen), with count + cover item id
+ * - GET  /api/my-collections  user-created collections ("Add to collection")
+ * - POST /api/my-collections  { name } -> 201 { collection }
+ * - GET  /api/my-collections/:id/items   videos in a collection
+ * - POST /api/my-collections/:id/items   { item_id } (idempotent)
+ * - DELETE /api/my-collections/:id/items/:itemId
+ * - DELETE /api/my-collections/:id
  * - GET  /api/items/:id       metadata for one item
  * - GET  /api/play/:id        streams the media from R2, Range/seek supported
  * - GET  /api/thumb/:id       streams the thumbnail from R2
@@ -46,16 +52,23 @@ import type { Context } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./env";
 import {
+  addItemToMyCollection,
+  createMyCollection,
   deleteItem,
+  deleteMyCollection,
   detectPlatform,
   findByUrl,
   getItem,
+  getMyCollection,
   insertItem,
   listCollections,
   listItems,
+  listMyCollectionItems,
+  listMyCollections,
   markFailed,
   markReady,
   normalizeSaveUrl,
+  removeItemFromMyCollection,
   resetForRetry,
   type IngestResult,
 } from "./db";
@@ -205,6 +218,98 @@ app.get("/api/list", async (c) => {
 app.get("/api/collections", async (c) => {
   const collections = await listCollections(c.env.DB, "me");
   return c.json({ ok: true, collections });
+});
+
+/**
+ * My collections: user-created lists (TikTok-style "Add to collection").
+ * These are separate from the per-creator collections above (automatic).
+ * Needs migration 0004 (my_collections + my_collection_items).
+ */
+app.get("/api/my-collections", async (c) => {
+  const collections = await listMyCollections(c.env.DB, "me");
+  return c.json({ ok: true, collections });
+});
+
+app.post("/api/my-collections", async (c) => {
+  let body: unknown;
+  try {
+    body = await readJson(c);
+  } catch {
+    return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
+  }
+  const name = (body as { name?: unknown })?.name;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    return c.json({ ok: false, error: "Tên collection là bắt buộc." }, 422);
+  }
+  const id = crypto.randomUUID();
+  await createMyCollection(c.env.DB, { id, user_id: "me", name: name.trim().slice(0, 100) });
+  const collection = await getMyCollection(c.env.DB, id);
+  return c.json({ ok: true, collection }, 201);
+});
+
+/** Videos in a collection, newest-added first (keyset cursor, like /api/list). */
+app.get("/api/my-collections/:id/items", async (c) => {
+  const collection = await getMyCollection(c.env.DB, c.req.param("id"));
+  if (!collection) return c.json({ ok: false, error: "Không tìm thấy collection." }, 404);
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 100);
+  let cursor: { added_at: string; item_id: string } | undefined;
+  const rawCursor = c.req.query("cursor");
+  if (rawCursor) {
+    try {
+      cursor = JSON.parse(atob(rawCursor)) as { added_at: string; item_id: string };
+    } catch {
+      return c.json({ ok: false, error: "cursor không hợp lệ." }, 400);
+    }
+  }
+  const rows = await listMyCollectionItems(c.env.DB, {
+    collectionId: collection.id,
+    limit,
+    cursor,
+  });
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const last = page[page.length - 1];
+  const nextCursor =
+    hasMore && last
+      ? btoa(JSON.stringify({ added_at: last.added_at, item_id: last.id }))
+      : null;
+  return c.json({ ok: true, items: page, next_cursor: nextCursor });
+});
+
+/** Add a video to a collection. Idempotent: adding twice returns duplicate. */
+app.post("/api/my-collections/:id/items", async (c) => {
+  const collection = await getMyCollection(c.env.DB, c.req.param("id"));
+  if (!collection) return c.json({ ok: false, error: "Không tìm thấy collection." }, 404);
+  let body: unknown;
+  try {
+    body = await readJson(c);
+  } catch {
+    return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
+  }
+  const itemId = (body as { item_id?: unknown })?.item_id;
+  if (typeof itemId !== "string" || itemId.length === 0) {
+    return c.json({ ok: false, error: "item_id là bắt buộc." }, 422);
+  }
+  const item = await getItem(c.env.DB, itemId);
+  if (!item) return c.json({ ok: false, error: "Không tìm thấy item." }, 404);
+  const added = await addItemToMyCollection(c.env.DB, collection.id, itemId);
+  return c.json({ ok: true, added, duplicate: !added });
+});
+
+/** Remove a video from a collection (the item stays saved in the library). */
+app.delete("/api/my-collections/:id/items/:itemId", async (c) => {
+  const collection = await getMyCollection(c.env.DB, c.req.param("id"));
+  if (!collection) return c.json({ ok: false, error: "Không tìm thấy collection." }, 404);
+  await removeItemFromMyCollection(c.env.DB, collection.id, c.req.param("itemId"));
+  return c.json({ ok: true, removed: true });
+});
+
+/** Delete a collection and its memberships (the videos stay saved). */
+app.delete("/api/my-collections/:id", async (c) => {
+  const collection = await getMyCollection(c.env.DB, c.req.param("id"));
+  if (!collection) return c.json({ ok: false, error: "Không tìm thấy collection." }, 404);
+  await deleteMyCollection(c.env.DB, collection.id);
+  return c.json({ ok: true, deleted: collection.id });
 });
 
 app.get("/api/items/:id", async (c) => {

@@ -41,6 +41,8 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var items: [Item] = []
     /// Collections for the home screen (one per creator username).
     @Published private(set) var collections: [CollectionInfo] = []
+    /// User-created collections ("My collections").
+    @Published private(set) var myCollections: [MyCollection] = []
     /// The selected home menu section.
     @Published var selectedSection: LibrarySection = .all
     @Published private(set) var isLoading = false
@@ -87,6 +89,10 @@ final class LibraryViewModel: ObservableObject {
 
     /// Collections for the home screen. Called on appear and on
     /// pull-to-refresh, and after a save (a new username may appear).
+    /// Fetches the per-creator collections and the user-created ("My")
+    /// collections independently: if the My-collections endpoint fails
+    /// (e.g. migration 0004 has not been applied yet), the per-creator
+    /// collections still load.
     func fetchCollections() async {
         guard let api else {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
@@ -105,6 +111,81 @@ final class LibraryViewModel: ObservableObject {
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+        // Quiet: a failure here must not wipe the per-creator list above.
+        if let mine = try? await api.myCollections() {
+            myCollections = mine
+        }
+    }
+
+    /// Create a user-created collection. Returns it on success so the
+    /// caller can add the current video to it right away.
+    func createMyCollection(name: String) async -> MyCollection? {
+        guard let api else {
+            errorMessage = KeptoAPIError.notConfigured.errorDescription
+            return nil
+        }
+        do {
+            let created = try await api.createMyCollection(name: name)
+            myCollections.insert(created, at: 0)
+            return created
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Quiet refresh of the user-created collections only (used by the
+    /// feed's "Add to collection" picker, which may open before the
+    /// Collections section was ever visited).
+    func fetchMyCollections() async {
+        guard let api else { return }
+        if let mine = try? await api.myCollections() {
+            myCollections = mine
+        }
+    }
+
+    /// Add a video to a user-created collection. Returns true when it
+    /// was newly added, false when it was already there, nil on failure
+    /// (the error surfaces through `errorMessage`).
+    func addItemToMyCollection(collectionId: String, item: Item) async -> Bool? {
+        guard let api else {
+            errorMessage = KeptoAPIError.notConfigured.errorDescription
+            return nil
+        }
+        do {
+            let added = try await api.addItemToMyCollection(collectionId: collectionId, itemId: item.id)
+            if let mine = try? await api.myCollections() {
+                myCollections = mine
+            }
+            return added
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return nil
+        }
+    }
+
+    /// One page of a user-created collection's items (used by
+    /// MyCollectionDetailView). Throws so the detail view can show it.
+    func listMyCollectionItems(collectionId: String,
+                               limit: Int = 50,
+                               cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        return try await api.myCollectionItems(collectionId: collectionId, limit: limit, cursor: cursor)
+    }
+
+    /// Remove a video from a user-created collection (the item itself
+    /// stays saved in the library). Throws so the caller can show it.
+    func removeItemFromMyCollection(collectionId: String, item: Item) async throws {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        try await api.removeItemFromMyCollection(collectionId: collectionId, itemId: item.id)
+    }
+
+    /// Delete a user-created collection (its videos stay saved).
+    /// Throws so the caller can show the failure.
+    func deleteMyCollection(id: String) async throws {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        try await api.deleteMyCollection(id: id)
+        myCollections.removeAll { $0.id == id }
     }
 
     /// First page of the current section's items (or search results

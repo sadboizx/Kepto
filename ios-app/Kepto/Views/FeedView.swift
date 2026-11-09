@@ -26,9 +26,10 @@ import UIKit
 /// with the sprite preview popup). The background is black throughout.
 /// Photo posts show the full image instead of a player.
 ///
-/// Long-pressing a video opens a TikTok-style bottom sheet: Copy
-/// link, Download (saves to Photos), Playback speed, and the video's
-/// username + caption. No Share-with / Repost / friends list.
+/// There is NO "..." button on the video: all video actions live in
+/// the long-press menu (Copy link, Download, Playback speed, Add to
+/// collection, Delete) plus the video's username + caption. No
+/// Share-with / Repost / friends list.
 struct FeedView: View {
     /// The list to page through. A Binding so appends from `onNearEnd`
     /// (the library's loadMore, or a collection's) are visible here.
@@ -47,10 +48,11 @@ struct FeedView: View {
     /// The id of the page the feed is showing. Optional because
     /// `.scrollPosition(id:)` needs a `Binding<String?>`.
     @State private var currentItemId: String?
-    @State private var showingActionSheet = false
-    @State private var showingDetail = false
     @State private var showingDeleteConfirmation = false
     @State private var deleteError: String?
+    /// The video a long-press Delete is about to delete (captured when
+    /// the user taps Delete, so a swipe in between cannot retarget it).
+    @State private var itemPendingDelete: Item?
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil, showCloseButton: Bool = true) {
@@ -76,29 +78,18 @@ struct FeedView: View {
                 if showCloseButton {
                     closeButton(topSafeArea: geo.safeAreaInsets.top)
                 }
-                if currentItem != nil {
-                    moreButton
-                }
             }
         }
         .preferredColorScheme(.dark)
-        .confirmationDialog("Video", isPresented: $showingActionSheet, titleVisibility: .hidden) {
-            Button("Chi tiết") { showingDetail = true }
-            Button("Xóa", role: .destructive) { showingDeleteConfirmation = true }
-            Button("Hủy", role: .cancel) {}
-        }
         .confirmationDialog("Delete this saved item?",
                             isPresented: $showingDeleteConfirmation,
                             titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 Task { await deleteCurrentItem() }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) { itemPendingDelete = nil }
         } message: {
             Text("This removes the saved copy from the cloud. The original post is not affected.")
-        }
-        .sheet(isPresented: $showingDetail) {
-            detailSheet
         }
         .alert("Delete failed", isPresented: .constant(deleteError != nil)) {
             Button("OK") { deleteError = nil }
@@ -120,23 +111,40 @@ struct FeedView: View {
     /// (Split out of `body`: the whole feed in one expression made
     /// the compiler give up type-checking it in reasonable time.)
     private var feedPages: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 0) {
-                ForEach(items) { item in
-                    FeedVideoPage(item: item, isCurrent: item.id == currentItemId)
-                        .id(item.id)
-                        .containerRelativeFrame(.vertical)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 0) {
+                    ForEach(items) { item in
+                        FeedVideoPage(item: item, isCurrent: item.id == currentItemId, onDeleteRequest: { video in
+                            itemPendingDelete = video
+                            showingDeleteConfirmation = true
+                        })
+                            .id(item.id)
+                            .containerRelativeFrame(.vertical)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $currentItemId)
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea()
+            .onChange(of: currentItemId) { _, _ in handleCurrentItemChange() }
+            .onChange(of: items) { oldItems, newItems in handleItemsChange(old: oldItems, new: newItems) }
+            .task { fixInitialCurrentItem() }
+            .task {
+                // The feed must open on the video the user tapped, not
+                // the first one. `.scrollPosition` does not always apply
+                // its initial value on first layout (the target page
+                // may not be laid out yet in the LazyVStack), so scroll
+                // to the start item explicitly once the layout settles.
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                if items.contains(where: { $0.id == startItemId }) {
+                    proxy.scrollTo(startItemId, anchor: .top)
                 }
             }
-            .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $currentItemId)
-        .scrollIndicators(.hidden)
-        .ignoresSafeArea()
-        .onChange(of: currentItemId) { _, _ in handleCurrentItemChange() }
-        .onChange(of: items) { oldItems, newItems in handleItemsChange(old: oldItems, new: newItems) }
-        .task { fixInitialCurrentItem() }
     }
 
     /// Close button (covers only, top-left). The video runs behind
@@ -161,45 +169,6 @@ struct FeedView: View {
             Spacer()
         }
         .padding(.top, topSafeArea + 4)
-    }
-
-    /// "..." rail button (right edge, vertically centred):
-    /// details / delete for the current video.
-    private var moreButton: some View {
-        HStack {
-            Spacer()
-            Button {
-                showingActionSheet = true
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(Color.black.opacity(0.35))
-                    .clipShape(Circle())
-            }
-            .padding(.trailing, 12)
-        }
-        .frame(maxHeight: .infinity)
-    }
-
-    /// Detail sheet for the current video.
-    @ViewBuilder
-    private var detailSheet: some View {
-        if let currentItem {
-            NavigationStack {
-                ItemDetailView(item: currentItem)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button {
-                                showingDetail = false
-                            } label: {
-                                Label("Close", systemImage: "xmark")
-                            }
-                        }
-                    }
-            }
-        }
     }
 
     /// Near the end: load the next page so swiping never hits a dead
@@ -232,9 +201,16 @@ struct FeedView: View {
     }
 
     private func deleteCurrentItem() async {
-        guard let currentItem else { return }
+        guard let target = itemPendingDelete ?? currentItem else { return }
+        itemPendingDelete = nil
         do {
-            try await viewModel.delete(item: currentItem)
+            try await viewModel.delete(item: target)
+            // Also drop it from this feed's list: when the feed was
+            // opened from a collection, the view model's list is a
+            // different array, so the deleted page would otherwise stay
+            // on screen. Removing it here moves the feed to the nearest
+            // remaining video (see `handleItemsChange`).
+            items.removeAll { $0.id == target.id }
         } catch {
             deleteError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -249,10 +225,14 @@ struct FeedView: View {
 /// when the page scrolls away — see the note on `schedulePlay`
 /// for why it is not destroyed. It plays only while this page is
 /// the current one, and loops. Long-press opens the TikTok-style
-/// menu (Copy link, Download, Playback speed, username + caption).
+/// menu (Copy link, Download, Playback speed, Add to collection,
+/// Delete, username + caption).
 private struct FeedVideoPage: View {
     let item: Item
     let isCurrent: Bool
+    /// Called when the user taps Delete in the long-press menu (the
+    /// feed shows the delete confirmation for this video).
+    var onDeleteRequest: ((Item) -> Void)? = nil
     @EnvironmentObject private var viewModel: LibraryViewModel
 
     @State private var player: AVPlayer?
@@ -345,8 +325,8 @@ private struct FeedVideoPage: View {
                 }
                 // Username + caption, overlaid bottom-left on the
                 // video (TikTok-style), directly above the progress
-                // bar. The "…" rail button sits mid-screen on the
-                // right, so nothing covers this text.
+                // bar. There is no "…" button on the video any more,
+                // so nothing covers this text.
                 // Progress bar, TikTok position: right at the bottom
                 // edge of the video, thin, just above the Home
                 // Indicator (a small gap, not touching it).
@@ -419,7 +399,20 @@ private struct FeedVideoPage: View {
                 playbackRate: playbackRate,
                 onCopyLink: { Task { await copyLink() } },
                 onDownload: { Task { await downloadVideo() } },
-                onSelectRate: { selectRate($0) }
+                onSelectRate: { selectRate($0) },
+                onDelete: {
+                    showingLongPressMenu = false
+                    Task { @MainActor in
+                        // Let the sheet dismiss before the delete
+                        // confirmation appears, or it may not show.
+                        try? await Task.sleep(for: .milliseconds(400))
+                        guard !Task.isCancelled else { return }
+                        onDeleteRequest?(item)
+                    }
+                },
+                onAddedToCollection: { name, added in
+                    showNotice(added ? "Đã thêm vào \(name)" : "Đã có trong \(name)")
+                }
             )
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
@@ -650,93 +643,261 @@ private struct FeedVideoPage: View {
     }
 }
 
-/// Long-press menu (TikTok-style bottom sheet): only the actions the
-/// user asked to keep — Copy link, Download, Playback speed — plus
-/// the video's username and caption. No Share-with / Repost / friends
-/// list: this app has no social graph, and the sheet stays clean.
+/// Long-press menu (TikTok-style bottom sheet): the actions the user
+/// asked to keep — Copy link, Download, Playback speed, Add to
+/// collection, Delete — plus the video's username and caption. No
+/// Share-with / Repost / friends list: this app has no social graph,
+/// and the sheet stays clean.
+///
+/// "Add to collection" switches the sheet to a picker: the user's
+/// own collections (newest first) plus a "New collection" row that
+/// creates one and adds the video to it. Tapping a collection adds
+/// the video and closes the sheet; the page shows a short notice.
 private struct LongPressMenuView: View {
     let item: Item
     let playbackRate: Float
     let onCopyLink: () -> Void
     let onDownload: () -> Void
     let onSelectRate: (Float) -> Void
+    let onDelete: () -> Void
+    /// Called after a successful add (collection name, newly added?).
+    let onAddedToCollection: (String, Bool) -> Void
 
+    @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var showingSpeedPicker = false
+    @State private var showingCollectionPicker = false
+    @State private var newCollectionName = ""
+    @State private var pickerError: String?
+    @State private var isAdding = false
 
     private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 32) {
-                menuButton(icon: "link", label: "Copy link") {
-                    onCopyLink()
-                    dismiss()
+            if showingCollectionPicker {
+                collectionPicker
+            } else {
+                actionRow
+                if showingSpeedPicker {
+                    speedRow
                 }
-                menuButton(icon: "arrow.down.to.line", label: "Download") {
-                    onDownload()
-                    dismiss()
-                }
-                menuButton(icon: "gauge", label: "Playback speed") {
-                    showingSpeedPicker.toggle()
-                }
+                Divider()
+                    .background(Color.white.opacity(0.2))
+                    .padding(.vertical, 16)
+                usernameCaption
             }
-            .padding(.top, 20)
-            if showingSpeedPicker {
-                HStack(spacing: 8) {
-                    ForEach(speeds, id: \.self) { rate in
-                        Button {
-                            onSelectRate(rate)
-                            dismiss()
-                        } label: {
-                            Text(String(format: "%gx", rate))
-                                .font(.subheadline)
-                                .fontWeight(rate == playbackRate ? .semibold : .regular)
-                                .foregroundStyle(rate == playbackRate ? Color.black : Color.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(rate == playbackRate ? Color.white : Color.white.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.top, 14)
-            }
-            Divider()
-                .background(Color.white.opacity(0.2))
-                .padding(.vertical, 16)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(item.collectionName)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                if let caption = item.caption,
-                   !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(caption)
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
             Spacer()
         }
         .background(Color.black)
         .preferredColorScheme(.dark)
     }
 
-    private func menuButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+    /// The five action buttons in one row.
+    private var actionRow: some View {
+        HStack(spacing: 20) {
+            menuButton(icon: "link", label: "Copy link") {
+                onCopyLink()
+                dismiss()
+            }
+            menuButton(icon: "arrow.down.to.line", label: "Download") {
+                onDownload()
+                dismiss()
+            }
+            menuButton(icon: "gauge", label: "Playback speed") {
+                showingSpeedPicker.toggle()
+            }
+            menuButton(icon: "folder.badge.plus", label: "Add to collection") {
+                showingCollectionPicker = true
+            }
+            menuButton(icon: "trash", label: "Delete", tint: .red) {
+                onDelete()
+            }
+        }
+        .padding(.top, 20)
+    }
+
+    private var speedRow: some View {
+        HStack(spacing: 8) {
+            ForEach(speeds, id: \.self) { rate in
+                Button {
+                    onSelectRate(rate)
+                    dismiss()
+                } label: {
+                    Text(String(format: "%gx", rate))
+                        .font(.subheadline)
+                        .fontWeight(rate == playbackRate ? .semibold : .regular)
+                        .foregroundStyle(rate == playbackRate ? Color.black : Color.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(rate == playbackRate ? Color.white : Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 14)
+    }
+
+    private var usernameCaption: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.collectionName)
+                .font(.headline)
+                .foregroundStyle(.white)
+            if let caption = item.caption,
+               !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(caption)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+    }
+
+    /// "Add to collection" picker: the user's collections plus a row
+    /// to create a new one. The list refreshes when it opens (the
+    /// feed may never have visited the Collections section).
+    private var collectionPicker: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button {
+                    showingCollectionPicker = false
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                Text("Add to collection")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            if let pickerError {
+                Text(pickerError)
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+            }
+            ScrollView {
+                VStack(spacing: 4) {
+                    ForEach(viewModel.myCollections) { collection in
+                        Button {
+                            Task { await addToCollection(collection) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 18))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 40, height: 40)
+                                    .background(Color.white.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(collection.name)
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+                                    Text("\(collection.count) video")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.6))
+                                }
+                                Spacer()
+                                if isAdding {
+                                    ProgressView().tint(.white)
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isAdding)
+                    }
+                    HStack(spacing: 12) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        TextField("Tên collection mới", text: $newCollectionName)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .foregroundStyle(.white)
+                        Button("Tạo") {
+                            Task { await createAndAdd() }
+                        }
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.white)
+                        .clipShape(Capsule())
+                        .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isAdding)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                }
+                .padding(.top, 8)
+            }
+        }
+        .task {
+            await viewModel.fetchMyCollections()
+        }
+    }
+
+    private func addToCollection(_ collection: MyCollection) async {
+        guard !isAdding else { return }
+        isAdding = true
+        pickerError = nil
+        defer { isAdding = false }
+        if let added = await viewModel.addItemToMyCollection(collectionId: collection.id, item: item) {
+            onAddedToCollection(collection.name, added)
+            dismiss()
+        } else {
+            pickerError = "Không thêm được. Kiểm tra kết nối rồi thử lại."
+        }
+    }
+
+    private func createAndAdd() async {
+        let name = newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !isAdding else { return }
+        isAdding = true
+        pickerError = nil
+        defer { isAdding = false }
+        guard let created = await viewModel.createMyCollection(name: name) else {
+            pickerError = "Không tạo được collection. Kiểm tra kết nối rồi thử lại."
+            return
+        }
+        if let added = await viewModel.addItemToMyCollection(collectionId: created.id, item: item) {
+            onAddedToCollection(created.name, added)
+            dismiss()
+        } else {
+            pickerError = "Đã tạo \"\(created.name)\" nhưng chưa thêm được video."
+        }
+    }
+
+    private func menuButton(icon: String, label: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 8) {
                 Image(systemName: icon)
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(tint)
                     .frame(width: 56, height: 56)
-                    .background(Color.white.opacity(0.12))
+                    .background(tint == .red ? Color.red.opacity(0.15) : Color.white.opacity(0.12))
                     .clipShape(Circle())
                 Text(label)
                     .font(.caption)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(tint)
                     .multilineTextAlignment(.center)
             }
         }

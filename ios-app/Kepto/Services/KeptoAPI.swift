@@ -189,6 +189,14 @@ final class KeptoAPI {
     /// DELETE /api/items/:id
     func delete(id: String) async throws {
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/items/\(id)"), method: "DELETE"))
+        try checkDeleteResponse(data, response)
+    }
+
+    /// Shared response handling for the DELETE endpoints (delete item,
+    /// remove from a collection, delete a collection): 2xx = done,
+    /// 401/404 map to the typed errors, anything else to the server's
+    /// message when it has one.
+    private func checkDeleteResponse(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else {
             throw KeptoAPIError.network(URLError(.badServerResponse))
         }
@@ -206,6 +214,58 @@ final class KeptoAPI {
             }
             throw KeptoAPIError.server("Worker trả về lỗi \(http.statusCode).")
         }
+    }
+
+    // MARK: - My collections (user-created lists)
+
+    /// GET /api/my-collections — user-created collections, newest first.
+    func myCollections() async throws -> [MyCollection] {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections")))
+        let body = try handle(data, response, as: MyCollectionsResponse.self)
+        return body.collections
+    }
+
+    /// POST /api/my-collections — create a collection by name.
+    func createMyCollection(name: String) async throws -> MyCollection {
+        let body = try JSONSerialization.data(withJSONObject: ["name": name])
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections"), method: "POST", jsonBody: body))
+        let decoded = try handle(data, response, as: MyCollectionResponse.self)
+        return decoded.collection
+    }
+
+    /// POST /api/my-collections/:id/items — add a video. Returns true
+    /// when it was newly added, false when it was already there.
+    func addItemToMyCollection(collectionId: String, itemId: String) async throws -> Bool {
+        let body = try JSONSerialization.data(withJSONObject: ["item_id": itemId])
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections/\(collectionId)/items"), method: "POST", jsonBody: body))
+        let decoded = try handle(data, response, as: AddToCollectionResponse.self)
+        return decoded.added ?? false
+    }
+
+    /// GET /api/my-collections/:id/items — videos in a collection,
+    /// newest-added first.
+    func myCollectionItems(collectionId: String,
+                           limit: Int = 50,
+                           cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
+        var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
+        if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections/\(collectionId)/items", queryItems: items)))
+        let body = try handle(data, response, as: ListResponse.self)
+        return (body.items, body.nextCursor)
+    }
+
+    /// DELETE /api/my-collections/:id/items/:itemId — remove a video
+    /// from a collection (the item itself stays saved in the library).
+    func removeItemFromMyCollection(collectionId: String, itemId: String) async throws {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections/\(collectionId)/items/\(itemId)"), method: "DELETE"))
+        try checkDeleteResponse(data, response)
+    }
+
+    /// DELETE /api/my-collections/:id — delete the collection (the
+    /// videos in it stay saved in the library).
+    func deleteMyCollection(id: String) async throws {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections/\(id)"), method: "DELETE"))
+        try checkDeleteResponse(data, response)
     }
 
     // MARK: - Authenticated media URLs

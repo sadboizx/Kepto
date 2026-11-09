@@ -6,9 +6,13 @@ import UIKit
 /// (videos) / Bài viết (images) / Collections. Tapping a video opens
 /// it in the full-screen feed viewer (swipe up/down for the next
 /// video); the feed is only for watching, not the home itself.
-/// Collections stay a grid (one card per creator username, like
-/// TikTok's Collections tab); tapping a collection opens its videos
-/// in a grid, and tapping one there opens the feed viewer too.
+/// The search field and the section menu stay on screen for every
+/// section (including Collections) — they are shared chrome, not
+/// part of the video grid, so switching sections never loses the menu.
+/// Collections show the user's own collections ("My collections",
+/// with a New card) on top and the per-creator collections below;
+/// tapping a collection opens its videos in a grid, and tapping one
+/// there opens the feed viewer too.
 /// Searching filters the grid. Thumbnails are authenticated
 /// (AsyncImage cannot send the Authorization header), so
 /// `AuthenticatedThumbnail` loads them with URLSession (see
@@ -25,6 +29,9 @@ struct LibraryView: View {
     @State private var saveNotice: String?
     /// The video the full-screen feed viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
+    /// "New collection" name alert (from the Collections section).
+    @State private var showingNewCollection = false
+    @State private var newCollectionName = ""
 
     private let collectionColumns = [
         GridItem(.flexible(), spacing: 12),
@@ -89,6 +96,21 @@ struct LibraryView: View {
                     Task { await saveDirect(url) }
                 }
                 Button("Hủy", role: .cancel) { urlInput = "" }
+            }
+            .alert("New collection", isPresented: $showingNewCollection) {
+                TextField("Tên collection", text: $newCollectionName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Tạo") {
+                    let name = newCollectionName
+                    newCollectionName = ""
+                    Task {
+                        if let created = await viewModel.createMyCollection(name: name) {
+                            saveNotice = "Đã tạo collection \"\(created.name)\"."
+                        }
+                    }
+                }
+                Button("Hủy", role: .cancel) { newCollectionName = "" }
             }
             .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
                 Button("OK") { saveNotice = nil }
@@ -189,10 +211,21 @@ struct LibraryView: View {
     private var content: some View {
         if !viewModel.isConfigured {
             setupView
-        } else if viewModel.selectedSection == .collections && !viewModel.isSearching {
-            collectionsContent
         } else {
-            videoGridHome
+            // The search field and the section menu stay on screen for
+            // every section — including Collections. (They used to live
+            // inside `videoGridHome` only, so tapping Collections made
+            // the whole menu vanish and there was no way back.)
+            VStack(spacing: 0) {
+                searchFieldView
+                sectionMenu
+                if viewModel.selectedSection == .collections && !viewModel.isSearching {
+                    collectionsContent
+                } else {
+                    videoGridContent
+                }
+            }
+            .preferredColorScheme(.dark)
         }
     }
 
@@ -207,34 +240,38 @@ struct LibraryView: View {
         }
     }
 
-    /// The video grid home: a search field and the section chips on
-    /// top, then the 3-column video grid. Tapping a video opens it
-    /// in the full-screen feed viewer.
-    private var videoGridHome: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.white.opacity(0.7))
-                TextField("Search title, caption, @username", text: $viewModel.searchText)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .foregroundStyle(.white)
-                if !viewModel.searchText.isEmpty {
-                    Button {
-                        viewModel.searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.white.opacity(0.7))
-                    }
+    /// Search field (always on screen, above the section menu).
+    private var searchFieldView: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.white.opacity(0.7))
+            TextField("Search title, caption, @username", text: $viewModel.searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .foregroundStyle(.white)
+            if !viewModel.searchText.isEmpty {
+                Button {
+                    viewModel.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.white.opacity(0.7))
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.1))
-            .clipShape(Capsule())
-            .padding(.horizontal)
-            .padding(.top, 8)
-            sectionMenu
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.1))
+        .clipShape(Capsule())
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+    /// The video grid content (loading / empty / grid) for the Tất cả,
+    /// Reels, and Bài viết sections, and for search results. The search
+    /// field and section menu live in `content` (shared by all sections).
+    /// Tapping a video opens it in the full-screen feed viewer.
+    private var videoGridContent: some View {
+        Group {
             if viewModel.isLoading && viewModel.items.isEmpty {
                 ProgressView("Loading…")
                     .tint(.white)
@@ -252,7 +289,6 @@ struct LibraryView: View {
                 videoGrid
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     /// The 3-column video grid (TikTok profile style): 9:16 cells,
@@ -310,13 +346,13 @@ struct LibraryView: View {
         }
     }
 
-    /// Collections grid (2 columns of square per-creator cards).
-    /// Collections are cards, not videos, so they keep a grid — the
-    /// feed is for watching videos; tapping a collection opens its
-    /// videos in the feed.
+    /// Collections: the user's own collections ("My collections", with
+    /// a New card) on top, then the per-creator collections below.
+    /// Tapping a card opens its videos in a grid; tapping a video
+    /// there opens the feed viewer.
     private var collectionsContent: some View {
         Group {
-            if viewModel.collections.isEmpty && !viewModel.isLoading {
+            if viewModel.collections.isEmpty && viewModel.myCollections.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView {
                     Label("No collections yet", systemImage: "folder")
                 } description: {
@@ -327,28 +363,79 @@ struct LibraryView: View {
                 }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: collectionColumns, spacing: 12) {
-                        ForEach(viewModel.collections) { collection in
-                            NavigationLink {
-                                CollectionDetailView(collection: collection)
+                    VStack(alignment: .leading, spacing: 0) {
+                        sectionHeader("My collections")
+                        LazyVGrid(columns: collectionColumns, spacing: 12) {
+                            Button {
+                                showingNewCollection = true
                             } label: {
-                                CollectionCard(collection: collection)
+                                newCollectionCard
                             }
                             .buttonStyle(.plain)
+                            ForEach(viewModel.myCollections) { collection in
+                                NavigationLink {
+                                    MyCollectionDetailView(collection: collection)
+                                } label: {
+                                    MyCollectionCard(collection: collection)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal)
+                        if !viewModel.collections.isEmpty {
+                            sectionHeader("Creators")
+                            LazyVGrid(columns: collectionColumns, spacing: 12) {
+                                ForEach(viewModel.collections) { collection in
+                                    NavigationLink {
+                                        CollectionDetailView(collection: collection)
+                                    } label: {
+                                        CollectionCard(collection: collection)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal)
+                            .padding(.bottom)
                         }
                     }
-                    .padding()
                 }
                 .refreshable {
                     await viewModel.fetchCollections()
                 }
                 .overlay {
-                    if viewModel.isLoading && viewModel.collections.isEmpty {
+                    if viewModel.isLoading && viewModel.collections.isEmpty && viewModel.myCollections.isEmpty {
                         ProgressView("Loading…")
                     }
                 }
             }
         }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.white)
+            .padding(.horizontal)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+    }
+
+    /// Dashed "+" card that opens the "New collection" name alert.
+    private var newCollectionCard: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+            VStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("New collection")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
     }
 
     private var emptyTitle: String {
@@ -438,6 +525,50 @@ private struct CollectionCard: View {
         // When there is no display name, displayName already is @username.
         if collection.author == nil || collection.author?.isEmpty == true { return nil }
         return "(@\(username))"
+    }
+}
+
+/// One user-created collection card (square, like the per-creator
+/// cards): cover thumbnail (or a folder placeholder), name + video
+/// count overlaid at the bottom.
+private struct MyCollectionCard: View {
+    let collection: MyCollection
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let coverId = collection.coverItemId {
+                AuthenticatedThumbnail(itemId: coverId)
+            } else {
+                ZStack {
+                    Color(.systemGray5)
+                    Image(systemName: "folder")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.65)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+            VStack(alignment: .leading, spacing: 2) {
+                Image(systemName: "folder")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text(collection.name)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text("\(collection.count) video")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+            }
+            .padding(12)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
