@@ -19,7 +19,7 @@ compatibility_date = "2026-11-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "kepto-items"
-database_id = "a07a37e2-d129-4d50-bde4-d2b5dde9def2"
+database_id = "9c0382a3-424a-489c-b209-c7d321f450c1"
 
 # R2 — media files. Private bucket; the Worker streams playback.
 # Free tier: 10 GB storage. Egress is $0, so re-watching costs nothing.
