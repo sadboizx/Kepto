@@ -16,6 +16,11 @@ struct CollectionDetailView: View {
     @State private var errorMessage: String?
     /// The video the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
+    /// The video whose grid long-press menu is open (nil = closed).
+    @State private var itemForGridMenu: Item?
+    /// The video awaiting delete confirmation from the grid menu.
+    @State private var itemPendingDelete: Item?
+    @State private var showingDeleteConfirmation = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -31,7 +36,7 @@ struct CollectionDetailView: View {
                         Button {
                             feedStartItem = item
                         } label: {
-                            VideoGridCell(item: item)
+                            VideoGridCell(item: item, onLongPress: { itemForGridMenu = $0 })
                         }
                         .buttonStyle(.plain)
                     }
@@ -84,6 +89,54 @@ struct CollectionDetailView: View {
                 showCloseButton: true
             )
         }
+        .sheet(item: $itemForGridMenu) { menuItem in
+            GridItemMenuView(
+                item: menuItem,
+                onToggleFavorite: {
+                    Task {
+                        if let updated = await viewModel.toggleFavorite(item: menuItem),
+                           let idx = items.firstIndex(where: { $0.id == updated.id }) {
+                            items[idx] = updated
+                        }
+                    }
+                },
+                onDelete: {
+                    itemForGridMenu = nil
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(400))
+                        guard !Task.isCancelled else { return }
+                        itemPendingDelete = menuItem
+                        showingDeleteConfirmation = true
+                    }
+                },
+                onAddedToCollection: { _, _ in }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.black)
+        }
+        .confirmationDialog("Delete this saved item?",
+                            isPresented: $showingDeleteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteGridMenuItem() }
+            }
+            Button("Cancel", role: .cancel) { itemPendingDelete = nil }
+        } message: {
+            Text(itemPendingDelete?.displayTitle ?? "")
+        }
+    }
+
+    /// Delete the video pending confirmation from the grid menu.
+    private func deleteGridMenuItem() async {
+        guard let target = itemPendingDelete else { return }
+        itemPendingDelete = nil
+        do {
+            try await viewModel.delete(item: target)
+            items.removeAll { $0.id == target.id }
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     private func fetch(reset: Bool) async {
@@ -127,8 +180,8 @@ struct CollectionDetailView: View {
 /// One user-created collection's videos: a 3-column portrait grid,
 /// newest-added first. Tapping a video opens it in the full-screen
 /// feed (swipe up/down for the next video in this collection).
-/// Long-press a cell (context menu) to remove that video from the
-/// collection — it stays saved in the library. The toolbar trash
+/// Long-press a cell (0.8s) opens the grid menu (Favorite / Add to
+/// Collection / Remove from collection / Delete). The toolbar trash
 /// button deletes the whole collection (its videos stay saved).
 struct MyCollectionDetailView: View {
     let collection: MyCollection
@@ -142,6 +195,11 @@ struct MyCollectionDetailView: View {
     @State private var errorMessage: String?
     /// The video the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
+    /// The video whose grid long-press menu is open (nil = closed).
+    @State private var itemForGridMenu: Item?
+    /// The video awaiting delete confirmation from the grid menu.
+    @State private var itemPendingDelete: Item?
+    @State private var showingDeleteConfirmation = false
     @State private var showingDeleteCollection = false
     @State private var removeError: String?
 
@@ -158,16 +216,9 @@ struct MyCollectionDetailView: View {
                     Button {
                         feedStartItem = item
                     } label: {
-                        VideoGridCell(item: item)
+                        VideoGridCell(item: item, onLongPress: { itemForGridMenu = $0 })
                     }
                     .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(role: .destructive) {
-                            Task { await removeFromCollection(item) }
-                        } label: {
-                            Label("Remove from collection", systemImage: "folder.badge.minus")
-                        }
-                    }
                 }
             }
             if nextCursor != nil {
@@ -240,6 +291,57 @@ struct MyCollectionDetailView: View {
                 onNearEnd: { await loadMore() },
                 showCloseButton: true
             )
+        }
+        .sheet(item: $itemForGridMenu) { menuItem in
+            GridItemMenuView(
+                item: menuItem,
+                onToggleFavorite: {
+                    Task {
+                        if let updated = await viewModel.toggleFavorite(item: menuItem),
+                           let idx = items.firstIndex(where: { $0.id == updated.id }) {
+                            items[idx] = updated
+                        }
+                    }
+                },
+                onDelete: {
+                    itemForGridMenu = nil
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(400))
+                        guard !Task.isCancelled else { return }
+                        itemPendingDelete = menuItem
+                        showingDeleteConfirmation = true
+                    }
+                },
+                onAddedToCollection: { _, _ in },
+                onRemoveFromCollection: {
+                    Task { await removeFromCollection(menuItem) }
+                }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.black)
+        }
+        .confirmationDialog("Delete this saved item?",
+                            isPresented: $showingDeleteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteGridMenuItem() }
+            }
+            Button("Cancel", role: .cancel) { itemPendingDelete = nil }
+        } message: {
+            Text(itemPendingDelete?.displayTitle ?? "")
+        }
+    }
+
+    /// Delete the video pending confirmation from the grid menu.
+    private func deleteGridMenuItem() async {
+        guard let target = itemPendingDelete else { return }
+        itemPendingDelete = nil
+        do {
+            try await viewModel.delete(item: target)
+            items.removeAll { $0.id == target.id }
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 

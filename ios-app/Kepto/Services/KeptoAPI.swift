@@ -218,6 +218,18 @@ final class KeptoAPI {
         try checkDeleteResponse(data, response)
     }
 
+    /// POST /api/items/:id/favorite — heart / unheart an item. Returns
+    /// the updated item. Needs migration 0005 on the backend; without
+    /// it the Worker returns an error.
+    func setFavorite(id: String, favorite: Bool) async throws -> Item {
+        let body = try JSONSerialization.data(withJSONObject: ["favorite": favorite])
+        let (data, response) = try await session.data(
+            for: authorizedRequest(url: url(path: "/api/items/\(id)/favorite"), method: "POST", jsonBody: body)
+        )
+        let decoded = try handle(data, response, as: FavoriteResponse.self)
+        return decoded.item
+    }
+
     /// Shared response handling for the DELETE endpoints (delete item,
     /// remove from a collection, delete a collection): 2xx = done,
     /// 401/404 map to the typed errors, anything else to the server's

@@ -32,6 +32,11 @@ struct LibraryView: View {
     @State private var saveNotice: String?
     /// The video the full-screen feed viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
+    /// The video whose grid long-press menu is open (nil = closed).
+    @State private var itemForGridMenu: Item?
+    /// The video awaiting delete confirmation from the grid menu.
+    @State private var itemPendingDelete: Item?
+    @State private var showingDeleteConfirmation = false
     /// "New collection" name alert (from the Collections section).
     @State private var showingNewCollection = false
     @State private var newCollectionName = ""
@@ -141,6 +146,45 @@ struct LibraryView: View {
                     onNearEnd: { await viewModel.loadMore() },
                     showCloseButton: true
                 )
+            }
+            .sheet(item: $itemForGridMenu) { menuItem in
+                GridItemMenuView(
+                    item: menuItem,
+                    onToggleFavorite: {
+                        Task {
+                            if let updated = await viewModel.toggleFavorite(item: menuItem) {
+                                saveNotice = updated.isFavorite ? "Đã thêm vào Favorite." : "Đã bỏ Favorite."
+                            }
+                        }
+                    },
+                    onDelete: {
+                        itemForGridMenu = nil
+                        Task { @MainActor in
+                            // Let the sheet dismiss before the delete
+                            // confirmation appears, or it may not show.
+                            try? await Task.sleep(for: .milliseconds(400))
+                            guard !Task.isCancelled else { return }
+                            itemPendingDelete = menuItem
+                            showingDeleteConfirmation = true
+                        }
+                    },
+                    onAddedToCollection: { name, added in
+                        saveNotice = added ? "Đã thêm vào \(name)." : "Đã có trong \(name)."
+                    }
+                )
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Color.black)
+            }
+            .confirmationDialog("Delete this saved item?",
+                                isPresented: $showingDeleteConfirmation,
+                                titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    Task { await deleteGridMenuItem() }
+                }
+                Button("Cancel", role: .cancel) { itemPendingDelete = nil }
+            } message: {
+                Text(itemPendingDelete?.displayTitle ?? "")
             }
             .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") { viewModel.errorMessage = nil }
@@ -337,6 +381,8 @@ struct LibraryView: View {
     /// 2pt gaps, rounded corners. The last cell loads the next page
     /// when it appears (waterfall); pull-to-refresh reloads.
     /// Tapping a cell opens the full-screen feed viewer at that video.
+    /// Long-pressing a cell (0.8s) opens the grid menu (Favorite /
+    /// Add to Collection / Delete).
     private var videoGrid: some View {
         ScrollView {
             LazyVGrid(columns: videoColumns, spacing: 2) {
@@ -344,7 +390,7 @@ struct LibraryView: View {
                     Button {
                         feedStartItem = item
                     } label: {
-                        VideoGridCell(item: item)
+                        VideoGridCell(item: item, onLongPress: { itemForGridMenu = $0 })
                     }
                     .buttonStyle(.plain)
                     .onAppear {
@@ -357,6 +403,17 @@ struct LibraryView: View {
         }
         .refreshable {
             await viewModel.fetch()
+        }
+    }
+
+    /// Delete the video pending confirmation from the grid menu.
+    private func deleteGridMenuItem() async {
+        guard let target = itemPendingDelete else { return }
+        itemPendingDelete = nil
+        do {
+            try await viewModel.delete(item: target)
+        } catch {
+            viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -511,45 +568,55 @@ struct LibraryView: View {
 /// The cover image is forced to fill the square (a 9:16 video frame is
 /// centre-cropped, never letterboxed), so the card reads as a square
 /// thumbnail exactly like TikTok's.
+///
+/// Sizing: a clear square sizes the card. Color has no intrinsic size,
+/// so aspectRatio(1) reliably makes it 1:1 — the old ZStack let the
+/// 9:16 cover image stretch the card tall (the 2026-11-10 screenshot
+/// showed tall cards, not squares), and a LazyVGrid row then stretched
+/// every card in the row. Overlay content cannot change the card's
+/// size, so the thumbnail can never stretch it again.
 private struct CollectionCard: View {
     let collection: CollectionInfo
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            cover
-            // Bottom gradient so the white overlay text stays legible.
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.65)],
-                startPoint: .center,
-                endPoint: .bottom
-            )
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Image(systemName: "bookmark")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(nameLine)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    if let handle = handleLine {
-                        Text(handle)
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay(alignment: .bottomLeading) {
+                ZStack(alignment: .bottomLeading) {
+                    cover
+                    // Bottom gradient so the white overlay text stays legible.
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.65)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+                    HStack(alignment: .bottom) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Image(systemName: "bookmark")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                            Text(nameLine)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            if let handle = handleLine {
+                                Text(handle)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: "lock")
+                            .font(.system(size: 15))
                             .foregroundStyle(.white)
-                            .lineLimit(1)
                     }
+                    .padding(12)
                 }
-                Spacer()
-                Image(systemName: "lock")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.white)
             }
-            .padding(12)
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     /// The cover, forced to fill the square card (centre-cropped).
@@ -586,35 +653,40 @@ private struct CollectionCard: View {
 /// cards): cover thumbnail (or a folder placeholder), name + video
 /// count overlaid at the bottom. The cover is forced to fill the
 /// square (centre-cropped, never letterboxed), like TikTok's.
+/// Sized by a clear square (see CollectionCard) so the 9:16 cover
+/// image can never stretch the card tall.
 private struct MyCollectionCard: View {
     let collection: MyCollection
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            cover
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.65)],
-                startPoint: .center,
-                endPoint: .bottom
-            )
-            VStack(alignment: .leading, spacing: 2) {
-                Image(systemName: "folder")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text(collection.name)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text("\(collection.count) video")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(1)
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay(alignment: .bottomLeading) {
+                ZStack(alignment: .bottomLeading) {
+                    cover
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.65)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white)
+                        Text(collection.name)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text("\(collection.count) video")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.85))
+                            .lineLimit(1)
+                    }
+                    .padding(12)
+                }
             }
-            .padding(12)
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     /// The cover, forced to fill the square card (centre-cropped).
@@ -646,9 +718,14 @@ private struct MyCollectionCard: View {
 ///
 /// NOTE: used by the home grid and by the collection detail page
 /// (a per-creator overview, like a TikTok profile grid). Tapping a
-/// cell opens the video in the full-screen feed viewer.
+/// cell opens the video in the full-screen feed viewer. Long-press
+/// (0.8s, auto-opens the menu — no need to lift the finger) calls
+/// `onLongPress` with the item; the parent presents the grid
+/// long-press menu (Favorite / Add to Collection / Delete). A red
+/// heart at the top-right marks a favorited video.
 struct VideoGridCell: View {
     let item: Item
+    var onLongPress: ((Item) -> Void)? = nil
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -681,9 +758,20 @@ struct VideoGridCell: View {
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
+            if item.isFavorite {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
         }
         .background(Color(.systemGray5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .onLongPressGesture(minimumDuration: 0.8) {
+            onLongPress?(item)
+        }
     }
 
     private var badgeText: String? {
@@ -762,5 +850,99 @@ struct AuthenticatedThumbnail: View {
             guard image == nil, let api = viewModel.api else { return }
             image = try? await api.fetchThumbnail(id: itemId)
         }
+    }
+}
+
+/// Long-press menu for a video in a grid (home, a collection, My
+/// collection): Favorite, Add to Collection, Delete — the same three
+/// actions as the feed menu minus Copy/Download/Playback speed (there
+/// is no player in a grid). The Add to Collection picker is the
+/// shared AddToCollectionPickerView. `onRemoveFromCollection` adds a
+/// fourth button (My collections only — it removes the video from
+/// that collection, it stays saved). The parent presents this as a
+/// sheet and handles the delete confirmation (the menu only reports
+/// the tap, like the feed menu does).
+struct GridItemMenuView: View {
+    let item: Item
+    let onToggleFavorite: () -> Void
+    let onDelete: () -> Void
+    /// Called after a successful add (collection name, newly added?).
+    let onAddedToCollection: (String, Bool) -> Void
+    var onRemoveFromCollection: (() -> Void)? = nil
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingCollectionPicker = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if showingCollectionPicker {
+                AddToCollectionPickerView(
+                    item: item,
+                    onAddedToCollection: onAddedToCollection,
+                    onCancel: { showingCollectionPicker = false }
+                )
+            } else {
+                HStack(spacing: 20) {
+                    menuButton(
+                        icon: item.isFavorite ? "heart.fill" : "heart",
+                        label: "Favorite",
+                        tint: item.isFavorite ? .red : .white
+                    ) {
+                        onToggleFavorite()
+                        dismiss()
+                    }
+                    menuButton(icon: "folder.badge.plus", label: "Add to collection") {
+                        showingCollectionPicker = true
+                    }
+                    if let onRemoveFromCollection {
+                        menuButton(icon: "folder.badge.minus", label: "Remove from collection") {
+                            onRemoveFromCollection()
+                            dismiss()
+                        }
+                    }
+                    menuButton(icon: "trash", label: "Delete", tint: .red) {
+                        onDelete()
+                    }
+                }
+                .padding(.top, 20)
+                Divider()
+                    .background(Color.white.opacity(0.2))
+                    .padding(.vertical, 16)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.collectionName)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    if let caption = item.caption,
+                       !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(caption)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+            }
+            Spacer()
+        }
+        .background(Color.black)
+        .preferredColorScheme(.dark)
+    }
+
+    private func menuButton(icon: String, label: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 56, height: 56)
+                    .background(tint == .red ? Color.red.opacity(0.15) : Color.white.opacity(0.12))
+                    .clipShape(Circle())
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(tint)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }

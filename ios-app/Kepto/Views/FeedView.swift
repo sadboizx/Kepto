@@ -390,7 +390,7 @@ private struct FeedVideoPage: View {
                 guard item.status == .ready, !isImage else { return }
                 togglePlay()
             }
-            .onLongPressGesture(minimumDuration: 0.5) {
+            .onLongPressGesture(minimumDuration: 0.8) {
                 guard item.status == .ready else { return }
                 showingLongPressMenu = true
             }
@@ -403,6 +403,13 @@ private struct FeedVideoPage: View {
                 onCopyLink: { Task { await copyLink() } },
                 onDownload: { Task { await downloadVideo() } },
                 onSelectRate: { selectRate($0) },
+                onToggleFavorite: {
+                    Task {
+                        if let updated = await viewModel.toggleFavorite(item: item) {
+                            showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
+                        }
+                    }
+                },
                 onDelete: {
                     showingLongPressMenu = false
                     Task { @MainActor in
@@ -662,6 +669,7 @@ private struct LongPressMenuView: View {
     let onCopyLink: () -> Void
     let onDownload: () -> Void
     let onSelectRate: (Float) -> Void
+    let onToggleFavorite: () -> Void
     let onDelete: () -> Void
     /// Called after a successful add (collection name, newly added?).
     let onAddedToCollection: (String, Bool) -> Void
@@ -670,9 +678,6 @@ private struct LongPressMenuView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingSpeedPicker = false
     @State private var showingCollectionPicker = false
-    @State private var newCollectionName = ""
-    @State private var pickerError: String?
-    @State private var isAdding = false
 
     private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -696,9 +701,18 @@ private struct LongPressMenuView: View {
         .preferredColorScheme(.dark)
     }
 
-    /// The five action buttons in one row.
+    /// The six action buttons in one row. Circles are 48pt (not 56pt)
+    /// so six of them fit on a phone screen.
     private var actionRow: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 12) {
+            menuButton(
+                icon: item.isFavorite ? "heart.fill" : "heart",
+                label: "Favorite",
+                tint: item.isFavorite ? .red : .white
+            ) {
+                onToggleFavorite()
+                dismiss()
+            }
             menuButton(icon: "link", label: "Copy link") {
                 onCopyLink()
                 dismiss()
@@ -758,14 +772,57 @@ private struct LongPressMenuView: View {
         .padding(.horizontal, 20)
     }
 
-    /// "Add to collection" picker: the user's collections plus a row
-    /// to create a new one. The list refreshes when it opens (the
-    /// feed may never have visited the Collections section).
+    /// "Add to collection" picker (shared view — see
+    /// AddToCollectionPickerView).
     private var collectionPicker: some View {
+        AddToCollectionPickerView(
+            item: item,
+            onAddedToCollection: onAddedToCollection,
+            onCancel: { showingCollectionPicker = false }
+        )
+    }
+
+    private func menuButton(icon: String, label: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 48, height: 48)
+                    .background(tint == .red ? Color.red.opacity(0.15) : Color.white.opacity(0.12))
+                    .clipShape(Circle())
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(tint)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+
+/// "Add to collection" picker: the user's collections plus a row to
+/// create a new one. The list refreshes when it opens. Shared by the
+/// feed long-press menu and the grid long-press menu (both show it
+/// inline in the sheet). `onCancel` returns to the action row.
+struct AddToCollectionPickerView: View {
+    let item: Item
+    /// Called after a successful add (collection name, newly added?).
+    let onAddedToCollection: (String, Bool) -> Void
+    let onCancel: () -> Void
+
+    @EnvironmentObject private var viewModel: LibraryViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var newCollectionName = ""
+    @State private var pickerError: String?
+    @State private var isAdding = false
+
+    var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Button {
-                    showingCollectionPicker = false
+                    onCancel()
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 16, weight: .semibold))
@@ -852,8 +909,7 @@ private struct LongPressMenuView: View {
                 }
                 .padding(.top, 8)
             }
-        }
-        .task {
+        }        .task {
             await viewModel.fetchMyCollections()
         }
     }
@@ -885,26 +941,8 @@ private struct LongPressMenuView: View {
             onAddedToCollection(created.name, added)
             dismiss()
         } else {
-            pickerError = "Đã tạo \"\(created.name)\" nhưng chưa thêm được video."
+            pickerError = "Đã tạo \(created.name) nhưng chưa thêm được video."
         }
-    }
-
-    private func menuButton(icon: String, label: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 56, height: 56)
-                    .background(tint == .red ? Color.red.opacity(0.15) : Color.white.opacity(0.12))
-                    .clipShape(Circle())
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(tint)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .buttonStyle(.plain)
     }
 }
 

@@ -313,6 +313,27 @@ final class LibraryViewModel: ObservableObject {
         items.removeAll { $0.id == item.id }
     }
 
+    /// Heart / unheart an item. Updates the item in place (so the grid
+    /// and the feed show the new state at once). Returns the updated
+    /// item on success; on failure the error surfaces through the
+    /// view model's error alert.
+    func toggleFavorite(item: Item) async -> Item? {
+        guard let api else {
+            errorMessage = KeptoAPIError.notConfigured.errorDescription
+            return nil
+        }
+        do {
+            let updated = try await api.setFavorite(id: item.id, favorite: !item.isFavorite)
+            if let index = items.firstIndex(where: { $0.id == item.id }) {
+                items[index] = updated
+            }
+            return updated
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return nil
+        }
+    }
+
     /// Refresh one item in place (used after returning from the detail view,
     /// e.g. a pending item may have become ready).
     func refreshItem(_ item: Item) async {

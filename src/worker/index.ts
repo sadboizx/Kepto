@@ -29,6 +29,7 @@
  * - DELETE /api/my-collections/:id/items/:itemId
  * - DELETE /api/my-collections/:id
  * - GET  /api/items/:id       metadata for one item
+ * - POST /api/items/:id/favorite { favorite } -> 200 { item } (heart)
  * - GET  /api/play/:id        streams the media from R2, Range/seek supported
  * - GET  /api/thumb/:id       streams the thumbnail from R2
  * - GET  /api/preview/:id     streams the scrub-preview sprite from R2
@@ -78,6 +79,7 @@ import {
   normalizeSaveUrl,
   removeItemFromMyCollection,
   resetForRetry,
+  setFavorite,
   type IngestResult,
   type Item,
 } from "./db";
@@ -329,6 +331,7 @@ app.get("/api/list", async (c) => {
     q,
     authorUsername,
     media,
+    favorite: c.req.query("favorite") === "1",
     limit,
     cursor,
   });
@@ -459,6 +462,30 @@ app.delete("/api/items/:id", async (c) => {
   );
   await deleteItem(c.env.DB, item.id);
   return c.json({ ok: true, deleted: item.id });
+});
+
+/**
+ * Favorite / unfavorite an item (heart). POST /api/items/:id/favorite
+ * { favorite: true|false } -> 200 { item }. Needs migration 0005
+ * (is_favorite column); without it the UPDATE fails and the app
+ * shows the error.
+ */
+app.post("/api/items/:id/favorite", async (c) => {
+  let body: unknown;
+  try {
+    body = await readJson(c);
+  } catch {
+    return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
+  }
+  const favorite = (body as { favorite?: unknown })?.favorite;
+  if (typeof favorite !== "boolean") {
+    return c.json({ ok: false, error: "favorite phải là true/false." }, 422);
+  }
+  const item = await getItem(c.env.DB, c.req.param("id"));
+  if (!item) return c.json({ ok: false, error: "Không tìm thấy item." }, 404);
+  await setFavorite(c.env.DB, item.id, favorite);
+  const updated = await getItem(c.env.DB, item.id);
+  return c.json({ ok: true, item: updated });
 });
 
 /** Ingest service callback. Success marks the item ready; failure records the error. */

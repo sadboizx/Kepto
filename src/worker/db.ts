@@ -36,6 +36,8 @@ export interface Item {
   preview_interval: number | null;
   preview_count: number | null;
   view_count: number | null;
+  /** 1 = favorited (heart), 0 = not. Added by migration 0005. */
+  is_favorite: number | null;
   status: "pending" | "ready" | "failed";
   ingest_error: string | null;
   created_at: string;
@@ -113,11 +115,25 @@ export async function resetForRetry(db: D1Database, id: string): Promise<void> {
     .run();
 }
 
+/** Favorite / unfavorite an item (heart). Added by migration 0005. */
+export async function setFavorite(
+  db: D1Database,
+  id: string,
+  favorite: boolean,
+): Promise<void> {
+  await db
+    .prepare(`UPDATE items SET is_favorite = ?1 WHERE id = ?2`)
+    .bind(favorite ? 1 : 0, id)
+    .run();
+}
+
 export interface ListParams {
   userId: string;
   platform?: string;
   status?: string;
   q?: string;
+  /** True = only favorited items (is_favorite = 1). */
+  favorite?: boolean;
   /** Filter to one collection. The sentinel "__unknown__" means NULL username. */
   authorUsername?: string;
   /** "video" = content_type starts with video/, "image" = starts with image/. */
@@ -141,6 +157,9 @@ export async function listItems(
   if (p.status) {
     where.push(`status = ${next()}`);
     binds.push(p.status);
+  }
+  if (p.favorite) {
+    where.push(`is_favorite = 1`);
   }
   if (p.authorUsername !== undefined) {
     if (p.authorUsername === "__unknown__") {

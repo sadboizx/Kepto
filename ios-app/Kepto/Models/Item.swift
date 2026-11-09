@@ -78,6 +78,10 @@ struct Item: Codable, Identifiable, Equatable {
     /// View count from the extractor (TikTok), when the metadata probe
     /// could read it. Null for older saves and for probes that failed.
     let viewCount: Int?
+    /// True when the item is favorited (heart). Defaults to false when
+    /// the key is missing (the backend only sends it after migration
+    /// 0005) — a missing key must never fail decoding the whole item.
+    let isFavorite: Bool = false
     let status: ItemStatus
     let ingestError: String?
     let createdAt: String
@@ -198,6 +202,11 @@ struct ListResponse: Decodable {
 }
 
 struct ItemResponse: Decodable {
+    let ok: Bool
+    let item: Item
+}
+
+struct FavoriteResponse: Decodable {
     let ok: Bool
     let item: Item
 }
