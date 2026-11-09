@@ -150,11 +150,11 @@ struct ScrubPreviewPlayer: View {
     @ViewBuilder
     private func scrubPreview(at barWidth: CGFloat) -> some View {
         let frame = frameImage(for: scrubSeconds)
-        let aspect = frame.map { $0.size.width / max($0.size.height, 1) } ?? (16 / 9)
+        let aspect: CGFloat = frame.map { $0.size.width / max($0.size.height, 1.0) } ?? (16.0 / 9.0)
         let imageHeight: CGFloat = 120
         let imageWidth = imageHeight * aspect
         let popupWidth = imageWidth
-        let centerX = min(max(barWidth * scrubFraction, popupWidth / 2 + 4), barWidth - popupWidth / 2 - 4)
+        let centerX = min(max(barWidth * scrubFraction, popupWidth / 2.0 + 4.0), barWidth - popupWidth / 2.0 - 4.0)
         // Lift the popup so its bottom edge sits just above the bar.
         let lift = (imageHeight + 26) / 2 + 22
         VStack(spacing: 4) {
