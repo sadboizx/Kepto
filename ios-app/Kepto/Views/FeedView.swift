@@ -390,7 +390,7 @@ private struct FeedVideoPage: View {
                 guard item.status == .ready, !isImage else { return }
                 togglePlay()
             }
-            .onLongPressGesture(minimumDuration: 0.8) {
+            .onLongPressGesture(minimumDuration: 0.25) {
                 guard item.status == .ready else { return }
                 showingLongPressMenu = true
             }

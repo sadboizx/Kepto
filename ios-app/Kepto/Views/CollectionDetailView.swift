@@ -33,12 +33,11 @@ struct CollectionDetailView: View {
             VStack(spacing: 0) {
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(items) { item in
-                        Button {
-                            feedStartItem = item
-                        } label: {
-                            VideoGridCell(item: item, onLongPress: { itemForGridMenu = $0 })
-                        }
-                        .buttonStyle(.plain)
+                        VideoGridCell(
+                            item: item,
+                            onTap: { feedStartItem = item },
+                            onLongPress: { itemForGridMenu = $0 }
+                        )
                     }
                 }
                 if nextCursor != nil {
@@ -180,7 +179,7 @@ struct CollectionDetailView: View {
 /// One user-created collection's videos: a 3-column portrait grid,
 /// newest-added first. Tapping a video opens it in the full-screen
 /// feed (swipe up/down for the next video in this collection).
-/// Long-press a cell (0.8s) opens the grid menu (Favorite / Add to
+/// Long-press a cell (0.25s) opens the grid menu (Favorite / Add to
 /// Collection / Remove from collection / Delete). The toolbar trash
 /// button deletes the whole collection (its videos stay saved).
 struct MyCollectionDetailView: View {
@@ -213,12 +212,11 @@ struct MyCollectionDetailView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(items) { item in
-                    Button {
-                        feedStartItem = item
-                    } label: {
-                        VideoGridCell(item: item, onLongPress: { itemForGridMenu = $0 })
-                    }
-                    .buttonStyle(.plain)
+                    VideoGridCell(
+                        item: item,
+                        onTap: { feedStartItem = item },
+                        onLongPress: { itemForGridMenu = $0 }
+                    )
                 }
             }
             if nextCursor != nil {

@@ -381,18 +381,17 @@ struct LibraryView: View {
     /// 2pt gaps, rounded corners. The last cell loads the next page
     /// when it appears (waterfall); pull-to-refresh reloads.
     /// Tapping a cell opens the full-screen feed viewer at that video.
-    /// Long-pressing a cell (0.8s) opens the grid menu (Favorite /
+    /// Long-pressing a cell (0.25s) opens the grid menu (Favorite /
     /// Add to Collection / Delete).
     private var videoGrid: some View {
         ScrollView {
             LazyVGrid(columns: videoColumns, spacing: 2) {
                 ForEach(viewModel.items) { item in
-                    Button {
-                        feedStartItem = item
-                    } label: {
-                        VideoGridCell(item: item, onLongPress: { itemForGridMenu = $0 })
-                    }
-                    .buttonStyle(.plain)
+                    VideoGridCell(
+                        item: item,
+                        onTap: { feedStartItem = item },
+                        onLongPress: { itemForGridMenu = $0 }
+                    )
                     .onAppear {
                         if item.id == viewModel.items.last?.id {
                             Task { await viewModel.loadMore() }
@@ -719,12 +718,19 @@ private struct MyCollectionCard: View {
 /// NOTE: used by the home grid and by the collection detail page
 /// (a per-creator overview, like a TikTok profile grid). Tapping a
 /// cell opens the video in the full-screen feed viewer. Long-press
-/// (0.8s, auto-opens the menu — no need to lift the finger) calls
+/// (0.25s, auto-opens the menu — no need to lift the finger) calls
 /// `onLongPress` with the item; the parent presents the grid
 /// long-press menu (Favorite / Add to Collection / Delete). A red
 /// heart at the top-right marks a favorited video.
+///
+/// Tap and long-press are BOTH on this cell (no Button wrapper in
+/// the parent): a Button around the cell swallowed the tap once a
+/// long-press gesture was added inside it (v16 regression — cells
+/// stopped opening the feed). With both gestures on the same view,
+/// SwiftUI resolves tap vs long-press correctly.
 struct VideoGridCell: View {
     let item: Item
+    var onTap: (() -> Void)? = nil
     var onLongPress: ((Item) -> Void)? = nil
 
     var body: some View {
@@ -769,7 +775,10 @@ struct VideoGridCell: View {
         }
         .background(Color(.systemGray5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onLongPressGesture(minimumDuration: 0.8) {
+        .onTapGesture {
+            onTap?()
+        }
+        .onLongPressGesture(minimumDuration: 0.25) {
             onLongPress?(item)
         }
     }
