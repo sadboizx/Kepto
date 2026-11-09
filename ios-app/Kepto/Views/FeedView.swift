@@ -6,10 +6,13 @@ import UIKit
 /// TikTok-style full-screen video viewer: one video at a time,
 /// full-width, swipe up/down for the next video. Opened from a grid
 /// (the home screen or a collection) — the home itself is a grid, not
-/// a feed. The video is a 9:16 box at the top (full-width, top edge
-/// under the status bar, never cropped), with a clear gap below it
-/// for the username and caption, then the progress bar. The status
-/// bar text is white over the video.
+/// a feed. The video fills the whole screen edge-to-edge
+/// (`.resizeAspectFill`, TikTok-style: top under the status bar,
+/// bottom to the screen edge, sides cropped slightly on a tall
+/// screen). The username and caption overlay the video at the
+/// bottom-left, and the progress bar sits right at the bottom edge
+/// of the video, just above the Home Indicator. The status bar text
+/// is white over the video.
 ///
 /// Each page owns its AVPlayer: created when the page appears, played
 /// only while it is the current page. The player is KEPT (paused) when
@@ -238,17 +241,15 @@ struct FeedView: View {
     }
 }
 
-/// One full-screen page in the feed: the video (or photo) in a 9:16
-/// box at the top (full-width, top edge under the status bar, never
-/// cropped), a clear gap below it showing the username and caption,
-/// and the progress bar at the bottom. The player is created on
-/// appear and kept (paused) when the page scrolls away — see the
-/// note on `schedulePlay` for why it is not destroyed. It plays
-/// only while this page is the current one, and loops. A thin
-/// progress bar sits above the Home Indicator, with a clear gap
-/// below it so a swipe never lands on the indicator by mistake.
-/// Long-press opens the TikTok-style menu (Copy link, Download,
-/// Playback speed, username + caption).
+/// One full-screen page in the feed: the video (or photo) filling
+/// the screen edge-to-edge (`.resizeAspectFill`, TikTok-style), the
+/// username and caption overlaid bottom-left on the video, and the
+/// progress bar right at the bottom edge, just above the Home
+/// Indicator. The player is created on appear and kept (paused)
+/// when the page scrolls away — see the note on `schedulePlay`
+/// for why it is not destroyed. It plays only while this page is
+/// the current one, and loops. Long-press opens the TikTok-style
+/// menu (Copy link, Download, Playback speed, username + caption).
 private struct FeedVideoPage: View {
     let item: Item
     let isCurrent: Bool
@@ -283,112 +284,132 @@ private struct FeedVideoPage: View {
 
     var body: some View {
         GeometryReader { geo in
-            // The video is a 9:16 box at the top (full-width, top edge
-            // under the status bar), leaving a clear gap below it for
-            // the username/caption and the progress bar. Capped at
-            // 82% of the screen so the gap always exists, even on a
-            // shorter screen.
-            let videoHeight = min(geo.size.width * 16 / 9, geo.size.height * 0.82)
-            VStack(spacing: 0) {
-                ZStack {
-                    Color.black
-                    if item.status == .ready, !isImage {
-                        if let player {
-                            PlayerView(player: player)
-                        } else {
-                            ProgressView().tint(.white)
-                        }
-                    } else if item.status == .ready, isImage {
-                        if let fullImage {
-                            Image(uiImage: fullImage)
-                                .resizable()
-                                .scaledToFit()
-                        } else {
-                            ProgressView().tint(.white)
-                        }
-                    } else if item.status == .pending {
-                        VStack(spacing: 12) {
-                            ProgressView().tint(.white)
-                            Text("Đang xử lý…")
-                                .font(.subheadline)
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                    } else {
-                        VStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.title2)
-                                .foregroundStyle(.red)
-                            Text(item.friendlyIngestError)
-                                .font(.subheadline)
-                                .foregroundStyle(.white.opacity(0.8))
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 32)
-                        }
-                    }
-                    if let tapIcon {
-                        Image(systemName: tapIcon)
-                            .font(.system(size: 72))
-                            .foregroundStyle(.white.opacity(0.85))
-                    }
-                }
-                .frame(height: videoHeight)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard item.status == .ready, !isImage else { return }
-                    togglePlay()
-                }
-                .onLongPressGesture(minimumDuration: 0.5) {
-                    guard item.status == .ready else { return }
-                    showingLongPressMenu = true
-                }
-                // Username + caption in the clear gap below the video
-                // — easy to read, and no button covers them (the "…"
-                // rail button sits over the video, mid-screen).
-                if item.status == .ready {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(item.collectionName)
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                        if let caption = item.caption,
-                           !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(caption)
-                                .font(.subheadline)
-                                .foregroundStyle(.white.opacity(0.85))
-                                .lineLimit(2)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                }
-                Spacer(minLength: 0)
-                if let notice {
-                    Text(notice)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.7))
-                        .clipShape(Capsule())
-                        .padding(.bottom, 10)
-                }
+            // TikTok layout: the video fills the whole screen
+            // edge-to-edge (top under the status bar, bottom to the
+            // screen edge). The username/caption overlay the video
+            // at the bottom-left, and the progress bar sits right
+            // at the bottom edge of the video, just above the Home
+            // Indicator.
+            ZStack {
+                Color.black
                 if item.status == .ready, !isImage {
-                    FeedProgressBar(
-                        currentTime: currentTime,
-                        duration: duration,
-                        isScrubbing: $isScrubbing,
-                        item: item,
-                        sprite: sprite,
-                        frameCache: frameCache,
-                        onSeek: { seconds in seek(to: seconds) }
-                    )
-                    // Clear gap below the bar: the safe-area inset
-                    // (Home Indicator) plus 16pt, so a swipe or a tap
-                    // on the bar never lands on the indicator.
-                    .padding(.bottom, geo.safeAreaInsets.bottom + 16)
+                    if let player {
+                        PlayerView(player: player, videoGravity: .resizeAspectFill)
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                } else if item.status == .ready, isImage {
+                    if let fullImage {
+                        Image(uiImage: fullImage)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                } else if item.status == .pending {
+                    VStack(spacing: 12) {
+                        ProgressView().tint(.white)
+                        Text("Đang xử lý…")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.title2)
+                            .foregroundStyle(.red)
+                        Text(item.friendlyIngestError)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                    }
                 }
+                if let tapIcon {
+                    Image(systemName: tapIcon)
+                        .font(.system(size: 72))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+                // Bottom gradient so the username/caption stay legible
+                // over the video (TikTok-style).
+                if item.status == .ready {
+                    VStack {
+                        Spacer()
+                        LinearGradient(
+                            colors: [.clear, .black.opacity(0.55)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 180)
+                    }
+                }
+                // Username + caption, overlaid bottom-left on the
+                // video (TikTok-style), directly above the progress
+                // bar. The "…" rail button sits mid-screen on the
+                // right, so nothing covers this text.
+                // Progress bar, TikTok position: right at the bottom
+                // edge of the video, thin, just above the Home
+                // Indicator (a small gap, not touching it).
+                VStack(spacing: 0) {
+                    Spacer()
+                    if item.status == .ready {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.collectionName)
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            if let caption = item.caption,
+                               !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(caption)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white.opacity(0.85))
+                                    .lineLimit(2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        // 10pt above the progress bar (or above the
+                        // Home Indicator when there is no bar, i.e.
+                        // photo posts).
+                        .padding(.bottom, isImage ? geo.safeAreaInsets.bottom + 8 : 10)
+                    }
+                    if item.status == .ready, !isImage {
+                        FeedProgressBar(
+                            currentTime: currentTime,
+                            duration: duration,
+                            isScrubbing: $isScrubbing,
+                            item: item,
+                            sprite: sprite,
+                            frameCache: frameCache,
+                            onSeek: { seconds in seek(to: seconds) }
+                        )
+                        .padding(.bottom, geo.safeAreaInsets.bottom + 8)
+                    }
+                }
+                // Transient notice (Copy link / Download result).
+                if let notice {
+                    VStack {
+                        Spacer()
+                        Text(notice)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.7))
+                            .clipShape(Capsule())
+                            .padding(.bottom, 90)
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard item.status == .ready, !isImage else { return }
+                togglePlay()
+            }
+            .onLongPressGesture(minimumDuration: 0.5) {
+                guard item.status == .ready else { return }
+                showingLongPressMenu = true
             }
         }
         .background(Color.black)
