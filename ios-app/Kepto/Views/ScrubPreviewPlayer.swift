@@ -314,11 +314,11 @@ final class SpriteFrameCache: ObservableObject {
 /// Internal (not private): the full-screen feed reuses it for its pages.
 struct PlayerView: UIViewRepresentable {
     let player: AVPlayer
-    /// How the video fills its layer. The detail player fits the
-    /// whole frame (`.resizeAspect`, never cropped); the full-screen
-    /// feed fills the screen edge-to-edge (`.resizeAspectFill`,
-    /// TikTok-style — the sides are cropped slightly so the video
-    /// reaches the status bar instead of letterboxing).
+    /// How the video fills its layer. The detail player and the
+    /// feed both fit the whole frame (`.resizeAspect`, never
+    /// cropped) — the feed shows the video in a 9:16 box, so a 9:16
+    /// video fills it exactly. Pass `.resizeAspectFill` to fill a
+    /// layer edge-to-edge instead (sides cropped slightly).
     var videoGravity: AVLayerVideoGravity = .resizeAspect
 
     func makeUIView(context: Context) -> PlayerUIView {

@@ -1,13 +1,15 @@
 import AVFoundation
+import Photos
 import SwiftUI
 import UIKit
 
 /// TikTok-style full-screen video viewer: one video at a time,
 /// full-width, swipe up/down for the next video. Opened from a grid
 /// (the home screen or a collection) — the home itself is a grid, not
-/// a feed. The video fills the whole screen edge-to-edge
-/// (`.resizeAspectFill`, TikTok-style) and runs behind the status bar;
-/// the status bar text is white over the video.
+/// a feed. The video is a 9:16 box at the top (full-width, top edge
+/// under the status bar, never cropped), with a clear gap below it
+/// for the username and caption, then the progress bar. The status
+/// bar text is white over the video.
 ///
 /// Each page owns its AVPlayer: created when the page appears, played
 /// only while it is the current page. The player is KEPT (paused) when
@@ -20,6 +22,10 @@ import UIKit
 /// A thin progress bar sits above the Home Indicator (drag to scrub,
 /// with the sprite preview popup). The background is black throughout.
 /// Photo posts show the full image instead of a player.
+///
+/// Long-pressing a video opens a TikTok-style bottom sheet: Copy
+/// link, Download (saves to Photos), Playback speed, and the video's
+/// username + caption. No Share-with / Repost / friends list.
 struct FeedView: View {
     /// The list to page through. A Binding so appends from `onNearEnd`
     /// (the library's loadMore, or a collection's) are visible here.
@@ -232,14 +238,17 @@ struct FeedView: View {
     }
 }
 
-/// One full-screen page in the feed: the video (or photo) on a black
-/// background, filling the screen edge-to-edge (`.resizeAspectFill`,
-/// TikTok-style) so it runs behind the status bar. The player is
-/// created on appear and kept (paused) when the page scrolls away —
-/// see the note on `schedulePlay` for why it is not destroyed.
-/// It plays only while this page is the current one, and loops.
-/// A thin progress bar sits above the Home Indicator, with a clear
-/// gap below it so a swipe never lands on the indicator by mistake.
+/// One full-screen page in the feed: the video (or photo) in a 9:16
+/// box at the top (full-width, top edge under the status bar, never
+/// cropped), a clear gap below it showing the username and caption,
+/// and the progress bar at the bottom. The player is created on
+/// appear and kept (paused) when the page scrolls away — see the
+/// note on `schedulePlay` for why it is not destroyed. It plays
+/// only while this page is the current one, and loops. A thin
+/// progress bar sits above the Home Indicator, with a clear gap
+/// below it so a swipe never lands on the indicator by mistake.
+/// Long-press opens the TikTok-style menu (Copy link, Download,
+/// Playback speed, username + caption).
 private struct FeedVideoPage: View {
     let item: Item
     let isCurrent: Bool
@@ -259,17 +268,33 @@ private struct FeedVideoPage: View {
     /// stops being current or disappears.
     @State private var playTask: Task<Void, Never>?
     @State private var fullImage: UIImage?
+    /// Playback speed from the long-press menu (1.0 = normal).
+    @State private var playbackRate: Float = 1.0
+    /// Long-press menu (bottom sheet).
+    @State private var showingLongPressMenu = false
+    /// Whether the video was playing when the long-press menu opened
+    /// (it pauses while the menu is up, and resumes on dismiss).
+    @State private var wasPlayingBeforeMenu = false
+    /// Short notice above the progress bar (e.g. "Đã copy link").
+    @State private var notice: String?
+    @State private var noticeTask: Task<Void, Never>?
 
     private var isImage: Bool { item.contentType?.hasPrefix("image/") == true }
 
     var body: some View {
         GeometryReader { geo in
+            // The video is a 9:16 box at the top (full-width, top edge
+            // under the status bar), leaving a clear gap below it for
+            // the username/caption and the progress bar. Capped at
+            // 82% of the screen so the gap always exists, even on a
+            // shorter screen.
+            let videoHeight = min(geo.size.width * 16 / 9, geo.size.height * 0.82)
             VStack(spacing: 0) {
                 ZStack {
                     Color.black
                     if item.status == .ready, !isImage {
                         if let player {
-                            PlayerView(player: player, videoGravity: .resizeAspectFill)
+                            PlayerView(player: player)
                         } else {
                             ProgressView().tint(.white)
                         }
@@ -306,10 +331,48 @@ private struct FeedVideoPage: View {
                             .foregroundStyle(.white.opacity(0.85))
                     }
                 }
+                .frame(height: videoHeight)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     guard item.status == .ready, !isImage else { return }
                     togglePlay()
+                }
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    guard item.status == .ready else { return }
+                    showingLongPressMenu = true
+                }
+                // Username + caption in the clear gap below the video
+                // — easy to read, and no button covers them (the "…"
+                // rail button sits over the video, mid-screen).
+                if item.status == .ready {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.collectionName)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        if let caption = item.caption,
+                           !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(caption)
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.85))
+                                .lineLimit(2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                }
+                Spacer(minLength: 0)
+                if let notice {
+                    Text(notice)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.7))
+                        .clipShape(Capsule())
+                        .padding(.bottom, 10)
                 }
                 if item.status == .ready, !isImage {
                     FeedProgressBar(
@@ -329,6 +392,18 @@ private struct FeedVideoPage: View {
             }
         }
         .background(Color.black)
+        .sheet(isPresented: $showingLongPressMenu) {
+            LongPressMenuView(
+                item: item,
+                playbackRate: playbackRate,
+                onCopyLink: { Task { await copyLink() } },
+                onDownload: { Task { await downloadVideo() } },
+                onSelectRate: { selectRate($0) }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.black)
+        }
         .onAppear {
             setupPlayer()
             if isCurrent { schedulePlay() }
@@ -364,8 +439,18 @@ private struct FeedVideoPage: View {
             if scrubbing {
                 player?.pause()
             } else if isCurrent {
-                player?.play()
-                isPlaying = true
+                playCurrent()
+            }
+        }
+        .onChange(of: showingLongPressMenu) { _, showing in
+            // TikTok pauses the video while the long-press menu is
+            // up, and resumes it (at the chosen speed) on dismiss.
+            if showing {
+                wasPlayingBeforeMenu = isPlaying
+                player?.pause()
+                isPlaying = false
+            } else if wasPlayingBeforeMenu, isCurrent {
+                playCurrent()
             }
         }
     }
@@ -418,10 +503,11 @@ private struct FeedVideoPage: View {
     }
 
     /// Seek to the current frame (restart from the top if the video
-    /// already ended) and play. The seek is what makes the layer
-    /// render a frame instead of staying frozen/black.
+    /// already ended) and play at the chosen speed. The seek is what
+    /// makes the layer render a frame instead of staying frozen/black.
     private func playCurrent() {
         guard let player, isCurrent else { return }
+        let rate = playbackRate
         let target: CMTime
         if duration > 0 && currentTime >= duration - 0.5 {
             target = .zero
@@ -429,9 +515,66 @@ private struct FeedVideoPage: View {
             target = player.currentTime()
         }
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak player] _ in
-            player?.play()
+            player?.rate = rate
         }
         isPlaying = true
+    }
+
+    /// Playback speed from the long-press menu. Applies immediately
+    /// when the video is playing; otherwise it applies on resume.
+    private func selectRate(_ rate: Float) {
+        playbackRate = rate
+        if isPlaying {
+            player?.rate = rate
+        }
+    }
+
+    /// Copy the original post link (the TikTok/Instagram/… link the
+    /// video was saved from, not a Kepto link) to the clipboard.
+    private func copyLink() async {
+        UIPasteboard.general.string = item.originalUrl
+        showNotice("Đã copy link")
+    }
+
+    /// Download the video file and save it to the Photos library
+    /// (camera roll), like TikTok's Download. Prompts for the Photos
+    /// "add only" permission on first use.
+    private func downloadVideo() async {
+        guard let api = viewModel.api else { return }
+        do {
+            let fileURL = try await api.downloadVideoFile(for: item)
+            try await saveVideoToPhotos(fileURL: fileURL)
+            showNotice("Đã lưu video vào Photos")
+        } catch {
+            showNotice("Không lưu được video")
+        }
+    }
+
+    private func saveVideoToPhotos(fileURL: URL) async throws {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        if status == .notDetermined {
+            let newStatus = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            guard newStatus == .authorized || newStatus == .limited else {
+                throw KeptoAPIError.server("Chưa cấp quyền Photos.")
+            }
+        } else if status != .authorized && status != .limited {
+            throw KeptoAPIError.server("Chưa cấp quyền Photos.")
+        }
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+            request.addResource(with: .video, fileURL: fileURL, options: nil)
+        }
+    }
+
+    /// Shows a short notice above the progress bar, then hides it.
+    private func showNotice(_ text: String) {
+        noticeTask?.cancel()
+        notice = text
+        noticeTask = Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            notice = nil
+        }
     }
 
     /// Sound fix (same as the detail player): the app's default audio
@@ -483,6 +626,100 @@ private struct FeedVideoPage: View {
     private func loadFullImage() async {
         guard fullImage == nil, let api = viewModel.api else { return }
         fullImage = try? await api.fetchThumbnail(id: item.id)
+    }
+}
+
+/// Long-press menu (TikTok-style bottom sheet): only the actions the
+/// user asked to keep — Copy link, Download, Playback speed — plus
+/// the video's username and caption. No Share-with / Repost / friends
+/// list: this app has no social graph, and the sheet stays clean.
+private struct LongPressMenuView: View {
+    let item: Item
+    let playbackRate: Float
+    let onCopyLink: () -> Void
+    let onDownload: () -> Void
+    let onSelectRate: (Float) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var showingSpeedPicker = false
+
+    private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 32) {
+                menuButton(icon: "link", label: "Copy link") {
+                    onCopyLink()
+                    dismiss()
+                }
+                menuButton(icon: "arrow.down.to.line", label: "Download") {
+                    onDownload()
+                    dismiss()
+                }
+                menuButton(icon: "gauge", label: "Playback speed") {
+                    showingSpeedPicker.toggle()
+                }
+            }
+            .padding(.top, 20)
+            if showingSpeedPicker {
+                HStack(spacing: 8) {
+                    ForEach(speeds, id: \.self) { rate in
+                        Button {
+                            onSelectRate(rate)
+                            dismiss()
+                        } label: {
+                            Text(String(format: "%gx", rate))
+                                .font(.subheadline)
+                                .fontWeight(rate == playbackRate ? .semibold : .regular)
+                                .foregroundStyle(rate == playbackRate ? Color.black : Color.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(rate == playbackRate ? Color.white : Color.white.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, 14)
+            }
+            Divider()
+                .background(Color.white.opacity(0.2))
+                .padding(.vertical, 16)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.collectionName)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                if let caption = item.caption,
+                   !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(caption)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            Spacer()
+        }
+        .background(Color.black)
+        .preferredColorScheme(.dark)
+    }
+
+    private func menuButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 56, height: 56)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Circle())
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

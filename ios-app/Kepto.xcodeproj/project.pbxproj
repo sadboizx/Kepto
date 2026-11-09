@@ -337,6 +337,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Kepto/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kepto;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Kepto saves downloaded videos to your Photos library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";
@@ -365,6 +366,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Kepto/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Kepto;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Kepto saves downloaded videos to your Photos library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = "";

@@ -246,4 +246,33 @@ final class KeptoAPI {
               (200...299).contains(http.statusCode) else { return nil }
         return UIImage(data: data)
     }
+
+    /// Downloads the video file (authenticated, GET /api/play/:id)
+    /// to a temp file and returns its URL. Used by the feed's
+    /// long-press Download (the file is then saved to Photos).
+    /// The file lives in the temp directory — use it promptly, the
+    /// system may clean it up.
+    func downloadVideoFile(for item: Item) async throws -> URL {
+        let (tmpURL, response) = try await session.download(for: authorizedRequest(url: playURL(for: item)))
+        guard let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else {
+            throw KeptoAPIError.server("Worker trả về lỗi \((response as? HTTPURLResponse)?.statusCode ?? 0).")
+        }
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(item.id).\(fileExtension(for: item))")
+        // Drop a stale copy from an earlier download of this item.
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: tmpURL, to: dest)
+        return dest
+    }
+
+    private func fileExtension(for item: Item) -> String {
+        if let contentType = item.contentType?.lowercased() {
+            if contentType.contains("mp4") { return "mp4" }
+            if contentType.contains("mov") || contentType.contains("quicktime") { return "mov" }
+            if contentType.contains("webm") { return "webm" }
+            if contentType.contains("mkv") { return "mkv" }
+        }
+        return "mp4"
+    }
 }
