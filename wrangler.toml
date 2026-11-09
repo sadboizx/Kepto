@@ -32,4 +32,4 @@ bucket_name = "kepto-media"
 # URL of the ingest service (Railway/Fly worker: Cobalt / yt-dlp + ffmpeg).
 # Leave empty until the ingest service exists — /api/save still stores the
 # item as `pending` and the ingest call is skipped.
-INGEST_URL = "https://kepto-ingest-production.up.railway.app"
+INGEST_URL = "https://kepto-ingest-production.up.railway.app/ingest"
