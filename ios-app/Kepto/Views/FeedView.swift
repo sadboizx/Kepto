@@ -53,6 +53,12 @@ struct FeedView: View {
     /// The video a long-press Delete is about to delete (captured when
     /// the user taps Delete, so a swipe in between cannot retarget it).
     @State private var itemPendingDelete: Item?
+    /// True while the user is dragging a page's progress bar. The
+    /// paging ScrollView is disabled while this is true, so a scrub
+    /// drag that drifts slightly vertical cannot be stolen mid-drag
+    /// and turn into a page swipe (the bar "missing"). Lifted here
+    /// from FeedVideoPage because the ScrollView lives in this view.
+    @State private var isScrubbing = false
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil, showCloseButton: Bool = true) {
@@ -115,7 +121,7 @@ struct FeedView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 0) {
                     ForEach(items) { item in
-                        FeedVideoPage(item: item, isCurrent: item.id == currentItemId, onDeleteRequest: { video in
+                        FeedVideoPage(item: item, isCurrent: item.id == currentItemId, isScrubbing: $isScrubbing, onDeleteRequest: { video in
                             itemPendingDelete = video
                             showingDeleteConfirmation = true
                         })
@@ -128,6 +134,10 @@ struct FeedView: View {
             .scrollTargetBehavior(.paging)
             .scrollPosition(id: $currentItemId)
             .scrollIndicators(.hidden)
+            // While a progress-bar scrub is in progress the feed must
+            // not page: a scrub drag that drifts slightly vertical
+            // would otherwise be stolen mid-drag and the bar "misses".
+            .scrollDisabled(isScrubbing)
             .ignoresSafeArea()
             .onChange(of: currentItemId) { _, _ in handleCurrentItemChange() }
             .onChange(of: items) { oldItems, newItems in handleItemsChange(old: oldItems, new: newItems) }
@@ -239,7 +249,10 @@ private struct FeedVideoPage: View {
     @State private var isPlaying = false
     @State private var currentTime: Double = 0
     @State private var duration: Double = 0
-    @State private var isScrubbing = false
+    /// Bound to FeedView: true while the user drags this page's
+    /// progress bar. FeedView disables the paging ScrollView while
+    /// it is true, so a scrub cannot be stolen mid-drag.
+    @Binding var isScrubbing: Bool
     @State private var sprite: UIImage?
     @StateObject private var frameCache = ScrubPreviewPlayer.SpriteFrameCache()
     @State private var timeObserver: Any?
@@ -1007,14 +1020,23 @@ private struct FeedProgressBar: View {
                 }
                 .frame(height: 2)
             }
-            .frame(height: 40, alignment: .bottom)
+            // 64pt tall touch area (the visible line is only 2pt, at
+            // the bottom): the bar is a thin line and the finger
+            // often lands just above it, which the ScrollView then
+            // took as a swipe — the bar "missed". The extra height
+            // extends UPWARD only (the VStack's Spacer absorbs it),
+            // so the username below does not move. Combined with the
+            // high-priority gesture and scrollDisabled while
+            // scrubbing, a touch starting anywhere near the bar
+            // scrubs instead of paging.
+            .frame(height: 64, alignment: .bottom)
             .contentShape(Rectangle())
             // High-priority: the feed is a vertical paging ScrollView
             // and it sometimes steals this drag (the bar "misses" the
             // scrub). A plain .gesture loses to the ScrollView when the
             // finger moves even slightly vertical; high-priority makes
             // a touch that starts on the bar always scrub. The bar is
-            // only 40pt tall at the very bottom, so vertical swipes
+            // only 64pt tall at the very bottom, so vertical swipes
             // starting elsewhere still page normally (same as TikTok).
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
@@ -1036,9 +1058,9 @@ private struct FeedProgressBar: View {
                 }
             }
         }
-        // 40pt tall touch area (the visible line is only 2pt, at the
+        // 64pt tall touch area (the visible line is only 2pt, at the
         // bottom) so the bar is easy to grab.
-        .frame(height: 40)
+        .frame(height: 64)
     }
 
     /// Preview popup: the sprite frame at the scrub timestamp + the
