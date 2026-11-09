@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// Library: the app's home screen. Home is collections — one per creator
-/// username, like TikTok's Collections tab (cover thumbnail, @username,
-/// video count). Tapping a collection opens its 3-column video grid.
-/// Searching shows a flat grid of matching items instead.
+/// Library: the app's home screen. Home shows ALL saved items in a
+/// TikTok-style 3-column video grid, with a menu bar on top to switch
+/// between Tất cả (all) / Reels (videos) / Bài viết (images) /
+/// Collections (one card per creator username, like TikTok's
+/// Collections tab). Tapping a collection opens its 3-column video
+/// grid. Searching shows a flat grid of matching items instead.
 /// Thumbnails are authenticated (AsyncImage cannot send the Authorization
 /// header), so `AuthenticatedThumbnail` loads them with URLSession
 /// (see `KeptoAPI.fetchThumbnail`) and keeps them in memory only.
@@ -26,70 +28,103 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationStack {
-            content
-                .navigationTitle("Kepto")
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            showingSettings = true
-                        } label: {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            showingSave = true
-                        } label: {
-                            Label("Save", systemImage: "plus")
-                        }
+            VStack(spacing: 0) {
+                if viewModel.isConfigured {
+                    sectionMenu
+                }
+                content
+            }
+            .navigationTitle("Kepto")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
                     }
                 }
-                .searchable(text: $viewModel.searchText, prompt: "Search title, caption, @username")
-                .onChange(of: viewModel.searchText) { _, _ in
-                    // Debounce: wait for the user to stop typing before
-                    // hitting the server with a new `q` query.
-                    searchTask?.cancel()
-                    searchTask = Task {
-                        try? await Task.sleep(for: .milliseconds(400))
-                        guard !Task.isCancelled else { return }
-                        await viewModel.fetch()
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingSave = true
+                    } label: {
+                        Label("Save", systemImage: "plus")
                     }
                 }
-                .refreshable {
-                    if viewModel.isSearching {
-                        await viewModel.fetch()
-                    } else {
-                        await viewModel.fetchCollections()
-                    }
+            }
+            .searchable(text: $viewModel.searchText, prompt: "Search title, caption, @username")
+            .onChange(of: viewModel.searchText) { _, _ in
+                // Debounce: wait for the user to stop typing before
+                // hitting the server with a new `q` query.
+                searchTask?.cancel()
+                searchTask = Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled else { return }
+                    await viewModel.fetch()
                 }
-                .task {
+            }
+            .refreshable {
+                if viewModel.isSearching {
+                    await viewModel.fetch()
+                } else if viewModel.selectedSection == .collections {
                     await viewModel.fetchCollections()
+                } else {
+                    await viewModel.fetch()
                 }
-                .onChange(of: viewModel.pendingShareURL) { _, newValue in
-                    // A link handed over by the Share Extension: open the
-                    // Save sheet for it (auto-save on appear).
-                    if let newValue { incomingShareURL = newValue }
+            }
+            .task {
+                await viewModel.selectSection(viewModel.selectedSection)
+            }
+            .onChange(of: viewModel.pendingShareURL) { _, newValue in
+                // A link handed over by the Share Extension: open the
+                // Save sheet for it (auto-save on appear).
+                if let newValue { incomingShareURL = newValue }
+            }
+            .sheet(isPresented: $showingSave) {
+                SaveView()
+            }
+            .sheet(isPresented: .constant(incomingShareURL != nil), onDismiss: {
+                incomingShareURL = nil
+                viewModel.pendingShareURL = nil
+            }) {
+                SaveView(initialURL: incomingShareURL ?? "", autoSave: true)
+            }
+            .sheet(isPresented: $showingSettings, onDismiss: {
+                viewModel.reloadConfig()
+                Task { await viewModel.selectSection(viewModel.selectedSection) }
+            }) {
+                SettingsView()
+            }
+            .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
+                Button("OK") { viewModel.errorMessage = nil }
+            } message: {
+                Text(viewModel.errorMessage ?? "")
+            }
+        }
+    }
+
+    /// Menu bar: Tất cả / Reels / Bài viết / Collections.
+    private var sectionMenu: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(LibrarySection.allCases) { section in
+                    let selected = viewModel.selectedSection == section
+                    Button {
+                        Task { await viewModel.selectSection(section) }
+                    } label: {
+                        Text(section.title)
+                            .font(.subheadline)
+                            .fontWeight(selected ? .semibold : .regular)
+                            .foregroundStyle(selected ? Color(.systemBackground) : Color.primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(selected ? Color.primary : Color(.systemGray5))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .sheet(isPresented: $showingSave) {
-                    SaveView()
-                }
-                .sheet(isPresented: .constant(incomingShareURL != nil), onDismiss: {
-                    incomingShareURL = nil
-                    viewModel.pendingShareURL = nil
-                }) {
-                    SaveView(initialURL: incomingShareURL ?? "", autoSave: true)
-                }
-                .sheet(isPresented: $showingSettings, onDismiss: {
-                    viewModel.reloadConfig()
-                    Task { await viewModel.fetchCollections() }
-                }) {
-                    SettingsView()
-                }
-                .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
-                    Button("OK") { viewModel.errorMessage = nil }
-                } message: {
-                    Text(viewModel.errorMessage ?? "")
-                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
         }
     }
 
@@ -104,13 +139,13 @@ struct LibraryView: View {
                 Button("Open Settings") { showingSettings = true }
                     .buttonStyle(.borderedProminent)
             }
-        } else if viewModel.isSearching {
-            searchResults
+        } else if viewModel.isSearching || viewModel.selectedSection != .collections {
+            videoGrid
         } else if viewModel.collections.isEmpty && !viewModel.isLoading {
             ContentUnavailableView {
-                Label("Nothing saved yet", systemImage: "tray")
+                Label("No collections yet", systemImage: "folder")
             } description: {
-                Text("Tap + and paste a link from TikTok, Instagram, Threads, X, Facebook, Douyin, or YouTube.")
+                Text("Save a link and it will appear here grouped by its creator.")
             } actions: {
                 Button("Save a link") { showingSave = true }
                     .buttonStyle(.borderedProminent)
@@ -137,7 +172,9 @@ struct LibraryView: View {
         }
     }
 
-    private var searchResults: some View {
+    /// Flat 3-column grid of saved items (home + search). Used for
+    /// Tất cả, Reels, Bài viết, and search results.
+    private var videoGrid: some View {
         ScrollView {
             LazyVGrid(columns: videoColumns, spacing: 2) {
                 ForEach(viewModel.items) { item in
@@ -169,11 +206,37 @@ struct LibraryView: View {
                 ProgressView("Loading…")
             } else if viewModel.items.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView {
-                    Label("No matches", systemImage: "magnifyingglass")
+                    Label(emptyTitle, systemImage: emptyIcon)
                 } description: {
-                    Text("Nothing saved matches this search yet.")
+                    Text(emptyDescription)
+                } actions: {
+                    Button("Save a link") { showingSave = true }
+                        .buttonStyle(.borderedProminent)
                 }
             }
+        }
+    }
+
+    private var emptyTitle: String {
+        if viewModel.isSearching { return "No matches" }
+        switch viewModel.selectedSection {
+        case .reels: return "No reels yet"
+        case .posts: return "No posts yet"
+        case .all, .collections: return "Nothing saved yet"
+        }
+    }
+
+    private var emptyIcon: String {
+        if viewModel.isSearching { return "magnifyingglass" }
+        return "tray"
+    }
+
+    private var emptyDescription: String {
+        if viewModel.isSearching { return "Nothing saved matches this search yet." }
+        switch viewModel.selectedSection {
+        case .reels: return "No saved videos yet — save a TikTok or Reels link."
+        case .posts: return "No saved photos yet — save a photo post link."
+        case .all, .collections: return "Tap + and paste a link from TikTok, Instagram, Threads, X, Facebook, Douyin, or YouTube."
         }
     }
 }

@@ -131,19 +131,22 @@ final class KeptoAPI {
     }
 
     /// GET /api/list — newest first. `platform` / `status` / `q` /
-    /// `authorUsername` are sent only when set; the backend treats an
-    /// absent param as "no filter". Pass "__unknown__" as the username to
-    /// list items whose creator could not be identified.
+    /// `authorUsername` / `media` are sent only when set; the backend
+    /// treats an absent param as "no filter". Pass "__unknown__" as the
+    /// username to list items whose creator could not be identified.
+    /// `media` is "video" (video only) or "image" (images only).
     func list(platform: Platform? = nil,
               status: ItemStatus? = nil,
               query: String? = nil,
               authorUsername: String? = nil,
+              media: String? = nil,
               limit: Int = 50,
               cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
         var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
         if let platform { items.append(URLQueryItem(name: "platform", value: platform.rawValue)) }
         if let status { items.append(URLQueryItem(name: "status", value: status.rawValue)) }
         if let authorUsername { items.append(URLQueryItem(name: "author_username", value: authorUsername)) }
+        if let media { items.append(URLQueryItem(name: "media", value: media)) }
         let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedQuery.isEmpty { items.append(URLQueryItem(name: "q", value: trimmedQuery)) }
         if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }

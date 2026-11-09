@@ -26,6 +26,8 @@ struct ScrubPreviewPlayer: View {
     @State private var scrubFraction: Double = 0
     @State private var sprite: UIImage?
     @State private var timeObserver: Any?
+    /// Mute toggle state (mirrors player.isMuted).
+    @State private var isMuted = false
 
     private var aspectRatio: CGFloat {
         if let width = item.width, let height = item.height,
@@ -96,6 +98,13 @@ struct ScrubPreviewPlayer: View {
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                Button {
+                    isMuted.toggle()
+                    player?.isMuted = isMuted
+                } label: {
+                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 16))
+                }
             }
         }
     }
@@ -203,6 +212,7 @@ struct ScrubPreviewPlayer: View {
 
     private func startPlayer() {
         guard player == nil, let api = viewModel.api else { return }
+        configureAudioSession()
         let asset = AVURLAsset(
             url: api.playURL(for: item),
             options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": api.authorizationHeader]]
@@ -219,6 +229,23 @@ struct ScrubPreviewPlayer: View {
         }
         newPlayer.play()
         isPlaying = true
+    }
+
+    /// Sound fix: the app's default audio session (soloAmbient) obeys the
+    /// iPhone's silent switch, so a custom AVPlayerLayer player is silent
+    /// whenever the switch is on. (v1's VideoPlayer did not have this
+    /// problem because AVPlayerViewController manages the session itself.)
+    /// `.playback` makes audio play regardless of the silent switch —
+    /// the standard behavior for a video app. Non-fatal if it fails:
+    /// the video still plays, just obeying the switch.
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setActive(true)
+        } catch {
+            // Best effort only.
+        }
     }
 
     private func removeTimeObserver() {

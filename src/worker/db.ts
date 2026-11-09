@@ -119,6 +119,8 @@ export interface ListParams {
   q?: string;
   /** Filter to one collection. The sentinel "__unknown__" means NULL username. */
   authorUsername?: string;
+  /** "video" = content_type starts with video/, "image" = starts with image/. */
+  media?: string;
   limit: number;
   cursor?: { saved_at: string; id: string };
 }
@@ -146,6 +148,11 @@ export async function listItems(
       where.push(`author_username = ${next()}`);
       binds.push(p.authorUsername);
     }
+  }
+  if (p.media === "video") {
+    where.push(`content_type LIKE 'video%'`);
+  } else if (p.media === "image") {
+    where.push(`content_type LIKE 'image%'`);
   }
   if (p.q) {
     // Escape LIKE wildcards so a search for "%" matches literally.

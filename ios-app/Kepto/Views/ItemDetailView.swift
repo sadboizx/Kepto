@@ -10,6 +10,13 @@ struct ItemDetailView: View {
 
     @State private var showingDeleteConfirmation = false
     @State private var deleteError: String?
+    /// The freshest copy of the item. `item` is a snapshot from the list
+    /// and can be stale: a video opened while pending keeps showing the
+    /// spinner even after ingest finished, and its sprite fields would
+    /// be missing (so the scrub preview has no thumbnail). Re-fetching
+    /// here keeps the player, status, and preview in sync.
+    @State private var liveItem: Item?
+    private var currentItem: Item { liveItem ?? item }
 
     var body: some View {
         ScrollView {
@@ -48,20 +55,35 @@ struct ItemDetailView: View {
             Text(deleteError ?? "")
         }
         .task {
-            // A pending item may have become ready while we were away.
-            await viewModel.refreshItem(item)
+            await refreshOnce()
+            // While ingest is still running, poll so the video appears
+            // here when it is ready instead of staying on the spinner.
+            // Stops after ~2 minutes (ingest normally takes seconds).
+            var polls = 0
+            while currentItem.status == .pending && polls < 24 {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                polls += 1
+                await refreshOnce()
+            }
         }
+    }
+
+    private func refreshOnce() async {
+        guard let updated = await viewModel.fetchItem(id: item.id) else { return }
+        liveItem = updated
+        await viewModel.refreshItem(item)
     }
 
     // MARK: - Player
 
     @ViewBuilder
     private var playerSection: some View {
-        switch item.status {
+        switch currentItem.status {
         case .ready:
             // Custom player: tap to play/pause, and a scrub preview while
             // dragging the progress bar (sprite frame at that timestamp).
-            ScrubPreviewPlayer(item: item)
+            ScrubPreviewPlayer(item: currentItem)
         case .pending:
             VStack(spacing: 8) {
                 ProgressView()
@@ -78,7 +100,7 @@ struct ItemDetailView: View {
                 Label("Ingest failed", systemImage: "exclamationmark.triangle")
                     .font(.headline)
                     .foregroundStyle(.red)
-                Text(item.ingestError ?? "Unknown error.")
+                Text(currentItem.ingestError ?? "Unknown error.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -93,16 +115,16 @@ struct ItemDetailView: View {
 
     private var titleSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(item.displayTitle)
+            Text(currentItem.displayTitle)
                 .font(.title3)
                 .fontWeight(.semibold)
             HStack(spacing: 6) {
-                Text(item.displayAuthor)
+                Text(currentItem.displayAuthor)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                StatusBadge(status: item.status)
+                StatusBadge(status: currentItem.status)
             }
-            if let caption = item.caption, !caption.isEmpty, caption != item.title {
+            if let caption = currentItem.caption, !caption.isEmpty, caption != currentItem.title {
                 Text(caption)
                     .font(.body)
             }
@@ -111,23 +133,23 @@ struct ItemDetailView: View {
 
     private var metadataSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            metadataRow(label: "Platform", value: item.platform.displayName)
-            if let posted = item.formattedPostedAt {
+            metadataRow(label: "Platform", value: currentItem.platform.displayName)
+            if let posted = currentItem.formattedPostedAt {
                 metadataRow(label: "Posted", value: posted)
             }
-            if let saved = item.formattedSavedAt {
+            if let saved = currentItem.formattedSavedAt {
                 metadataRow(label: "Saved", value: saved)
             }
-            if let duration = item.formattedDuration {
+            if let duration = currentItem.formattedDuration {
                 metadataRow(label: "Duration", value: duration)
             }
-            if let dimensions = item.formattedDimensions {
+            if let dimensions = currentItem.formattedDimensions {
                 metadataRow(label: "Size", value: dimensions)
             }
-            if let fileSize = item.formattedFileSize {
+            if let fileSize = currentItem.formattedFileSize {
                 metadataRow(label: "File", value: fileSize)
             }
-            if let contentType = item.contentType {
+            if let contentType = currentItem.contentType {
                 metadataRow(label: "Type", value: contentType)
             }
         }
@@ -151,7 +173,7 @@ struct ItemDetailView: View {
             // download or re-save anything. The backend only stores
             // http(s) URLs, so this always parses; the row is hidden
             // entirely if it somehow does not.
-            if let originalURL = URL(string: item.originalUrl),
+            if let originalURL = URL(string: currentItem.originalUrl),
                originalURL.scheme == "http" || originalURL.scheme == "https" {
                 Link(destination: originalURL) {
                     Label("Open original in Safari", systemImage: "safari")
@@ -173,7 +195,7 @@ struct ItemDetailView: View {
 
     private func deleteItem() async {
         do {
-            try await viewModel.delete(item: item)
+            try await viewModel.delete(item: currentItem)
             dismiss()
         } catch {
             deleteError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

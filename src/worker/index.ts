@@ -170,6 +170,7 @@ app.get("/api/list", async (c) => {
   const platform = c.req.query("platform") ?? undefined;
   const status = c.req.query("status") ?? undefined;
   const authorUsername = c.req.query("author_username") ?? undefined;
+  const media = c.req.query("media") ?? undefined;
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 100);
   let cursor: { saved_at: string; id: string } | undefined;
   const rawCursor = c.req.query("cursor");
@@ -186,6 +187,7 @@ app.get("/api/list", async (c) => {
     status,
     q,
     authorUsername,
+    media,
     limit,
     cursor,
   });

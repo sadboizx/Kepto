@@ -1,17 +1,48 @@
 import Foundation
 import SwiftUI
 
+/// The home menu sections: all saved items, video-only (Reels),
+/// image-only posts (Bài viết), and the per-creator collections.
+/// "Âm thanh" is intentionally NOT a section: audio is stored inside
+/// each saved video, not as separate items, so there is nothing to list.
+enum LibrarySection: String, CaseIterable, Identifiable {
+    case all, reels, posts, collections
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "Tất cả"
+        case .reels: return "Reels"
+        case .posts: return "Bài viết"
+        case .collections: return "Collections"
+        }
+    }
+
+    /// Backend `media` filter for the section (nil = no filter).
+    var mediaFilter: String? {
+        switch self {
+        case .reels: return "video"
+        case .posts: return "image"
+        case .all, .collections: return nil
+        }
+    }
+}
+
 /// Owns the library screen state. Cloud-only: items live in D1 behind the
-/// Worker API; nothing is cached on disk. The home screen is collections
-/// (one per creator username, like TikTok's Collections tab); search shows
-/// a flat grid of matching items. Pull-to-refresh and search both
-/// re-fetch from the server.
+/// Worker API; nothing is cached on disk. The home screen is a flat grid
+/// of all saved items (TikTok-style, 3 columns) with a menu to switch
+/// between Tất cả / Reels / Bài viết / Collections; search shows a flat
+/// grid of matching items. Pull-to-refresh and search both re-fetch
+/// from the server.
 @MainActor
 final class LibraryViewModel: ObservableObject {
     /// Search results (flat list), used only while the user is searching.
     @Published private(set) var items: [Item] = []
     /// Collections for the home screen (one per creator username).
     @Published private(set) var collections: [CollectionInfo] = []
+    /// The selected home menu section.
+    @Published var selectedSection: LibrarySection = .all
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
     @Published var errorMessage: String?
@@ -44,6 +75,16 @@ final class LibraryViewModel: ObservableObject {
         api = KeptoAPI.configured()
     }
 
+    /// Switch home menu section and fetch its content.
+    func selectSection(_ section: LibrarySection) async {
+        selectedSection = section
+        if section == .collections {
+            await fetchCollections()
+        } else {
+            await fetch()
+        }
+    }
+
     /// Collections for the home screen. Called on appear and on
     /// pull-to-refresh, and after a save (a new username may appear).
     func fetchCollections() async {
@@ -66,8 +107,10 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
-    /// First page of search results. Called on pull-to-refresh and whenever
-    /// the search text changes (debounced by the view).
+    /// First page of the current section's items (or search results
+    /// while searching — search ignores the section filter). Called on
+    /// pull-to-refresh and whenever the search text changes (debounced
+    /// by the view).
     func fetch() async {
         guard let api else {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
@@ -84,6 +127,7 @@ final class LibraryViewModel: ObservableObject {
         do {
             let (page, cursor) = try await api.list(
                 query: searchText,
+                media: isSearching ? nil : selectedSection.mediaFilter,
                 limit: 50
             )
             items = page
@@ -93,7 +137,7 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
-    /// Next page of search results using the backend's keyset cursor.
+    /// Next page using the backend's keyset cursor (same filters as fetch).
     func loadMore() async {
         guard let api, let cursor = nextCursor, !isFetching, !isLoadingMore else { return }
         isFetching = true
@@ -105,6 +149,7 @@ final class LibraryViewModel: ObservableObject {
         do {
             let (page, next) = try await api.list(
                 query: searchText,
+                media: isSearching ? nil : selectedSection.mediaFilter,
                 limit: 50,
                 cursor: cursor
             )
@@ -132,8 +177,8 @@ final class LibraryViewModel: ObservableObject {
     }
 
     /// Save a pasted link. Returns the result on success so the Save sheet
-    /// can show "already saved" for a duplicate; the collections refresh
-    /// to include the new item.
+    /// can show "already saved" for a duplicate; the current section
+    /// refreshes to include the new item.
     func save(url: String) async -> SaveResult? {
         guard let api else {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
@@ -141,8 +186,13 @@ final class LibraryViewModel: ObservableObject {
         }
         do {
             let result = try await api.save(url: url)
-            await fetchCollections()
-            if isSearching { await fetch() }
+            if isSearching {
+                await fetch()
+            } else if selectedSection == .collections {
+                await fetchCollections()
+            } else {
+                await fetch()
+            }
             return result
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -166,5 +216,13 @@ final class LibraryViewModel: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index] = updated
         }
+    }
+
+    /// Fetch one item fresh from the server (used by the detail view so
+    /// it never shows stale fields — e.g. a preview that only exists
+    /// after ingest finished). Returns nil on failure.
+    func fetchItem(id: String) async -> Item? {
+        guard let api else { return nil }
+        return try? await api.getItem(id: id)
     }
 }
