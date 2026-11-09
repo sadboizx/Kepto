@@ -1,0 +1,218 @@
+import Foundation
+import UIKit
+
+/// Errors surfaced to the user as plain messages (no technical jargon in UI).
+enum KeptoAPIError: Error, LocalizedError {
+    case notConfigured
+    case unauthorized
+    case notFound
+    case invalidURL
+    case server(String)
+    case network(Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .notConfigured:
+            return "Chưa cấu hình Worker. Mở Settings và nhập Worker URL + API key."
+        case .unauthorized:
+            return "API key không đúng. Kiểm tra lại trong Settings."
+        case .notFound:
+            return "Không tìm thấy item này (có thể đã bị xóa)."
+        case .invalidURL:
+            return "Link không hợp lệ. Dán link bắt đầu bằng https://."
+        case .server(let message):
+            return message
+        case .network:
+            return "Không có mạng hoặc Worker không trả lời. Kiểm tra kết nối rồi thử lại."
+        }
+    }
+}
+
+/// Thin HTTP client for the Kepto Workers backend.
+/// No URL, API key, or secret is hardcoded here: the base URL comes from
+/// UserDefaults (set in Settings) and the API key from the Keychain.
+/// Cloud-only: this client never downloads media to Photos or to disk —
+/// playback streams from the Worker and thumbnails are kept in memory only.
+final class KeptoAPI {
+    private let baseURL: URL
+    private let apiKey: String
+    private let session: URLSession
+
+    /// UserDefaults key for the Worker base URL (not a secret).
+    static let baseURLDefaultsKey = "kepto.baseURL"
+
+    static var storedBaseURL: String {
+        UserDefaults.standard.string(forKey: baseURLDefaultsKey) ?? ""
+    }
+
+    static func storeBaseURL(_ url: String) {
+        UserDefaults.standard.set(url.trimmingCharacters(in: .whitespacesAndNewlines), forKey: baseURLDefaultsKey)
+    }
+
+    /// Returns a configured client, or nil when the base URL or API key
+    /// has not been entered yet in Settings.
+    static func configured() -> KeptoAPI? {
+        let rawBase = storedBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawBase.isEmpty,
+              let baseURL = URL(string: rawBase),
+              baseURL.scheme == "http" || baseURL.scheme == "https",
+              let apiKey = KeychainService.currentAPIKey,
+              !apiKey.isEmpty else { return nil }
+        return KeptoAPI(baseURL: baseURL, apiKey: apiKey)
+    }
+
+    init(baseURL: URL, apiKey: String, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.apiKey = apiKey
+        self.session = session
+    }
+
+    // MARK: - URL building
+
+    private func url(path: String, queryItems: [URLQueryItem] = []) -> URL {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        // baseURL has no path; append the API path.
+        components.path = (components.path as NSString).appendingPathComponent(path)
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        return components.url!
+    }
+
+    private func authorizedRequest(url: URL, method: String = "GET", jsonBody: Data? = nil) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if let jsonBody {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = jsonBody
+        }
+        return request
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(type, from: data)
+    }
+
+    /// Maps an HTTP response to either decoded data or a typed error.
+    /// 401 means the API key is wrong; the caller shows the Settings hint.
+    private func handle<T: Decodable>(_ data: Data, _ response: URLResponse, as type: T.Type) throws -> T {
+        guard let http = response as? HTTPURLResponse else {
+            throw KeptoAPIError.network(URLError(.badServerResponse))
+        }
+        switch http.statusCode {
+        case 200...299:
+            return try decode(type, from: data)
+        case 401:
+            throw KeptoAPIError.unauthorized
+        case 404:
+            throw KeptoAPIError.notFound
+        default:
+            if let errorBody = try? decode(ErrorResponse.self, from: data),
+               let message = errorBody.error, !message.isEmpty {
+                throw KeptoAPIError.server(message)
+            }
+            throw KeptoAPIError.server("Worker trả về lỗi \(http.statusCode).")
+        }
+    }
+
+    // MARK: - Endpoints
+
+    /// GET /api/health — no auth. Used by the Test Connection button.
+    func health() async throws -> Bool {
+        let (data, response) = try await session.data(from: url(path: "/api/health"))
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            return false
+        }
+        let body = try decode(HealthResponse.self, from: data)
+        return body.ok
+    }
+
+    /// GET /api/list — newest first. `platform` / `status` / `q` are sent
+    /// only when set; the backend treats an absent param as "no filter".
+    func list(platform: Platform? = nil,
+              status: ItemStatus? = nil,
+              query: String? = nil,
+              limit: Int = 50,
+              cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
+        var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
+        if let platform { items.append(URLQueryItem(name: "platform", value: platform.rawValue)) }
+        if let status { items.append(URLQueryItem(name: "status", value: status.rawValue)) }
+        let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedQuery.isEmpty { items.append(URLQueryItem(name: "q", value: trimmedQuery)) }
+        if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/list", queryItems: items)))
+        let body = try handle(data, response, as: ListResponse.self)
+        return (body.items, body.nextCursor)
+    }
+
+    /// GET /api/items/:id
+    func getItem(id: String) async throws -> Item {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/items/\(id)")))
+        let body = try handle(data, response, as: ItemResponse.self)
+        return body.item
+    }
+
+    /// POST /api/save — returns 202 with the new item in `pending` status.
+    /// The ingest service runs in the background; the item becomes `ready`
+    /// later. Throws `.invalidURL` for a non-http(s) link before any call.
+    func save(url rawURL: String) async throws -> Item {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = URL(string: trimmed),
+              parsed.scheme == "http" || parsed.scheme == "https" else {
+            throw KeptoAPIError.invalidURL
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["url": trimmed])
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/save"), method: "POST", jsonBody: body))
+        let decoded = try handle(data, response, as: SaveResponse.self)
+        return decoded.item
+    }
+
+    /// DELETE /api/items/:id
+    func delete(id: String) async throws {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/items/\(id)"), method: "DELETE"))
+        guard let http = response as? HTTPURLResponse else {
+            throw KeptoAPIError.network(URLError(.badServerResponse))
+        }
+        switch http.statusCode {
+        case 200...299:
+            return
+        case 401:
+            throw KeptoAPIError.unauthorized
+        case 404:
+            throw KeptoAPIError.notFound
+        default:
+            if let errorBody = try? decode(ErrorResponse.self, from: data),
+               let message = errorBody.error, !message.isEmpty {
+                throw KeptoAPIError.server(message)
+            }
+            throw KeptoAPIError.server("Worker trả về lỗi \(http.statusCode).")
+        }
+    }
+
+    // MARK: - Authenticated media URLs
+
+    /// URL for GET /api/play/:id. The Bearer token is NOT in the URL —
+    /// see `ItemDetailView`: it is passed via
+    /// `AVURLAssetHTTPHeaderFieldsKey` when building the AVURLAsset.
+    /// The Worker has no redirects, so the header survives the whole stream.
+    func playURL(for item: Item) -> URL {
+        url(path: "/api/play/\(item.id)")
+    }
+
+    /// Authorization header value for media requests (play + thumbnail).
+    var authorizationHeader: String { "Bearer \(apiKey)" }
+
+    /// GET /api/thumb/:id with the Authorization header.
+    /// AsyncImage cannot send custom headers, so thumbnails are loaded
+    /// with URLSession here and kept in memory only (no disk cache —
+    /// the app is cloud-only by design).
+    func fetchThumbnail(for item: Item) async throws -> UIImage? {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/thumb/\(item.id)")))
+        guard let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else { return nil }
+        return UIImage(data: data)
+    }
+}
