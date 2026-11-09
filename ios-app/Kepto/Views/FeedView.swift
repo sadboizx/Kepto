@@ -51,89 +51,15 @@ struct FeedView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if items.isEmpty {
-                ContentUnavailableView {
-                    Label("Nothing here", systemImage: "tray")
-                } description: {
-                    Text("No videos to show.")
-                }
+                emptyState
             } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(items) { item in
-                            FeedVideoPage(item: item, isCurrent: item.id == currentItemId)
-                                .id(item.id)
-                                .containerRelativeFrame(.vertical)
-                        }
-                    }
-                    .scrollTargetLayout()
-                }
-                .scrollTargetBehavior(.paging)
-                .scrollPosition(id: $currentItemId)
-                .scrollIndicators(.hidden)
-                .ignoresSafeArea()
-                .onChange(of: currentItemId) { _, _ in
-                    // Near the end: load the next page so swiping never
-                    // hits a dead end while there is more to show.
-                    if let idx = currentIndex, items.count - idx <= 3 {
-                        Task { await onNearEnd?() }
-                    }
-                }
-                .onChange(of: items) { oldItems, newItems in
-                    // The current item vanished (e.g. deleted): move to
-                    // the nearest remaining video instead of a blank page.
-                    guard !newItems.contains(where: { $0.id == currentItemId }) else { return }
-                    if let oldIdx = oldItems.firstIndex(where: { $0.id == currentItemId }) {
-                        let nextIdx = min(oldIdx, newItems.count - 1)
-                        if nextIdx >= 0 { currentItemId = newItems[nextIdx].id }
-                    } else if let last = newItems.last {
-                        currentItemId = last.id
-                    }
-                }
-                .task {
-                    if !items.contains(where: { $0.id == currentItemId }),
-                       let first = items.first {
-                        currentItemId = first.id
-                    }
-                }
+                feedPages
             }
-            // Close button (covers only, top-left).
             if showCloseButton {
-                VStack {
-                    HStack {
-                        Button {
-                            dismiss()
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 36, height: 36)
-                                .background(Color.black.opacity(0.35))
-                                .clipShape(Circle())
-                        }
-                        .padding(.leading, 16)
-                        Spacer()
-                    }
-                    Spacer()
-                }
+                closeButton
             }
-            // "..." rail button (right edge, vertically centred):
-            // details / delete for the current video.
             if currentItem != nil {
-                HStack {
-                    Spacer()
-                    Button {
-                        showingActionSheet = true
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Color.black.opacity(0.35))
-                            .clipShape(Circle())
-                    }
-                    .padding(.trailing, 12)
-                }
-                .frame(maxHeight: .infinity)
+                moreButton
             }
         }
         .preferredColorScheme(.dark)
@@ -153,25 +79,133 @@ struct FeedView: View {
             Text("This removes the saved copy from the cloud. The original post is not affected.")
         }
         .sheet(isPresented: $showingDetail) {
-            if let currentItem {
-                NavigationStack {
-                    ItemDetailView(item: currentItem)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarLeading) {
-                                Button {
-                                    showingDetail = false
-                                } label: {
-                                    Label("Close", systemImage: "xmark")
-                                }
-                            }
-                        }
-                }
-            }
+            detailSheet
         }
         .alert("Delete failed", isPresented: .constant(deleteError != nil)) {
             Button("OK") { deleteError = nil }
         } message: {
             Text(deleteError ?? "")
+        }
+    }
+
+    /// Empty state when there is nothing to page through.
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("Nothing here", systemImage: "tray")
+        } description: {
+            Text("No videos to show.")
+        }
+    }
+
+    /// The paging scroll view: one full-screen page per video.
+    /// (Split out of `body`: the whole feed in one expression made
+    /// the compiler give up type-checking it in reasonable time.)
+    private var feedPages: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0) {
+                ForEach(items) { item in
+                    FeedVideoPage(item: item, isCurrent: item.id == currentItemId)
+                        .id(item.id)
+                        .containerRelativeFrame(.vertical)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $currentItemId)
+        .scrollIndicators(.hidden)
+        .ignoresSafeArea()
+        .onChange(of: currentItemId) { _, _ in handleCurrentItemChange() }
+        .onChange(of: items) { oldItems, newItems in handleItemsChange(old: oldItems, new: newItems) }
+        .task { fixInitialCurrentItem() }
+    }
+
+    /// Close button (covers only, top-left).
+    private var closeButton: some View {
+        VStack {
+            HStack {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.black.opacity(0.35))
+                        .clipShape(Circle())
+                }
+                .padding(.leading, 16)
+                Spacer()
+            }
+            Spacer()
+        }
+    }
+
+    /// "..." rail button (right edge, vertically centred):
+    /// details / delete for the current video.
+    private var moreButton: some View {
+        HStack {
+            Spacer()
+            Button {
+                showingActionSheet = true
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(Color.black.opacity(0.35))
+                    .clipShape(Circle())
+            }
+            .padding(.trailing, 12)
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    /// Detail sheet for the current video.
+    @ViewBuilder
+    private var detailSheet: some View {
+        if let currentItem {
+            NavigationStack {
+                ItemDetailView(item: currentItem)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button {
+                                showingDetail = false
+                            } label: {
+                                Label("Close", systemImage: "xmark")
+                            }
+                        }
+                    }
+            }
+        }
+    }
+
+    /// Near the end: load the next page so swiping never hits a dead
+    /// end while there is more to show.
+    private func handleCurrentItemChange() {
+        if let idx = currentIndex, items.count - idx <= 3 {
+            Task { await onNearEnd?() }
+        }
+    }
+
+    /// The current item vanished (e.g. deleted): move to the nearest
+    /// remaining video instead of a blank page.
+    private func handleItemsChange(old oldItems: [Item], new newItems: [Item]) {
+        guard !newItems.contains(where: { $0.id == currentItemId }) else { return }
+        if let oldIdx = oldItems.firstIndex(where: { $0.id == currentItemId }) {
+            let nextIdx = min(oldIdx, newItems.count - 1)
+            if nextIdx >= 0 { currentItemId = newItems[nextIdx].id }
+        } else if let last = newItems.last {
+            currentItemId = last.id
+        }
+    }
+
+    /// If the feed opened on an id that is not in the list, start at
+    /// the first video.
+    private func fixInitialCurrentItem() {
+        if !items.contains(where: { $0.id == currentItemId }),
+           let first = items.first {
+            currentItemId = first.id
         }
     }
 
