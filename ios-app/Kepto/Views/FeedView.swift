@@ -359,7 +359,7 @@ private struct FeedVideoPage: View {
                             item: item,
                             sprite: sprite,
                             frameCache: frameCache,
-                            onSeek: { seconds in seek(to: seconds) }
+                            onSeek: { seconds in seekFromScrub(to: seconds) }
                         )
                         // 10pt above the username.
                         .padding(.bottom, 10)
@@ -682,6 +682,26 @@ private struct FeedVideoPage: View {
         let target = CMTime(seconds: seconds, preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             currentTime = seconds
+        }
+    }
+
+    /// Seek from a progress-bar scrub. Clears isScrubbing only in the
+    /// seek's completion — AFTER the player is at the new position.
+    /// The isScrubbing=false change triggers playCurrent, and if that
+    /// runs before the seek lands it seeks the player back to the old
+    /// position (the bar "jumps back" to where it was). Clearing it
+    /// here makes playCurrent a no-op (the player is already at the
+    /// new position) and the video resumes from the scrubbed spot.
+    private func seekFromScrub(to seconds: Double) {
+        guard let player else {
+            isScrubbing = false
+            return
+        }
+        currentTime = seconds
+        let target = CMTime(seconds: seconds, preferredTimescale: 600)
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            currentTime = seconds
+            isScrubbing = false
         }
     }
 
@@ -1048,7 +1068,12 @@ private struct FeedProgressBar: View {
                     }
                     .onEnded { value in
                         let fraction = min(max(value.location.x / geo.size.width, 0), 1)
-                        isScrubbing = false
+                        // Do NOT clear isScrubbing here. The seek's
+                        // completion clears it (see seekFromScrub):
+                        // clearing it now fires playCurrent, which
+                        // seeks back to the OLD position and overrides
+                        // this seek — the bar "jumps back" to where it
+                        // was. The seek must land first.
                         onSeek(fraction * duration)
                     }
             )
