@@ -26,9 +26,9 @@ struct LibraryView: View {
         GridItem(.flexible(), spacing: 12),
     ]
     private let videoColumns = [
-        GridItem(.flexible(), spacing: 1),
-        GridItem(.flexible(), spacing: 1),
-        GridItem(.flexible(), spacing: 1),
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2),
     ]
 
     var body: some View {
@@ -255,7 +255,10 @@ struct LibraryView: View {
     }
 
     /// Flat 3-column grid of saved items (home + search). Used for
-    /// Tất cả, Reels, Bài viết, and search results.
+    /// Tất cả, Reels, Bài viết, and search results. Waterfall: when the
+    /// last cell scrolls into view the next page loads automatically
+    /// (keyset cursor), so the grid keeps growing as you scroll while
+    /// staying 3 straight columns.
     private var videoGrid: some View {
         ScrollView {
             LazyVGrid(columns: videoColumns, spacing: 2) {
@@ -266,18 +269,17 @@ struct LibraryView: View {
                         VideoGridCell(item: item)
                     }
                     .buttonStyle(.plain)
-                }
-            }
-            if viewModel.hasMore {
-                HStack {
-                    Spacer()
-                    if viewModel.isLoadingMore {
-                        ProgressView()
-                    } else {
-                        Button("Load more") {
+                    .onAppear {
+                        if item.id == viewModel.items.last?.id {
                             Task { await viewModel.loadMore() }
                         }
                     }
+                }
+            }
+            if viewModel.hasMore && viewModel.isLoadingMore {
+                HStack {
+                    Spacer()
+                    ProgressView()
                     Spacer()
                 }
                 .padding(.vertical, 12)
@@ -389,18 +391,20 @@ private struct CollectionCard: View {
     }
 }
 
-/// One video cell in the 3-column grid (TikTok profile style, measured
-/// from the video: 3:4 cells, 1pt gaps): portrait thumbnail with a
-/// bottom-left badge — play triangle + view count (duration when the
-/// view count is unknown, e.g. older saves) — a spinner while pending,
-/// and a red dot when ingest failed.
+/// One video cell in the 3-column grid (TikTok profile style): a
+/// vertical 9:16 cell with slightly rounded corners, so each cell stays
+/// visibly distinct even when consecutive videos look alike. The
+/// thumbnail fills the cell (a 9:16 video fits exactly; anything wider
+/// is centre-cropped, like TikTok) and is clipped to the cell, so
+/// nothing overflows. Badge bottom-left (play + view count, or duration),
+/// a spinner while pending, and a red dot when ingest failed.
 struct VideoGridCell: View {
     let item: Item
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             AuthenticatedThumbnail(item: item)
-                .aspectRatio(3 / 4, contentMode: .fill)
+                .aspectRatio(9 / 16, contentMode: .fill)
                 .clipped()
             if item.status == .pending {
                 ZStack {
@@ -430,6 +434,7 @@ struct VideoGridCell: View {
             }
         }
         .background(Color(.systemGray5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var badgeText: String? {
