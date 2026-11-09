@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Library: the app's home screen. Home shows ALL saved items in a
 /// TikTok-style 3-column video grid, with a menu bar on top to switch
@@ -15,6 +16,7 @@ struct LibraryView: View {
     @State private var showingSettings = false
     @State private var searchTask: Task<Void, Never>?
     @State private var incomingShareURL: String?
+    @State private var clipboardAlert = false
 
     private let collectionColumns = [
         GridItem(.flexible(), spacing: 12),
@@ -28,11 +30,16 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if viewModel.isConfigured {
-                    sectionMenu
+            ZStack(alignment: .bottomTrailing) {
+                VStack(spacing: 0) {
+                    if viewModel.isConfigured {
+                        sectionMenu
+                    }
+                    content
                 }
-                content
+                if viewModel.isConfigured {
+                    addButton
+                }
             }
             .navigationTitle("Kepto")
             .toolbar {
@@ -41,13 +48,6 @@ struct LibraryView: View {
                         showingSettings = true
                     } label: {
                         Label("Settings", systemImage: "gearshape")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingSave = true
-                    } label: {
-                        Label("Save", systemImage: "plus")
                     }
                 }
             }
@@ -99,7 +99,59 @@ struct LibraryView: View {
             } message: {
                 Text(viewModel.errorMessage ?? "")
             }
+            .alert("Clipboard", isPresented: $clipboardAlert) {
+                Button("OK") {}
+            } message: {
+                Text("Clipboard không có link http(s) nào.")
+            }
         }
+    }
+
+    /// Floating "+" button (bottom-right): opens a menu to save a new
+    /// link, or save the link currently on the clipboard. (No Photo
+    /// Library entry: Kepto saves by link, it has no local-file upload.)
+    private var addButton: some View {
+        Menu {
+            Button {
+                showingSave = true
+            } label: {
+                Label("Lưu link mới", systemImage: "link.badge.plus")
+            }
+            Button {
+                saveFromClipboard()
+            } label: {
+                Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+                .background(Color.accentColor)
+                .clipShape(Circle())
+                .shadow(radius: 4)
+        }
+        .padding(.trailing, 20)
+        .padding(.bottom, 20)
+    }
+
+    /// Reads the first http(s) URL on the clipboard and opens the Save
+    /// sheet for it (auto-save on); warns when there is no link.
+    private func saveFromClipboard() {
+        guard let text = UIPasteboard.general.string,
+              let url = Self.firstURL(in: text) else {
+            clipboardAlert = true
+            return
+        }
+        incomingShareURL = url.absoluteString
+    }
+
+    private static func firstURL(in text: String) -> URL? {
+        let pattern = "https?://[^\\s\"'<>]+"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range, in: text) else { return nil }
+        return URL(string: String(text[range]))
     }
 
     /// Menu bar: Tất cả / Reels / Bài viết / Collections.
