@@ -36,6 +36,12 @@ struct LibraryView: View {
     /// The video awaiting delete confirmation from the grid menu.
     @State private var itemPendingDelete: Item?
     @State private var showingDeleteConfirmation = false
+    /// Multi-select mode for bulk delete: when true, tapping a cell
+    /// toggles its selection instead of opening the feed, and a
+    /// bottom bar offers Select All / Delete (N).
+    @State private var isSelecting = false
+    @State private var selectedIDs: Set<String> = []
+    @State private var showingBulkDeleteConfirmation = false
     /// "New collection" name alert (from the Collections section).
     @State private var showingNewCollection = false
     @State private var newCollectionName = ""
@@ -63,8 +69,13 @@ struct LibraryView: View {
         NavigationStack {
             ZStack(alignment: .bottomTrailing) {
                 content
-                if viewModel.isConfigured {
+                if viewModel.isConfigured && !isSelecting {
                     addButton
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if isSelecting {
+                    selectionBar
                 }
             }
             .navigationTitle("Kepto")
@@ -82,6 +93,13 @@ struct LibraryView: View {
                         Label("Settings", systemImage: "gearshape")
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if viewModel.isConfigured && showsVideoGrid {
+                        Button(isSelecting ? "Cancel" : "Select") {
+                            toggleSelecting()
+                        }
+                    }
+                }
             }
             .onChange(of: viewModel.searchText) { _, _ in
                 // Debounce: wait for the user to stop typing before
@@ -92,6 +110,11 @@ struct LibraryView: View {
                     guard !Task.isCancelled else { return }
                     await viewModel.fetch()
                 }
+            }
+            .onChange(of: viewModel.selectedSection) { _, _ in
+                // Leaving the video grid (e.g. to Collections) ends
+                // multi-select: the selection belongs to that grid.
+                exitSelectionMode()
             }
             .task {
                 await viewModel.selectSection(viewModel.selectedSection)
@@ -191,6 +214,16 @@ struct LibraryView: View {
                 Button("Cancel", role: .cancel) { itemPendingDelete = nil }
             } message: {
                 Text(itemPendingDelete?.displayTitle ?? "")
+            }
+            .confirmationDialog("Delete \(selectedIDs.count) videos?",
+                                isPresented: $showingBulkDeleteConfirmation,
+                                titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    Task { await deleteSelected() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the saved copies from the cloud. This cannot be undone.")
             }
             .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") { viewModel.errorMessage = nil }
@@ -376,15 +409,24 @@ struct LibraryView: View {
     /// when it appears (waterfall); pull-to-refresh reloads.
     /// Tapping a cell opens the full-screen feed viewer at that video.
     /// Long-pressing a cell (0.25s) opens the grid menu (Favorite /
-    /// Add to Collection / Delete).
+    /// Add to Collection / Delete). In multi-select mode a tap toggles
+    /// the cell's selection instead, and the long-press menu is off.
     private var videoGrid: some View {
         ScrollView {
             LazyVGrid(columns: videoColumns, spacing: 2) {
                 ForEach(viewModel.items) { item in
                     VideoGridCell(
                         item: item,
-                        onTap: { feedStartItem = item },
-                        onLongPress: { itemForGridMenu = $0 }
+                        isSelectionMode: isSelecting,
+                        isSelected: selectedIDs.contains(item.id),
+                        onTap: {
+                            if isSelecting {
+                                toggleSelection(item)
+                            } else {
+                                feedStartItem = item
+                            }
+                        },
+                        onLongPress: isSelecting ? nil : { itemForGridMenu = $0 }
                     )
                     .onAppear {
                         if item.id == viewModel.items.last?.id {
@@ -396,6 +438,82 @@ struct LibraryView: View {
         }
         .refreshable {
             await viewModel.fetch()
+        }
+    }
+
+    /// True when the home is showing a video grid (all/reels/posts,
+    /// or search results) — the only place multi-select applies.
+    /// The Collections section shows collection cards, not videos.
+    private var showsVideoGrid: Bool {
+        viewModel.selectedSection != .collections || viewModel.isSearching
+    }
+
+    /// Bottom bar in multi-select mode: Select All / Deselect All
+    /// and Delete (N). (A separate property so `body` stays small
+    /// enough for the compiler — see FeedView's type-check lesson.)
+    private var selectionBar: some View {
+        SelectionActionBar(
+            selectedCount: selectedIDs.count,
+            totalCount: viewModel.items.count,
+            onSelectAll: { selectAll() },
+            onDelete: { showingBulkDeleteConfirmation = true }
+        )
+    }
+
+    /// Enter/exit multi-select mode. Exiting clears the selection.
+    private func toggleSelecting() {
+        if isSelecting {
+            exitSelectionMode()
+        } else {
+            isSelecting = true
+        }
+    }
+
+    private func exitSelectionMode() {
+        isSelecting = false
+        selectedIDs.removeAll()
+    }
+
+    /// Toggle one video's selection.
+    private func toggleSelection(_ item: Item) {
+        if selectedIDs.contains(item.id) {
+            selectedIDs.remove(item.id)
+        } else {
+            selectedIDs.insert(item.id)
+        }
+    }
+
+    /// Select all videos currently loaded in this grid (the grid
+    /// pages, so this is the loaded set, not the whole library).
+    private func selectAll() {
+        if selectedIDs.count == viewModel.items.count {
+            selectedIDs.removeAll()
+        } else {
+            selectedIDs = Set(viewModel.items.map(\.id))
+        }
+    }
+
+    /// Delete every selected video (sequential, reusing the single
+    /// delete), then exit multi-select mode. Failures are counted
+    /// and reported; the rest still delete.
+    private func deleteSelected() async {
+        let targets = viewModel.items.filter { selectedIDs.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        var failures = 0
+        for item in targets {
+            do {
+                try await viewModel.delete(item: item)
+            } catch {
+                failures += 1
+            }
+        }
+        let deleted = targets.count - failures
+        selectedIDs.removeAll()
+        isSelecting = false
+        if failures == 0 {
+            saveNotice = "Đã xóa \(deleted) video."
+        } else {
+            saveNotice = "Đã xóa \(deleted) video, \(failures) video lỗi."
         }
     }
 
@@ -725,6 +843,11 @@ private struct MyCollectionCard: View {
 /// SwiftUI resolves tap vs long-press correctly.
 struct VideoGridCell: View {
     let item: Item
+    /// Multi-select: when true the cell shows a selection circle
+    /// (top-left) and a tap toggles selection (the parent's onTap
+    /// decides); the long-press menu is off (parent passes nil).
+    var isSelectionMode: Bool = false
+    var isSelected: Bool = false
     var onTap: (() -> Void)? = nil
     var onLongPress: ((Item) -> Void)? = nil
 
@@ -767,9 +890,23 @@ struct VideoGridCell: View {
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color.accentColor : .white)
+                    .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
         .background(Color(.systemGray5))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.accentColor, lineWidth: 3)
+            }
+        }
         .onTapGesture {
             onTap?()
         }
@@ -780,6 +917,53 @@ struct VideoGridCell: View {
 
     private var badgeText: String? {
         item.formattedViewCount ?? item.formattedDuration
+    }
+}
+
+/// Bottom bar shown in multi-select mode: Select All / Deselect All
+/// and Delete (N). Shared by the home grid and the collection grids.
+/// `totalCount` is the number of videos currently loaded in the grid
+/// (the grid pages, so Select All covers the loaded set).
+struct SelectionActionBar: View {
+    let selectedCount: Int
+    let totalCount: Int
+    let onSelectAll: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Button(allSelected ? "Deselect All" : "Select All", action: onSelectAll)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white)
+            Spacer()
+            Text("\(selectedCount) selected")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.75))
+            Spacer()
+            Button(action: onDelete) {
+                Text("Delete (\(selectedCount))")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(selectedCount > 0 ? Color.red : Color.white.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+            .disabled(selectedCount == 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .background(Color(.systemGray6))
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+
+    private var allSelected: Bool {
+        selectedCount > 0 && selectedCount == totalCount
     }
 }
 

@@ -116,44 +116,62 @@ struct FeedView: View {
     /// The paging scroll view: one full-screen page per video.
     /// (Split out of `body`: the whole feed in one expression made
     /// the compiler give up type-checking it in reasonable time.)
+    /// The scroll view itself is split further (`feedScrollView` +
+    /// `feedPageRow`): the full ScrollViewReader + ScrollView +
+    /// ForEach + FeedVideoPage expression in one piece again exceeded
+    /// the compiler's type-check budget (build run 42695574595,
+    /// v26) after the @Binding isScrubbing + .scrollDisabled were
+    /// added. Each piece is now inferred on its own.
     private var feedPages: some View {
         ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 0) {
-                    ForEach(items) { item in
-                        FeedVideoPage(item: item, isCurrent: item.id == currentItemId, isScrubbing: $isScrubbing, onDeleteRequest: { video in
-                            itemPendingDelete = video
-                            showingDeleteConfirmation = true
-                        })
-                            .id(item.id)
-                            .containerRelativeFrame(.vertical)
-                    }
-                }
-                .scrollTargetLayout()
-            }
-            .scrollTargetBehavior(.paging)
-            .scrollPosition(id: $currentItemId)
-            .scrollIndicators(.hidden)
-            // While a progress-bar scrub is in progress the feed must
-            // not page: a scrub drag that drifts slightly vertical
-            // would otherwise be stolen mid-drag and the bar "misses".
-            .scrollDisabled(isScrubbing)
-            .ignoresSafeArea()
-            .onChange(of: currentItemId) { _, _ in handleCurrentItemChange() }
-            .onChange(of: items) { oldItems, newItems in handleItemsChange(old: oldItems, new: newItems) }
-            .task { fixInitialCurrentItem() }
-            .task {
-                // The feed must open on the video the user tapped, not
-                // the first one. `.scrollPosition` does not always apply
-                // its initial value on first layout (the target page
-                // may not be laid out yet in the LazyVStack), so scroll
-                // to the start item explicitly once the layout settles.
-                try? await Task.sleep(for: .milliseconds(120))
-                guard !Task.isCancelled else { return }
-                if items.contains(where: { $0.id == startItemId }) {
-                    proxy.scrollTo(startItemId, anchor: .top)
+            feedScrollView
+                .scrollTargetBehavior(.paging)
+                .scrollPosition(id: $currentItemId)
+                .scrollIndicators(.hidden)
+                // While a progress-bar scrub is in progress the feed must
+                // not page: a scrub drag that drifts slightly vertical
+                // would otherwise be stolen mid-drag and the bar "misses".
+                .scrollDisabled(isScrubbing)
+                .ignoresSafeArea()
+                .onChange(of: currentItemId) { _, _ in handleCurrentItemChange() }
+                .onChange(of: items) { oldItems, newItems in handleItemsChange(old: oldItems, new: newItems) }
+                .task { fixInitialCurrentItem() }
+                .task { await scrollToStartItem(proxy: proxy) }
+        }
+    }
+
+    /// The scroll view without its behavior/lifecycle modifiers.
+    private var feedScrollView: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0) {
+                ForEach(items) { item in
+                    feedPageRow(for: item)
                 }
             }
+            .scrollTargetLayout()
+        }
+    }
+
+    /// One page of the feed.
+    private func feedPageRow(for item: Item) -> some View {
+        FeedVideoPage(item: item, isCurrent: item.id == currentItemId, isScrubbing: $isScrubbing, onDeleteRequest: { video in
+            itemPendingDelete = video
+            showingDeleteConfirmation = true
+        })
+            .id(item.id)
+            .containerRelativeFrame(.vertical)
+    }
+
+    /// The feed must open on the video the user tapped, not the first
+    /// one. `.scrollPosition` does not always apply its initial value
+    /// on first layout (the target page may not be laid out yet in the
+    /// LazyVStack), so scroll to the start item explicitly once the
+    /// layout settles.
+    private func scrollToStartItem(proxy: ScrollViewProxy) async {
+        try? await Task.sleep(for: .milliseconds(120))
+        guard !Task.isCancelled else { return }
+        if items.contains(where: { $0.id == startItemId }) {
+            proxy.scrollTo(startItemId, anchor: .top)
         }
     }
 

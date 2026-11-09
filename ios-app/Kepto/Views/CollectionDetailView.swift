@@ -21,6 +21,12 @@ struct CollectionDetailView: View {
     /// The video awaiting delete confirmation from the grid menu.
     @State private var itemPendingDelete: Item?
     @State private var showingDeleteConfirmation = false
+    /// Multi-select mode for bulk delete (same pattern as the home
+    /// grid): tap toggles selection, bottom bar has Select All /
+    /// Delete (N).
+    @State private var isSelecting = false
+    @State private var selectedIDs: Set<String> = []
+    @State private var showingBulkDeleteConfirmation = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -35,8 +41,16 @@ struct CollectionDetailView: View {
                     ForEach(items) { item in
                         VideoGridCell(
                             item: item,
-                            onTap: { feedStartItem = item },
-                            onLongPress: { itemForGridMenu = $0 }
+                            isSelectionMode: isSelecting,
+                            isSelected: selectedIDs.contains(item.id),
+                            onTap: {
+                                if isSelecting {
+                                    toggleSelection(item)
+                                } else {
+                                    feedStartItem = item
+                                }
+                            },
+                            onLongPress: isSelecting ? nil : { itemForGridMenu = $0 }
                         )
                     }
                 }
@@ -58,6 +72,18 @@ struct CollectionDetailView: View {
         }
         .navigationTitle(collection.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(isSelecting ? "Cancel" : "Select") {
+                    toggleSelecting()
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                selectionBar
+            }
+        }
         .refreshable {
             await fetch(reset: true)
         }
@@ -123,6 +149,78 @@ struct CollectionDetailView: View {
             Button("Cancel", role: .cancel) { itemPendingDelete = nil }
         } message: {
             Text(itemPendingDelete?.displayTitle ?? "")
+        }
+        .confirmationDialog("Delete \(selectedIDs.count) videos?",
+                            isPresented: $showingBulkDeleteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteSelected() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the saved copies from the cloud. This cannot be undone.")
+        }
+    }
+
+    /// Bottom bar in multi-select mode (see LibraryView).
+    private var selectionBar: some View {
+        SelectionActionBar(
+            selectedCount: selectedIDs.count,
+            totalCount: items.count,
+            onSelectAll: { selectAll() },
+            onDelete: { showingBulkDeleteConfirmation = true }
+        )
+    }
+
+    private func toggleSelecting() {
+        if isSelecting {
+            exitSelectionMode()
+        } else {
+            isSelecting = true
+        }
+    }
+
+    private func exitSelectionMode() {
+        isSelecting = false
+        selectedIDs.removeAll()
+    }
+
+    private func toggleSelection(_ item: Item) {
+        if selectedIDs.contains(item.id) {
+            selectedIDs.remove(item.id)
+        } else {
+            selectedIDs.insert(item.id)
+        }
+    }
+
+    /// Select all videos currently loaded in this collection grid.
+    private func selectAll() {
+        if selectedIDs.count == items.count {
+            selectedIDs.removeAll()
+        } else {
+            selectedIDs = Set(items.map(\.id))
+        }
+    }
+
+    /// Delete every selected video (sequential, reusing the single
+    /// delete), then exit multi-select mode. A failure leaves the
+    /// video in the grid and is reported.
+    private func deleteSelected() async {
+        let targets = items.filter { selectedIDs.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        var failures = 0
+        for item in targets {
+            do {
+                try await viewModel.delete(item: item)
+                items.removeAll { $0.id == item.id }
+            } catch {
+                failures += 1
+            }
+        }
+        selectedIDs.removeAll()
+        isSelecting = false
+        if failures > 0 {
+            errorMessage = "Đã xóa \(targets.count - failures) video, \(failures) video lỗi."
         }
     }
 
@@ -201,6 +299,11 @@ struct MyCollectionDetailView: View {
     @State private var showingDeleteConfirmation = false
     @State private var showingDeleteCollection = false
     @State private var removeError: String?
+    /// Multi-select mode for bulk delete (same pattern as the home
+    /// grid and the per-creator collection).
+    @State private var isSelecting = false
+    @State private var selectedIDs: Set<String> = []
+    @State private var showingBulkDeleteConfirmation = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -214,8 +317,16 @@ struct MyCollectionDetailView: View {
                 ForEach(items) { item in
                     VideoGridCell(
                         item: item,
-                        onTap: { feedStartItem = item },
-                        onLongPress: { itemForGridMenu = $0 }
+                        isSelectionMode: isSelecting,
+                        isSelected: selectedIDs.contains(item.id),
+                        onTap: {
+                            if isSelecting {
+                                toggleSelection(item)
+                            } else {
+                                feedStartItem = item
+                            }
+                        },
+                        onLongPress: isSelecting ? nil : { itemForGridMenu = $0 }
                     )
                 }
             }
@@ -238,11 +349,26 @@ struct MyCollectionDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(role: .destructive) {
-                    showingDeleteCollection = true
-                } label: {
-                    Label("Delete collection", systemImage: "trash")
+                Button(isSelecting ? "Cancel" : "Select") {
+                    toggleSelecting()
                 }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                // Deleting the whole collection is hidden while
+                // selecting videos, so the two deletes cannot be
+                // confused with each other.
+                if !isSelecting {
+                    Button(role: .destructive) {
+                        showingDeleteCollection = true
+                    } label: {
+                        Label("Delete collection", systemImage: "trash")
+                    }
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                selectionBar
             }
         }
         .refreshable {
@@ -328,6 +454,78 @@ struct MyCollectionDetailView: View {
             Button("Cancel", role: .cancel) { itemPendingDelete = nil }
         } message: {
             Text(itemPendingDelete?.displayTitle ?? "")
+        }
+        .confirmationDialog("Delete \(selectedIDs.count) videos?",
+                            isPresented: $showingBulkDeleteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteSelected() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the saved copies from the cloud. This cannot be undone.")
+        }
+    }
+
+    /// Bottom bar in multi-select mode (see LibraryView).
+    private var selectionBar: some View {
+        SelectionActionBar(
+            selectedCount: selectedIDs.count,
+            totalCount: items.count,
+            onSelectAll: { selectAll() },
+            onDelete: { showingBulkDeleteConfirmation = true }
+        )
+    }
+
+    private func toggleSelecting() {
+        if isSelecting {
+            exitSelectionMode()
+        } else {
+            isSelecting = true
+        }
+    }
+
+    private func exitSelectionMode() {
+        isSelecting = false
+        selectedIDs.removeAll()
+    }
+
+    private func toggleSelection(_ item: Item) {
+        if selectedIDs.contains(item.id) {
+            selectedIDs.remove(item.id)
+        } else {
+            selectedIDs.insert(item.id)
+        }
+    }
+
+    /// Select all videos currently loaded in this collection grid.
+    private func selectAll() {
+        if selectedIDs.count == items.count {
+            selectedIDs.removeAll()
+        } else {
+            selectedIDs = Set(items.map(\.id))
+        }
+    }
+
+    /// Delete every selected video (sequential, reusing the single
+    /// delete), then exit multi-select mode. A failure leaves the
+    /// video in the grid and is reported.
+    private func deleteSelected() async {
+        let targets = items.filter { selectedIDs.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        var failures = 0
+        for item in targets {
+            do {
+                try await viewModel.delete(item: item)
+                items.removeAll { $0.id == item.id }
+            } catch {
+                failures += 1
+            }
+        }
+        selectedIDs.removeAll()
+        isSelecting = false
+        if failures > 0 {
+            errorMessage = "Đã xóa \(targets.count - failures) video, \(failures) video lỗi."
         }
     }
 
