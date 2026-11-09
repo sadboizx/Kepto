@@ -1,3 +1,4 @@
+import AVFoundation
 import AVKit
 import SwiftUI
 
@@ -108,17 +109,20 @@ struct ItemDetailView: View {
     /// Why AVURLAsset and not `AVPlayer(url:)`:
     /// `AVPlayer(url:)` sends a bare GET with no way to attach the
     /// `Authorization: Bearer …` header, so the Worker would answer 401.
-    /// `AVURLAssetHTTPHeaderFieldsKey` attaches the header to the asset's
-    /// requests instead. Caveat: AVFoundation may drop custom headers if
-    /// the server redirects — the Kepto Worker never redirects, so the
-    /// header survives the whole stream, including Range/seek requests.
+    /// The `AVURLAssetHTTPHeaderFieldsKey` option attaches the header to
+    /// the asset's requests instead. There is no public Swift constant
+    /// for that key (Xcode 16 reports it as not in scope), so it is
+    /// passed as the documented literal string below.
+    /// Caveat: AVFoundation may drop custom headers if the server
+    /// redirects — the Kepto Worker never redirects, so the header
+    /// survives the whole stream, including Range/seek requests.
     private func startPlayerIfReady() {
         guard item.status == .ready,
               player == nil,
               let api = viewModel.api else { return }
         let asset = AVURLAsset(
             url: api.playURL(for: item),
-            options: [AVURLAssetHTTPHeaderFieldsKey: ["Authorization": api.authorizationHeader]]
+            options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": api.authorizationHeader]]
         )
         let playerItem = AVPlayerItem(asset: asset)
         player = AVPlayer(playerItem: playerItem)
