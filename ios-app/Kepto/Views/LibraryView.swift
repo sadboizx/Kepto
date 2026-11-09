@@ -587,54 +587,51 @@ struct LibraryView: View {
 /// centre-cropped, never letterboxed), so the card reads as a square
 /// thumbnail exactly like TikTok's.
 ///
-/// Sizing: a clear square sizes the card. Color has no intrinsic size,
-/// so aspectRatio(1) reliably makes it 1:1 — the old ZStack let the
-/// 9:16 cover image stretch the card tall (the 2026-11-10 screenshot
-/// showed tall cards, not squares), and a LazyVGrid row then stretched
-/// every card in the row. Overlay content cannot change the card's
-/// size, so the thumbnail can never stretch it again.
+/// Sizing: a plain ZStack with aspectRatio(1) — the cover fills the
+/// square, never sizes it. (The v16 Color.clear + overlay pattern made
+/// the cards look square but shifted the tap area down by one row in
+/// the LazyVGrid: tapping nuocloc7mao opened nanshwesang, tapping
+/// @meodidau_ opened nanacat099. The overlay's frame and the card's
+/// frame disagreed, so the hit-test landed on the cell below.)
 private struct CollectionCard: View {
     let collection: CollectionInfo
 
     var body: some View {
-        Color.clear
-            .aspectRatio(1, contentMode: .fit)
-            .overlay(alignment: .bottomLeading) {
-                ZStack(alignment: .bottomLeading) {
-                    cover
-                    // Bottom gradient so the white overlay text stays legible.
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.65)],
-                        startPoint: .center,
-                        endPoint: .bottom
-                    )
-                    HStack(alignment: .bottom) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Image(systemName: "bookmark")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(.white)
-                            Text(nameLine)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                            if let handle = handleLine {
-                                Text(handle)
-                                    .font(.subheadline)
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                            }
-                        }
-                        Spacer()
-                        Image(systemName: "lock")
-                            .font(.system(size: 15))
+        ZStack(alignment: .bottomLeading) {
+            cover
+            // Bottom gradient so the white overlay text stays legible.
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.65)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Image(systemName: "bookmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(nameLine)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if let handle = handleLine {
+                        Text(handle)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
                             .foregroundStyle(.white)
+                            .lineLimit(1)
                     }
-                    .padding(12)
                 }
+                Spacer()
+                Image(systemName: "lock")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(12)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     /// The cover, forced to fill the square card (centre-cropped).
@@ -671,40 +668,37 @@ private struct CollectionCard: View {
 /// cards): cover thumbnail (or a folder placeholder), name + video
 /// count overlaid at the bottom. The cover is forced to fill the
 /// square (centre-cropped, never letterboxed), like TikTok's.
-/// Sized by a clear square (see CollectionCard) so the 9:16 cover
-/// image can never stretch the card tall.
+/// A plain ZStack with aspectRatio(1) — see CollectionCard: the
+/// Color.clear + overlay pattern shifted the tap area down one row.
 private struct MyCollectionCard: View {
     let collection: MyCollection
 
     var body: some View {
-        Color.clear
-            .aspectRatio(1, contentMode: .fit)
-            .overlay(alignment: .bottomLeading) {
-                ZStack(alignment: .bottomLeading) {
-                    cover
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.65)],
-                        startPoint: .center,
-                        endPoint: .bottom
-                    )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.white)
-                        Text(collection.name)
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                        Text("\(collection.count) video")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(1)
-                    }
-                    .padding(12)
-                }
+        ZStack(alignment: .bottomLeading) {
+            cover
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.65)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+            VStack(alignment: .leading, spacing: 2) {
+                Image(systemName: "folder")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text(collection.name)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text("\(collection.count) video")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(12)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     /// The cover, forced to fill the square card (centre-cropped).
