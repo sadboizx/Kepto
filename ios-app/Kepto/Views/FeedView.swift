@@ -201,7 +201,7 @@ private struct FeedVideoPage: View {
     @State private var duration: Double = 0
     @State private var isScrubbing = false
     @State private var sprite: UIImage?
-    @StateObject private var frameCache = SpriteFrameCache()
+    @StateObject private var frameCache = ScrubPreviewPlayer.SpriteFrameCache()
     @State private var timeObserver: Any?
     @State private var endObserver: NSObjectProtocol?
     @State private var tapIcon: String?
@@ -418,7 +418,7 @@ private struct FeedProgressBar: View {
     @Binding var isScrubbing: Bool
     let item: Item
     let sprite: UIImage?
-    let frameCache: SpriteFrameCache
+    let frameCache: ScrubPreviewPlayer.SpriteFrameCache
     let onSeek: (Double) -> Void
 
     @State private var scrubFraction: Double = 0
