@@ -1,17 +1,18 @@
 import SwiftUI
 import UIKit
 
-/// Library: the app's home screen. Videos are watched in a TikTok-style
-/// full-screen feed — one video at a time, full-width 9:16, swipe
-/// up/down for the next — with a top bar (title + search + section
-/// chips) overlaid on the video. The menu switches between Tất cả
-/// (all) / Reels (videos) / Bài viết (images) / Collections. Collections
-/// stay a grid (one card per creator username, like TikTok's
-/// Collections tab); tapping a collection opens its videos in the feed.
-/// Searching shows matching items in the feed instead.
-/// Thumbnails are authenticated (AsyncImage cannot send the Authorization
-/// header), so `AuthenticatedThumbnail` loads them with URLSession
-/// (see `KeptoAPI.fetchThumbnail`) and keeps them in memory only.
+/// Library: the app's home screen. The home shows saved videos as a
+/// 3-column grid (TikTok profile style) — Tất cả (all) / Reels
+/// (videos) / Bài viết (images) / Collections. Tapping a video opens
+/// it in the full-screen feed viewer (swipe up/down for the next
+/// video); the feed is only for watching, not the home itself.
+/// Collections stay a grid (one card per creator username, like
+/// TikTok's Collections tab); tapping a collection opens its videos
+/// in a grid, and tapping one there opens the feed viewer too.
+/// Searching filters the grid. Thumbnails are authenticated
+/// (AsyncImage cannot send the Authorization header), so
+/// `AuthenticatedThumbnail` loads them with URLSession (see
+/// `KeptoAPI.fetchThumbnail`) and keeps them in memory only.
 struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var showingSettings = false
@@ -22,29 +23,21 @@ struct LibraryView: View {
     @State private var urlInput = ""
     /// One-line notice after a direct save (e.g. "already saved").
     @State private var saveNotice: String?
-    /// Whether the search field is shown in the feed's top bar.
-    @State private var showingSearchField = false
-    /// Resets the feed (back to the first video) after a new save.
-    @State private var feedResetToken = UUID()
+    /// The video the full-screen feed viewer opens on (nil = closed).
+    @State private var feedStartItem: Item?
 
     private let collectionColumns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12),
     ]
 
-    /// True while the home shows the video feed (not the collections
-    /// grid): the navigation bar is hidden and the top bar overlays
-    /// the video, TikTok-style.
-    private var isFeed: Bool {
-        viewModel.isConfigured && (viewModel.selectedSection != .collections || viewModel.isSearching)
-    }
-
-    /// Identity for the feed view: a new identity discards the feed's
-    /// scroll position and reopens it at the first video — when the
-    /// section or search changes, and after a new save.
-    private var feedID: String {
-        "\(viewModel.selectedSection.rawValue)-\(viewModel.isSearching)-\(feedResetToken.uuidString)"
-    }
+    /// 3-column video grid (TikTok profile style): 9:16 cells, 2pt
+    /// gaps, slightly rounded corners.
+    private let videoColumns = [
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2),
+    ]
 
     var body: some View {
         NavigationStack {
@@ -55,7 +48,6 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle("Kepto")
-            .toolbar(isFeed ? .hidden : .visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -109,6 +101,14 @@ struct LibraryView: View {
             }) {
                 SettingsView()
             }
+            .fullScreenCover(item: $feedStartItem) { startItem in
+                FeedView(
+                    items: Binding(get: { viewModel.items }, set: { _ in }),
+                    startItemId: startItem.id,
+                    onNearEnd: { await viewModel.loadMore() },
+                    showCloseButton: true
+                )
+            }
             .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") { viewModel.errorMessage = nil }
             } message: {
@@ -126,8 +126,7 @@ struct LibraryView: View {
     /// link, or save the link currently on the clipboard. Choosing
     /// either starts the save right away — no further sheet or menu.
     /// (No Photo Library entry: Kepto saves by link, it has no
-    /// local-file upload.) It sits above the feed's bottom progress
-    /// bar, so its bottom padding clears the bar.
+    /// local-file upload.)
     private var addButton: some View {
         Menu {
             Button {
@@ -150,14 +149,13 @@ struct LibraryView: View {
                 .shadow(radius: 4)
         }
         .padding(.trailing, 20)
-        .padding(.bottom, 64)
+        .padding(.bottom, 20)
     }
 
-    /// Saves a link right away, with no sheet in between. On success the
-    /// home switches to Tất cả and the feed reopens at the top so the
-    /// newly saved video is the first one shown; a duplicate shows a
-    /// short notice instead of a second copy. A failure surfaces
-    /// through the view model's error alert.
+    /// Saves a link right away, with no sheet in between. On success
+    /// the home switches to Tất cả and the new video is at the top of
+    /// the grid; a duplicate shows a short notice instead of a second
+    /// copy. A failure surfaces through the view model's error alert.
     private func saveDirect(_ rawURL: String) async {
         let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -165,8 +163,6 @@ struct LibraryView: View {
         await viewModel.selectSection(.all)
         if result.duplicate {
             saveNotice = "Link này đã lưu trước đó."
-        } else {
-            feedResetToken = UUID()
         }
     }
 
@@ -196,7 +192,7 @@ struct LibraryView: View {
         } else if viewModel.selectedSection == .collections && !viewModel.isSearching {
             collectionsContent
         } else {
-            feedHome
+            videoGridHome
         }
     }
 
@@ -211,117 +207,84 @@ struct LibraryView: View {
         }
     }
 
-    /// The video feed home: full-screen black feed with the top bar
-    /// (title + search + section chips) overlaid, TikTok-style.
-    private var feedHome: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .top) {
-                Color.black.ignoresSafeArea()
-                if viewModel.isLoading && viewModel.items.isEmpty {
-                    ProgressView("Loading…")
-                        .tint(.white)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if viewModel.items.isEmpty {
-                    ContentUnavailableView {
-                        Label(emptyTitle, systemImage: emptyIcon)
-                    } description: {
-                        Text(emptyDescription)
-                    } actions: {
-                        Button("Save a link") { showingURLInput = true }
-                            .buttonStyle(.borderedProminent)
+    /// The video grid home: a search field and the section chips on
+    /// top, then the 3-column video grid. Tapping a video opens it
+    /// in the full-screen feed viewer.
+    private var videoGridHome: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.white.opacity(0.7))
+                TextField("Search title, caption, @username", text: $viewModel.searchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .foregroundStyle(.white)
+                if !viewModel.searchText.isEmpty {
+                    Button {
+                        viewModel.searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.white.opacity(0.7))
                     }
-                } else {
-                    FeedView(
-                        items: Binding(get: { viewModel.items }, set: { _ in }),
-                        startItemId: viewModel.items.first?.id ?? "",
-                        onNearEnd: { await viewModel.loadMore() }
-                    )
-                    .id(feedID)
                 }
-                feedTopOverlay(topSafeArea: geo.safeAreaInsets.top)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.1))
+            .clipShape(Capsule())
+            .padding(.horizontal)
+            .padding(.top, 8)
+            sectionMenu
+            if viewModel.isLoading && viewModel.items.isEmpty {
+                ProgressView("Loading…")
+                    .tint(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if viewModel.items.isEmpty {
+                ContentUnavailableView {
+                    Label(emptyTitle, systemImage: emptyIcon)
+                } description: {
+                    Text(emptyDescription)
+                } actions: {
+                    Button("Save a link") { showingURLInput = true }
+                        .buttonStyle(.borderedProminent)
+                }
+            } else {
+                videoGrid
             }
         }
         .preferredColorScheme(.dark)
     }
 
-    /// Top bar overlaid on the feed (TikTok-style): title + search and
-    /// settings buttons, an optional search field, and the section
-    /// chips — all on a top gradient so they stay legible over video.
-    private func feedTopOverlay(topSafeArea: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Kepto")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .foregroundStyle(.white)
-                Spacer()
-                Button {
-                    showingSearchField = true
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(Color.black.opacity(0.35))
-                        .clipShape(Circle())
-                }
-                Button {
-                    showingSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(Color.black.opacity(0.35))
-                        .clipShape(Circle())
-                }
-            }
-            .padding(.horizontal)
-            if showingSearchField {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.white.opacity(0.7))
-                    TextField("Search title, caption, @username", text: $viewModel.searchText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .foregroundStyle(.white)
-                    if !viewModel.searchText.isEmpty {
-                        Button {
-                            viewModel.searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.white.opacity(0.7))
+    /// The 3-column video grid (TikTok profile style): 9:16 cells,
+    /// 2pt gaps, rounded corners. The last cell loads the next page
+    /// when it appears (waterfall); pull-to-refresh reloads.
+    /// Tapping a cell opens the full-screen feed viewer at that video.
+    private var videoGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: videoColumns, spacing: 2) {
+                ForEach(viewModel.items) { item in
+                    Button {
+                        feedStartItem = item
+                    } label: {
+                        VideoGridCell(item: item)
+                    }
+                    .buttonStyle(.plain)
+                    .onAppear {
+                        if item.id == viewModel.items.last?.id {
+                            Task { await viewModel.loadMore() }
                         }
                     }
-                    Button("Cancel") {
-                        showingSearchField = false
-                        viewModel.searchText = ""
-                    }
-                    .foregroundStyle(.white)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.black.opacity(0.45))
-                .clipShape(Capsule())
-                .padding(.horizontal)
-                .padding(.top, 8)
             }
-            sectionMenu
         }
-        .padding(.top, topSafeArea)
-        .background(
-            LinearGradient(
-                colors: [.black.opacity(0.55), .clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        .refreshable {
+            await viewModel.fetch()
+        }
     }
 
-    /// Menu bar: Tất cả / Reels / Bài viết / Collections. Over the
-    /// video: selected is a white capsule with black text (TikTok's
-    /// selected tab), the rest are white text on a dark translucent
-    /// capsule.
+    /// Menu bar: Tất cả / Reels / Bài viết / Collections. Selected
+    /// is a white capsule with black text (TikTok's selected tab);
+    /// the rest are white text on a subtle dark capsule.
     private var sectionMenu: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -336,7 +299,7 @@ struct LibraryView: View {
                             .foregroundStyle(selected ? Color.black : Color.white)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 7)
-                            .background(selected ? Color.white : Color.black.opacity(0.35))
+                            .background(selected ? Color.white : Color.white.opacity(0.12))
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -486,9 +449,9 @@ private struct CollectionCard: View {
 /// nothing overflows. Badge bottom-left (play + view count, or duration),
 /// a spinner while pending, and a red dot when ingest failed.
 ///
-/// NOTE: kept for the collection detail page (a per-creator overview,
-/// like a TikTok profile grid). The home screen itself no longer uses
-/// a grid — videos are watched in the full-screen feed (FeedView).
+/// NOTE: used by the home grid and by the collection detail page
+/// (a per-creator overview, like a TikTok profile grid). Tapping a
+/// cell opens the video in the full-screen feed viewer.
 struct VideoGridCell: View {
     let item: Item
 

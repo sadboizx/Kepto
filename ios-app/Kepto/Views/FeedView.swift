@@ -2,17 +2,24 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-/// TikTok-style full-screen video feed: one video at a time, full-width
-/// 9:16, swipe up/down for the next video. The home screen's video
-/// sections (Tất cả / Reels / Bài viết) and search results are shown
-/// here instead of a grid; a collection's videos open here too.
+/// TikTok-style full-screen video viewer: one video at a time,
+/// full-width, swipe up/down for the next video. Opened from a grid
+/// (the home screen or a collection) — the home itself is a grid, not
+/// a feed. The video fills the whole screen edge-to-edge
+/// (`.resizeAspectFill`, TikTok-style) and runs behind the status bar;
+/// the status bar text is white over the video.
 ///
 /// Each page owns its AVPlayer: created when the page appears, played
-/// only while it is the current page, released when it disappears.
-/// Videos loop. A thin progress bar sits at the very bottom edge (drag
-/// to scrub, with the sprite preview popup). The background is black
-/// throughout; the video is aspect-fit, never cropped. Photo posts
-/// show the full image instead of a player.
+/// only while it is the current page. The player is KEPT (paused) when
+/// the page scrolls away — destroying and recreating it on every swipe
+/// is what left the next video with sound but no picture (the player
+/// was already playing when its new layer was created, and the layer
+/// never picked up the video track). Playback is scheduled a beat
+/// after the page becomes current, and seeks to the current frame
+/// first, so the layer always renders a fresh frame. Videos loop.
+/// A thin progress bar sits above the Home Indicator (drag to scrub,
+/// with the sprite preview popup). The background is black throughout.
+/// Photo posts show the full image instead of a player.
 struct FeedView: View {
     /// The list to page through. A Binding so appends from `onNearEnd`
     /// (the library's loadMore, or a collection's) are visible here.
@@ -21,10 +28,9 @@ struct FeedView: View {
     let startItemId: String
     /// Called when the user nears the end (loads the next page).
     var onNearEnd: (() async -> Void)? = nil
-    /// Shows a close (X) button top-left. True when the feed is a
-    /// full-screen cover (e.g. opened from a collection); the home
-    /// feed is the root screen and has no close button.
-    var showCloseButton: Bool = false
+    /// Shows a close (X) button top-left. The feed is always a
+    /// full-screen cover now (opened from a grid), so this is true.
+    var showCloseButton: Bool = true
 
     @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss
@@ -38,7 +44,7 @@ struct FeedView: View {
     @State private var deleteError: String?
 
     init(items: Binding<[Item]>, startItemId: String,
-         onNearEnd: (() async -> Void)? = nil, showCloseButton: Bool = false) {
+         onNearEnd: (() async -> Void)? = nil, showCloseButton: Bool = true) {
         self._items = items
         self.startItemId = startItemId
         self.onNearEnd = onNearEnd
@@ -50,18 +56,20 @@ struct FeedView: View {
     private var currentItem: Item? { currentIndex.flatMap { items[$0] } }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            if items.isEmpty {
-                emptyState
-            } else {
-                feedPages
-            }
-            if showCloseButton {
-                closeButton
-            }
-            if currentItem != nil {
-                moreButton
+        GeometryReader { geo in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if items.isEmpty {
+                    emptyState
+                } else {
+                    feedPages
+                }
+                if showCloseButton {
+                    closeButton(topSafeArea: geo.safeAreaInsets.top)
+                }
+                if currentItem != nil {
+                    moreButton
+                }
             }
         }
         .preferredColorScheme(.dark)
@@ -122,8 +130,10 @@ struct FeedView: View {
         .task { fixInitialCurrentItem() }
     }
 
-    /// Close button (covers only, top-left).
-    private var closeButton: some View {
+    /// Close button (covers only, top-left). The video runs behind
+    /// the status bar, so the button sits just below it — not under
+    /// the clock/battery.
+    private func closeButton(topSafeArea: CGFloat) -> some View {
         VStack {
             HStack {
                 Button {
@@ -141,6 +151,7 @@ struct FeedView: View {
             }
             Spacer()
         }
+        .padding(.top, topSafeArea + 4)
     }
 
     /// "..." rail button (right edge, vertically centred):
@@ -222,10 +233,13 @@ struct FeedView: View {
 }
 
 /// One full-screen page in the feed: the video (or photo) on a black
-/// background, aspect-fit so it is never cropped. The player is created
-/// on appear, plays only while this page is the current one, loops, and
-/// is released on disappear. Tap toggles play/pause (with a brief
-/// centre icon). A thin progress bar sits at the very bottom edge.
+/// background, filling the screen edge-to-edge (`.resizeAspectFill`,
+/// TikTok-style) so it runs behind the status bar. The player is
+/// created on appear and kept (paused) when the page scrolls away —
+/// see the note on `schedulePlay` for why it is not destroyed.
+/// It plays only while this page is the current one, and loops.
+/// A thin progress bar sits above the Home Indicator, with a clear
+/// gap below it so a swipe never lands on the indicator by mistake.
 private struct FeedVideoPage: View {
     let item: Item
     let isCurrent: Bool
@@ -239,9 +253,11 @@ private struct FeedVideoPage: View {
     @State private var sprite: UIImage?
     @StateObject private var frameCache = ScrubPreviewPlayer.SpriteFrameCache()
     @State private var timeObserver: Any?
-    @State private var endObserver: NSObjectProtocol?
     @State private var tapIcon: String?
     @State private var tapIconTask: Task<Void, Never>?
+    /// Deferred play (see `schedulePlay`): cancelled when the page
+    /// stops being current or disappears.
+    @State private var playTask: Task<Void, Never>?
     @State private var fullImage: UIImage?
 
     private var isImage: Bool { item.contentType?.hasPrefix("image/") == true }
@@ -253,7 +269,7 @@ private struct FeedVideoPage: View {
                     Color.black
                     if item.status == .ready, !isImage {
                         if let player {
-                            PlayerView(player: player)
+                            PlayerView(player: player, videoGravity: .resizeAspectFill)
                         } else {
                             ProgressView().tint(.white)
                         }
@@ -305,13 +321,17 @@ private struct FeedVideoPage: View {
                         frameCache: frameCache,
                         onSeek: { seconds in seek(to: seconds) }
                     )
-                    .padding(.bottom, max(geo.safeAreaInsets.bottom, 8))
+                    // Clear gap below the bar: the safe-area inset
+                    // (Home Indicator) plus 16pt, so a swipe or a tap
+                    // on the bar never lands on the indicator.
+                    .padding(.bottom, geo.safeAreaInsets.bottom + 16)
                 }
             }
         }
         .background(Color.black)
         .onAppear {
             setupPlayer()
+            if isCurrent { schedulePlay() }
             if isImage, item.status == .ready {
                 Task { await loadFullImage() }
             }
@@ -320,13 +340,22 @@ private struct FeedVideoPage: View {
                 sprite = try? await api.fetchSprite(for: item)
             }
         }
-        .onDisappear { teardownPlayer() }
+        .onDisappear {
+            // Pause only — the player is KEPT (with its layer and
+            // its buffer) so swiping back resumes instantly and the
+            // layer never has to re-attach to a playing player.
+            // It is released when SwiftUI destroys this page.
+            playTask?.cancel()
+            player?.pause()
+            isPlaying = false
+            tapIconTask?.cancel()
+            tapIcon = nil
+        }
         .onChange(of: isCurrent) { _, current in
             if current {
-                if player == nil { setupPlayer() }
-                player?.play()
-                isPlaying = true
+                schedulePlay()
             } else {
+                playTask?.cancel()
                 player?.pause()
                 isPlaying = false
             }
@@ -353,40 +382,56 @@ private struct FeedVideoPage: View {
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.actionAtItemEnd = .none
         player = newPlayer
-        // Loop: TikTok replays the video when it ends.
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime, object: playerItem, queue: .main
-        ) { [weak newPlayer] _ in
-            newPlayer?.seek(to: .zero)
-            newPlayer?.play()
-        }
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
             guard !isScrubbing else { return }
             currentTime = time.seconds
             let total = newPlayer.currentItem?.duration.seconds ?? 0
             if total.isFinite && total > 0 { duration = total }
-        }
-        if isCurrent {
-            newPlayer.play()
-            isPlaying = true
+            // Loop: TikTok replays the video when it ends. Done here
+            // (not with a NotificationCenter observer) so nothing
+            // leaks when the player is kept across swipes.
+            if isPlaying, total > 0, time.seconds >= total - 0.25 {
+                seek(to: 0)
+            }
         }
     }
 
-    private func teardownPlayer() {
-        if let timeObserver, let player {
-            player.removeTimeObserver(timeObserver)
+    /// Plays this page once its layer is attached. Starting playback
+    /// the instant the player was created — before the PlayerView's
+    /// AVPlayerLayer existed — is what left the next video with
+    /// sound but no picture after a swipe: the player was already
+    /// playing when its layer was created, and the layer never picked
+    /// up the video track. So playback waits a beat (the layer is
+    /// created by the state update in the meantime), then seeks to
+    /// the current frame first, which forces the layer to render a
+    /// fresh frame, and plays.
+    private func schedulePlay() {
+        if player == nil { setupPlayer() }
+        guard player != nil else { return }
+        playTask?.cancel()
+        playTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard !Task.isCancelled else { return }
+            playCurrent()
         }
-        timeObserver = nil
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
+    }
+
+    /// Seek to the current frame (restart from the top if the video
+    /// already ended) and play. The seek is what makes the layer
+    /// render a frame instead of staying frozen/black.
+    private func playCurrent() {
+        guard let player, isCurrent else { return }
+        let target: CMTime
+        if duration > 0 && currentTime >= duration - 0.5 {
+            target = .zero
+        } else {
+            target = player.currentTime()
         }
-        endObserver = nil
-        player?.pause()
-        player = nil
-        isPlaying = false
-        tapIconTask?.cancel()
-        tapIcon = nil
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak player] _ in
+            player?.play()
+        }
+        isPlaying = true
     }
 
     /// Sound fix (same as the detail player): the app's default audio
@@ -410,9 +455,7 @@ private struct FeedVideoPage: View {
             isPlaying = false
             flashIcon("pause.fill")
         } else {
-            if duration > 0 && currentTime >= duration - 0.5 { seek(to: 0) }
-            player.play()
-            isPlaying = true
+            playCurrent()
             flashIcon("play.fill")
         }
     }
