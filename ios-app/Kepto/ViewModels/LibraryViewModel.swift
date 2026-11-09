@@ -281,6 +281,30 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    /// Save every video in a TikTok Collection. Returns the result on
+    /// success so the caller can show how many were new; the current
+    /// section refreshes to include the new items.
+    func saveCollection(url: String) async -> SaveCollectionResult? {
+        guard let api else {
+            errorMessage = KeptoAPIError.notConfigured.errorDescription
+            return nil
+        }
+        do {
+            let result = try await api.saveCollection(url: url)
+            if isSearching {
+                await fetch()
+            } else if selectedSection == .collections {
+                await fetchCollections()
+            } else {
+                await fetch()
+            }
+            return result
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return nil
+        }
+    }
+
     /// Delete an item on the server (R2 objects + D1 row), then drop it
     /// from the search results. Throws so the detail view can show the failure.
     func delete(item: Item) async throws {

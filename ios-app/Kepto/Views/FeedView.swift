@@ -10,9 +10,9 @@ import UIKit
 /// (`.resizeAspectFill`, TikTok-style: top under the status bar,
 /// bottom to the screen edge, sides cropped slightly on a tall
 /// screen). The username and caption overlay the video at the
-/// bottom-left, and the progress bar sits right at the bottom edge
-/// of the video, just above the Home Indicator. The status bar text
-/// is white over the video.
+/// bottom-left, right at the bottom edge just above the Home
+/// Indicator, and the progress bar sits right above the username.
+/// The status bar text is white over the video.
 ///
 /// Each page owns its AVPlayer: created when the page appears, played
 /// only while it is the current page. The player is KEPT (paused) when
@@ -22,7 +22,7 @@ import UIKit
 /// never picked up the video track). Playback is scheduled a beat
 /// after the page becomes current, and seeks to the current frame
 /// first, so the layer always renders a fresh frame. Videos loop.
-/// A thin progress bar sits above the Home Indicator (drag to scrub,
+/// A thin progress bar sits above the username (drag to scrub,
 /// with the sprite preview popup). The background is black throughout.
 /// Photo posts show the full image instead of a player.
 ///
@@ -219,9 +219,9 @@ struct FeedView: View {
 
 /// One full-screen page in the feed: the video (or photo) filling
 /// the screen edge-to-edge (`.resizeAspectFill`, TikTok-style), the
-/// username and caption overlaid bottom-left on the video, and the
-/// progress bar right at the bottom edge, just above the Home
-/// Indicator. The player is created on appear and kept (paused)
+/// username and caption overlaid bottom-left on the video at the
+/// very bottom edge, and the progress bar right above the username.
+/// The player is created on appear and kept (paused)
 /// when the page scrolls away — see the note on `schedulePlay`
 /// for why it is not destroyed. It plays only while this page is
 /// the current one, and loops. Long-press opens the TikTok-style
@@ -267,9 +267,9 @@ private struct FeedVideoPage: View {
             // TikTok layout: the video fills the whole screen
             // edge-to-edge (top under the status bar, bottom to the
             // screen edge). The username/caption overlay the video
-            // at the bottom-left, and the progress bar sits right
-            // at the bottom edge of the video, just above the Home
-            // Indicator.
+            // at the bottom-left, right at the bottom edge just
+            // above the Home Indicator, and the progress bar sits
+            // right above the username.
             ZStack {
                 Color.black
                 if item.status == .ready, !isImage {
@@ -327,11 +327,25 @@ private struct FeedVideoPage: View {
                 // video (TikTok-style), directly above the progress
                 // bar. There is no "…" button on the video any more,
                 // so nothing covers this text.
-                // Progress bar, TikTok position: right at the bottom
-                // edge of the video, thin, just above the Home
-                // Indicator (a small gap, not touching it).
+                // Progress bar sits ABOVE the username (not at the
+                // very bottom): the username is at the bottom edge,
+                // just above the Home Indicator, and the progress bar
+                // is right above it.
                 VStack(spacing: 0) {
                     Spacer()
+                    if item.status == .ready, !isImage {
+                        FeedProgressBar(
+                            currentTime: currentTime,
+                            duration: duration,
+                            isScrubbing: $isScrubbing,
+                            item: item,
+                            sprite: sprite,
+                            frameCache: frameCache,
+                            onSeek: { seconds in seek(to: seconds) }
+                        )
+                        // 10pt above the username.
+                        .padding(.bottom, 10)
+                    }
                     if item.status == .ready {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(item.collectionName)
@@ -348,25 +362,14 @@ private struct FeedVideoPage: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
-                        // 10pt above the progress bar (or above the
-                        // Home Indicator when there is no bar, i.e.
-                        // photo posts).
-                        .padding(.bottom, isImage ? geo.safeAreaInsets.bottom + 8 : 10)
-                    }
-                    if item.status == .ready, !isImage {
-                        FeedProgressBar(
-                            currentTime: currentTime,
-                            duration: duration,
-                            isScrubbing: $isScrubbing,
-                            item: item,
-                            sprite: sprite,
-                            frameCache: frameCache,
-                            onSeek: { seconds in seek(to: seconds) }
-                        )
+                        // At the very bottom, just above the Home
+                        // Indicator (a small gap, not touching it).
                         .padding(.bottom, geo.safeAreaInsets.bottom + 8)
                     }
                 }
                 // Transient notice (Copy link / Download result).
+                // Sits above the progress bar (which is now above the
+                // username), so it never covers either.
                 if let notice {
                     VStack {
                         Spacer()
@@ -378,7 +381,7 @@ private struct FeedVideoPage: View {
                             .padding(.vertical, 8)
                             .background(Color.black.opacity(0.7))
                             .clipShape(Capsule())
-                            .padding(.bottom, 90)
+                            .padding(.bottom, 160)
                     }
                 }
             }

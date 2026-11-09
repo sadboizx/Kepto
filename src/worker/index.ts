@@ -11,6 +11,14 @@
  *                             or 200 { item, duplicate: true } if the link
  *                             was already saved (no second copy is made);
  *                             a previously failed save is retried instead.
+ * - POST /api/save-collection { url } -> 202 { title, total, created,
+ *                             duplicates, capped, collection_id, items }:
+ *                             expands a TikTok Collection (or any playlist
+ *                             URL) via the ingest service (yt-dlp
+ *                             --flat-playlist) and saves every video in it;
+ *                             groups them into a user-created collection
+ *                             named after the TikTok collection when it
+ *                             has a title (best-effort).
  * - GET  /api/list            ?platform=&q=&status=&author_username=&limit=&cursor=
  * - GET  /api/collections     one row per author username (the Library's
  *                             home screen), with count + cover item id
@@ -71,6 +79,7 @@ import {
   removeItemFromMyCollection,
   resetForRetry,
   type IngestResult,
+  type Item,
 } from "./db";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -132,6 +141,42 @@ function fireIngest(c: Context<{ Bindings: Env }>, id: string, url: string): voi
   );
 }
 
+interface SaveOneResult {
+  item: Item;
+  duplicate: boolean;
+  retried: boolean;
+}
+
+/**
+ * Save one URL: dedupe (an already-saved link returns the existing item;
+ * a previously failed save is retried) + insert + fire ingest.
+ * Shared by /api/save and /api/save-collection.
+ */
+async function saveOne(
+  c: Context<{ Bindings: Env }>,
+  rawUrl: string,
+): Promise<SaveOneResult> {
+  const url = normalizeSaveUrl(rawUrl);
+  const existing = await findByUrl(c.env.DB, url);
+  if (existing) {
+    if (existing.status === "failed") {
+      await resetForRetry(c.env.DB, existing.id);
+      fireIngest(c, existing.id, url);
+      const item = await getItem(c.env.DB, existing.id);
+      if (!item) throw new Error("Không đọc được item vừa lưu lại.");
+      return { item, duplicate: false, retried: true };
+    }
+    return { item: existing, duplicate: true, retried: false };
+  }
+  const id = crypto.randomUUID();
+  const platform = detectPlatform(url);
+  await insertItem(c.env.DB, { id, user_id: "me", platform, original_url: url });
+  fireIngest(c, id, url);
+  const item = await getItem(c.env.DB, id);
+  if (!item) throw new Error("Không đọc được item vừa tạo.");
+  return { item, duplicate: false, retried: false };
+}
+
 /**
  * Save a link. Dedupe: an already-saved link returns the existing item with
  * `duplicate: true` instead of a second copy. A previously failed save is
@@ -148,33 +193,116 @@ app.post("/api/save", async (c) => {
   if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl)) {
     return c.json({ ok: false, error: "url phải là link http(s)." }, 422);
   }
-  const url = normalizeSaveUrl(rawUrl);
+  const result = await saveOne(c, rawUrl);
+  return c.json(
+    {
+      ok: true,
+      item: result.item,
+      duplicate: result.duplicate,
+      retried: result.retried,
+      ingest_configured: Boolean(c.env.INGEST_URL),
+    },
+    result.duplicate ? 200 : 202,
+  );
+});
 
-  const existing = await findByUrl(c.env.DB, url);
-  if (existing) {
-    if (existing.status === "failed") {
-      await resetForRetry(c.env.DB, existing.id);
-      fireIngest(c, existing.id, url);
-      const item = await getItem(c.env.DB, existing.id);
-      return c.json(
-        { ok: true, item, duplicate: false, retried: true, ingest_configured: Boolean(c.env.INGEST_URL) },
-        202,
-      );
+const MAX_COLLECTION_VIDEOS = 100;
+
+/**
+ * Save every video in a TikTok Collection (or any playlist URL yt-dlp
+ * can expand). The ingest service expands the collection into video
+ * URLs (yt-dlp --flat-playlist, tiktok:collection extractor); this
+ * endpoint then saves each one (dedupe + ingest, same as /api/save).
+ * When the collection has a title, the videos are also grouped into a
+ * user-created collection of that name (best-effort — skipped when
+ * migration 0004 has not been applied yet, or the title is missing).
+ * Synchronous: expanding takes ~5-30s; the app waits with a spinner
+ * (request timeout 120s).
+ */
+app.post("/api/save-collection", async (c) => {
+  let body: unknown;
+  try {
+    body = await readJson(c);
+  } catch {
+    return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
+  }
+  const rawUrl = (body as { url?: unknown })?.url;
+  if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl)) {
+    return c.json({ ok: false, error: "url phải là link http(s)." }, 422);
+  }
+  if (!c.env.INGEST_URL) {
+    return c.json({ ok: false, error: "Ingest chưa được cấu hình." }, 503);
+  }
+  // Expand via the ingest service (it runs yt-dlp; the Worker cannot).
+  // INGEST_URL is the /ingest endpoint; the expand endpoint sits next to it.
+  const expandUrl = c.env.INGEST_URL.replace(/\/ingest\/?$/, "") + "/expand-collection";
+  let expanded: { title?: string | null; urls?: unknown };
+  try {
+    const res = await fetch(expandUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${c.env.INGEST_TOKEN}`,
+      },
+      body: JSON.stringify({ url: rawUrl }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!res.ok) {
+      const errBody = (await res.json().catch(() => ({}))) as { error?: unknown };
+      const msg = typeof errBody.error === "string" ? errBody.error : `expand_http_${res.status}`;
+      return c.json({ ok: false, error: msg }, 422);
     }
+    expanded = (await res.json()) as { title?: string | null; urls?: unknown };
+  } catch (e) {
     return c.json(
-      { ok: true, item: existing, duplicate: true, ingest_configured: Boolean(c.env.INGEST_URL) },
-      200,
+      { ok: false, error: `Không mở được collection: ${String(e).slice(0, 200)}` },
+      422,
     );
   }
-
-  const id = crypto.randomUUID();
-  const userId = "me";
-  const platform = detectPlatform(url);
-  await insertItem(c.env.DB, { id, user_id: userId, platform, original_url: url });
-  fireIngest(c, id, url);
-
-  const item = await getItem(c.env.DB, id);
-  return c.json({ ok: true, item, ingest_configured: Boolean(c.env.INGEST_URL) }, 202);
+  const urls = (Array.isArray(expanded.urls) ? expanded.urls : [])
+    .filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u))
+    .slice(0, MAX_COLLECTION_VIDEOS);
+  if (!urls.length) {
+    return c.json({ ok: false, error: "Không tìm thấy video nào trong collection này." }, 422);
+  }
+  const items: Item[] = [];
+  let duplicates = 0;
+  for (const u of urls) {
+    const result = await saveOne(c, u);
+    if (result.duplicate) duplicates++;
+    items.push(result.item);
+  }
+  // Group the new videos into a user-created collection named after the
+  // TikTok collection. Best-effort: a missing my_collections table
+  // (migration 0004 not applied) must not fail the save — the videos
+  // are already saved; they just are not grouped.
+  let collectionId: string | null = null;
+  const title = typeof expanded.title === "string" ? expanded.title.trim() : "";
+  if (title) {
+    try {
+      const id = crypto.randomUUID();
+      await createMyCollection(c.env.DB, { id, user_id: "me", name: title.slice(0, 100) });
+      for (const item of items) {
+        await addItemToMyCollection(c.env.DB, id, item.id);
+      }
+      collectionId = id;
+    } catch {
+      // Ignore — see above.
+    }
+  }
+  return c.json(
+    {
+      ok: true,
+      title: title || null,
+      total: urls.length,
+      created: items.length - duplicates,
+      duplicates,
+      capped: urls.length >= MAX_COLLECTION_VIDEOS,
+      collection_id: collectionId,
+      items,
+    },
+    202,
+  );
 });
 
 /** List saved items, newest first. cursor = base64 JSON {saved_at, id} from the last item. */

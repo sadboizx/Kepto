@@ -219,6 +219,29 @@ struct SaveResult {
     let retried: Bool
 }
 
+struct SaveCollectionResponse: Decodable {
+    let ok: Bool
+    let title: String?
+    let total: Int?
+    let created: Int?
+    let duplicates: Int?
+    let capped: Bool?
+    let collectionId: String?
+    let items: [Item]?
+}
+
+/// Result of POST /api/save-collection: how many videos the collection
+/// held, how many were new, and the items themselves.
+struct SaveCollectionResult {
+    let title: String?
+    let total: Int
+    let created: Int
+    let duplicates: Int
+    let capped: Bool
+    let collectionId: String?
+    let items: [Item]
+}
+
 /// One collection: all saved items from one creator username.
 /// `authorUsername` is nil for the "Unknown" collection (creator not identified).
 struct CollectionInfo: Codable, Identifiable, Equatable {

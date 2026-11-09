@@ -186,6 +186,32 @@ final class KeptoAPI {
         return SaveResult(item: decoded.item, duplicate: decoded.duplicate ?? false, retried: decoded.retried ?? false)
     }
 
+    /// POST /api/save-collection — save every video in a TikTok Collection
+    /// (or any playlist URL yt-dlp can expand). The Worker expands the
+    /// collection via the ingest service and saves each video. Expanding
+    /// takes ~5-30s, so this request gets a 120s timeout.
+    func saveCollection(url rawURL: String) async throws -> SaveCollectionResult {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = URL(string: trimmed),
+              parsed.scheme == "http" || parsed.scheme == "https" else {
+            throw KeptoAPIError.invalidURL
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["url": trimmed])
+        var request = authorizedRequest(url: url(path: "/api/save-collection"), method: "POST", jsonBody: body)
+        request.timeoutInterval = 120
+        let (data, response) = try await session.data(for: request)
+        let decoded = try handle(data, response, as: SaveCollectionResponse.self)
+        return SaveCollectionResult(
+            title: decoded.title,
+            total: decoded.total ?? 0,
+            created: decoded.created ?? 0,
+            duplicates: decoded.duplicates ?? 0,
+            capped: decoded.capped ?? false,
+            collectionId: decoded.collectionId,
+            items: decoded.items ?? []
+        )
+    }
+
     /// DELETE /api/items/:id
     func delete(id: String) async throws {
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/items/\(id)"), method: "DELETE"))
