@@ -40,6 +40,12 @@ struct LibraryView: View {
     /// "New collection" name alert (from the Collections section).
     @State private var showingNewCollection = false
     @State private var newCollectionName = ""
+    /// The collection whose detail page is open (nil = closed).
+    /// Navigation is a Button + navigationDestination, NOT an inline
+    /// NavigationLink in the LazyVGrid: inline links in a lazy grid
+    /// are flaky on iOS 17 (some cards simply never navigate).
+    @State private var selectedCollection: CollectionInfo?
+    @State private var selectedMyCollection: MyCollection?
 
     private let collectionColumns = [
         GridItem(.flexible(), spacing: 12),
@@ -63,6 +69,12 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle("Kepto")
+            .navigationDestination(item: $selectedCollection) { collection in
+                CollectionDetailView(collection: collection)
+            }
+            .navigationDestination(item: $selectedMyCollection) { collection in
+                MyCollectionDetailView(collection: collection)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -471,12 +483,18 @@ struct LibraryView: View {
                             }
                             .buttonStyle(.plain)
                             ForEach(viewModel.myCollections) { collection in
-                                NavigationLink {
-                                    MyCollectionDetailView(collection: collection)
+                                Button {
+                                    selectedMyCollection = collection
                                 } label: {
                                     MyCollectionCard(collection: collection)
                                 }
                                 .buttonStyle(.plain)
+                                // The whole square is the tap target:
+                                // the card is a transparent Color.clear
+                                // with its visible content in an overlay,
+                                // so without an explicit content shape
+                                // only the overlaid parts register taps.
+                                .contentShape(Rectangle())
                             }
                         }
                         .padding(.horizontal)
@@ -484,12 +502,13 @@ struct LibraryView: View {
                             sectionHeader("Creators")
                             LazyVGrid(columns: collectionColumns, spacing: 12) {
                                 ForEach(viewModel.collections) { collection in
-                                    NavigationLink {
-                                        CollectionDetailView(collection: collection)
+                                    Button {
+                                        selectedCollection = collection
                                     } label: {
                                         CollectionCard(collection: collection)
                                     }
                                     .buttonStyle(.plain)
+                                    .contentShape(Rectangle())
                                 }
                             }
                             .padding(.horizontal)

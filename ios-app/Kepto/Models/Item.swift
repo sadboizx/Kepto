@@ -256,7 +256,7 @@ struct SaveCollectionResult {
 
 /// One collection: all saved items from one creator username.
 /// `authorUsername` is nil for the "Unknown" collection (creator not identified).
-struct CollectionInfo: Codable, Identifiable, Equatable {
+struct CollectionInfo: Codable, Identifiable, Equatable, Hashable {
     let authorUsername: String?
     let author: String?
     let count: Int
@@ -283,7 +283,7 @@ struct CollectionsResponse: Decodable {
 /// collection"). Unlike the per-creator collections (automatic, one per
 /// username), these are lists the user creates and adds videos to by
 /// hand. `coverItemId` is the newest video with a thumbnail.
-struct MyCollection: Codable, Identifiable, Equatable {
+struct MyCollection: Codable, Identifiable, Equatable, Hashable {
     let id: String
     let name: String
     let count: Int
