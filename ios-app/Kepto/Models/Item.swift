@@ -132,6 +132,9 @@ struct Item: Codable, Identifiable, Equatable {
             || error.contains("comfortable for some audiences") {
             return "Video này bị giới hạn độ tuổi (18+) — TikTok yêu cầu đăng nhập mới xem được nên Kepto không tải được. Thử lưu video khác không bị giới hạn."
         }
+        if error.contains("audio_only_no_video") {
+            return "Bài đăng này chỉ có âm thanh, không có video — Kepto chỉ lưu video nên không lưu được bài này."
+        }
         if error.contains("post.unavailable") {
             return "Bài đăng không còn khả dụng (đã bị xóa hoặc để riêng tư)."
         }
