@@ -11,6 +11,10 @@
  *                             or 200 { item, duplicate: true } if the link
  *                             was already saved (no second copy is made);
  *                             a previously failed save is retried instead.
+ *                             Auto-detects a TikTok Collection link (full
+ *                             or short — short links are resolved first)
+ *                             and saves the whole collection instead,
+ *                             returning the save-collection response.
  * - POST /api/save-collection { url } -> 202 { title, total, created,
  *                             duplicates, capped, collection_id, items }:
  *                             expands a TikTok Collection (or any playlist
@@ -180,9 +184,49 @@ async function saveOne(
 }
 
 /**
+ * Resolve a URL to its canonical form by following redirects
+ * (headers only, up to 5 hops, 10s each). Short links
+ * (vt.tiktok.com/...) do not say whether they point at a single
+ * video or a Collection, so /api/save resolves them before deciding
+ * which flow to run. Returns the input unchanged when there is no
+ * redirect or resolving fails.
+ */
+async function resolveFinalUrl(pageUrl: string): Promise<string> {
+  let current = pageUrl;
+  for (let hop = 0; hop < 5; hop++) {
+    let res: Response;
+    try {
+      res = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+    } catch {
+      break;
+    }
+    const loc = res.headers.get("location");
+    if (!loc) break;
+    try {
+      current = new URL(loc, current).toString();
+    } catch {
+      break;
+    }
+  }
+  return current;
+}
+
+/** True when the URL points at a TikTok Collection (or any /collection/ URL). */
+function isCollectionUrl(url: string): boolean {
+  try {
+    return new URL(url).pathname.toLowerCase().includes("/collection/");
+  } catch {
+    return url.toLowerCase().includes("/collection/");
+  }
+}
+
+/**
  * Save a link. Dedupe: an already-saved link returns the existing item with
  * `duplicate: true` instead of a second copy. A previously failed save is
  * retried (back to pending + ingest re-fired) instead of duplicating it.
+ * Auto-detects Collections: a link that is (or resolves to) a TikTok
+ * Collection is saved as a whole collection instead — the app no longer
+ * needs a separate "save collection" button; one save flow handles both.
  */
 app.post("/api/save", async (c) => {
   let body: unknown;
@@ -194,6 +238,17 @@ app.post("/api/save", async (c) => {
   const rawUrl = (body as { url?: unknown })?.url;
   if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl)) {
     return c.json({ ok: false, error: "url phải là link http(s)." }, 422);
+  }
+  // Collection? A full collection URL says so directly. A TikTok video
+  // URL says it is a single video. Anything else (a short link) is
+  // ambiguous — resolve it and check the canonical URL.
+  const lower = rawUrl.toLowerCase();
+  let checkUrl = rawUrl;
+  if (!isCollectionUrl(rawUrl) && !lower.includes("/video/")) {
+    checkUrl = await resolveFinalUrl(rawUrl);
+  }
+  if (isCollectionUrl(checkUrl)) {
+    return saveCollectionResponse(c, rawUrl);
   }
   const result = await saveOne(c, rawUrl);
   return c.json(
@@ -214,24 +269,18 @@ const MAX_COLLECTION_VIDEOS = 100;
  * Save every video in a TikTok Collection (or any playlist URL yt-dlp
  * can expand). The ingest service expands the collection into video
  * URLs (yt-dlp --flat-playlist, tiktok:collection extractor); this
- * endpoint then saves each one (dedupe + ingest, same as /api/save).
+ * function then saves each one (dedupe + ingest, same as /api/save).
  * When the collection has a title, the videos are also grouped into a
  * user-created collection of that name (best-effort — skipped when
  * migration 0004 has not been applied yet, or the title is missing).
  * Synchronous: expanding takes ~5-30s; the app waits with a spinner
- * (request timeout 120s).
+ * (request timeout 120s). Shared by /api/save (auto-detect) and
+ * /api/save-collection (explicit, kept for compatibility).
  */
-app.post("/api/save-collection", async (c) => {
-  let body: unknown;
-  try {
-    body = await readJson(c);
-  } catch {
-    return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
-  }
-  const rawUrl = (body as { url?: unknown })?.url;
-  if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl)) {
-    return c.json({ ok: false, error: "url phải là link http(s)." }, 422);
-  }
+async function saveCollectionResponse(
+  c: Context<{ Bindings: Env }>,
+  rawUrl: string,
+): Promise<Response> {
   if (!c.env.INGEST_URL) {
     return c.json({ ok: false, error: "Ingest chưa được cấu hình." }, 503);
   }
@@ -305,6 +354,22 @@ app.post("/api/save-collection", async (c) => {
     },
     202,
   );
+}
+
+/// Explicit collection endpoint, kept for compatibility. The app now
+/// just calls /api/save — it auto-detects a Collection link.
+app.post("/api/save-collection", async (c) => {
+  let body: unknown;
+  try {
+    body = await readJson(c);
+  } catch {
+    return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
+  }
+  const rawUrl = (body as { url?: unknown })?.url;
+  if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl)) {
+    return c.json({ ok: false, error: "url phải là link http(s)." }, 422);
+  }
+  return saveCollectionResponse(c, rawUrl);
 });
 
 /** List saved items, newest first. cursor = base64 JSON {saved_at, id} from the last item. */
