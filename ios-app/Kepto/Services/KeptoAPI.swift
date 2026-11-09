@@ -174,42 +174,38 @@ final class KeptoAPI {
     /// later. Throws `.invalidURL` for a non-http(s) link before any call.
     /// When the link was already saved, the backend returns the existing
     /// item with `duplicate: true` instead of a second copy.
-    func save(url rawURL: String) async throws -> SaveResult {
+    /// POST /api/save — save one link. The Worker auto-detects a
+    /// Collection link (full or short — short links are resolved
+    /// first) and saves the whole collection instead, so this returns
+    /// either a single video or a collection. The request gets a 120s
+    /// timeout because expanding a collection takes ~5-30s.
+    func save(url rawURL: String) async throws -> SaveOutcome {
         let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsed = URL(string: trimmed),
               parsed.scheme == "http" || parsed.scheme == "https" else {
             throw KeptoAPIError.invalidURL
         }
         let body = try JSONSerialization.data(withJSONObject: ["url": trimmed])
-        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/save"), method: "POST", jsonBody: body))
-        let decoded = try handle(data, response, as: SaveResponse.self)
-        return SaveResult(item: decoded.item, duplicate: decoded.duplicate ?? false, retried: decoded.retried ?? false)
-    }
-
-    /// POST /api/save-collection — save every video in a TikTok Collection
-    /// (or any playlist URL yt-dlp can expand). The Worker expands the
-    /// collection via the ingest service and saves each video. Expanding
-    /// takes ~5-30s, so this request gets a 120s timeout.
-    func saveCollection(url rawURL: String) async throws -> SaveCollectionResult {
-        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsed = URL(string: trimmed),
-              parsed.scheme == "http" || parsed.scheme == "https" else {
-            throw KeptoAPIError.invalidURL
-        }
-        let body = try JSONSerialization.data(withJSONObject: ["url": trimmed])
-        var request = authorizedRequest(url: url(path: "/api/save-collection"), method: "POST", jsonBody: body)
+        var request = authorizedRequest(url: url(path: "/api/save"), method: "POST", jsonBody: body)
         request.timeoutInterval = 120
         let (data, response) = try await session.data(for: request)
-        let decoded = try handle(data, response, as: SaveCollectionResponse.self)
-        return SaveCollectionResult(
-            title: decoded.title,
-            total: decoded.total ?? 0,
-            created: decoded.created ?? 0,
-            duplicates: decoded.duplicates ?? 0,
-            capped: decoded.capped ?? false,
-            collectionId: decoded.collectionId,
-            items: decoded.items ?? []
-        )
+        // A single save returns { item, ... }; a collection save
+        // returns { total, created, items, ... } with no `item` key.
+        // (Non-2xx errors throw from handle either way, so a failed
+        // single-decode here can only mean a collection response.)
+        if let single = try? handle(data, response, as: SaveResponse.self) {
+            return .single(SaveResult(item: single.item, duplicate: single.duplicate ?? false, retried: single.retried ?? false))
+        }
+        let coll = try handle(data, response, as: SaveCollectionResponse.self)
+        return .collection(SaveCollectionResult(
+            title: coll.title,
+            total: coll.total ?? 0,
+            created: coll.created ?? 0,
+            duplicates: coll.duplicates ?? 0,
+            capped: coll.capped ?? false,
+            collectionId: coll.collectionId,
+            items: coll.items ?? []
+        ))
     }
 
     /// DELETE /api/items/:id

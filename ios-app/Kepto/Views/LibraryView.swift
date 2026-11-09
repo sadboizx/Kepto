@@ -22,12 +22,11 @@ struct LibraryView: View {
     @State private var showingSettings = false
     @State private var searchTask: Task<Void, Never>?
     @State private var clipboardAlert = false
-    /// URL-input alert (shown by the "+" menu's "Lưu link mới" and
-    /// "Lưu cả Collection"). `urlInputIsCollection` picks which save
-    /// the alert's "Lưu" button runs.
+    /// URL-input alert (shown by the "+" menu's "Lưu link mới").
+    /// The Worker auto-detects a Collection link, so there is no
+    /// separate "save collection" option any more.
     @State private var showingURLInput = false
     @State private var urlInput = ""
-    @State private var urlInputIsCollection = false
     /// One-line notice after a direct save (e.g. "already saved").
     @State private var saveNotice: String?
     /// The video the full-screen feed viewer opens on (nil = closed).
@@ -105,9 +104,9 @@ struct LibraryView: View {
                     Task { await saveDirect(newValue) }
                 }
             }
-            .alert(urlInputIsCollection ? "Lưu cả Collection" : "Lưu link", isPresented: $showingURLInput) {
+            .alert("Lưu link", isPresented: $showingURLInput) {
                 TextField(
-                    urlInputIsCollection ? "Dán link Collection TikTok…" : "Dán link TikTok, Instagram…",
+                    "Dán link TikTok, Instagram…",
                     text: $urlInput
                 )
                     .textInputAutocapitalization(.never)
@@ -115,13 +114,8 @@ struct LibraryView: View {
                     .keyboardType(.URL)
                 Button("Lưu") {
                     let url = urlInput
-                    let isCollection = urlInputIsCollection
                     urlInput = ""
-                    if isCollection {
-                        Task { await saveCollectionDirect(url) }
-                    } else {
-                        Task { await saveDirect(url) }
-                    }
+                    Task { await saveDirect(url) }
                 }
                 Button("Hủy", role: .cancel) { urlInput = "" }
             }
@@ -219,16 +213,9 @@ struct LibraryView: View {
     private var addButton: some View {
         Menu {
             Button {
-                urlInputIsCollection = false
                 showingURLInput = true
             } label: {
                 Label("Lưu link mới", systemImage: "link.badge.plus")
-            }
-            Button {
-                urlInputIsCollection = true
-                showingURLInput = true
-            } label: {
-                Label("Lưu cả Collection", systemImage: "square.stack.3d.up")
             }
             Button {
                 Task { await saveDirectFromClipboard() }
@@ -251,39 +238,34 @@ struct LibraryView: View {
     /// Saves a link right away, with no sheet in between. On success
     /// the home switches to Tất cả and the new video is at the top of
     /// the grid; a duplicate shows a short notice instead of a second
-    /// copy. A failure surfaces through the view model's error alert.
+    /// copy. When the link turns out to be a Collection, the notice
+    /// reports how many videos were new (and how many were already
+    /// saved); the videos are also grouped into a My collection
+    /// named after the TikTok collection when it has a title. A
+    /// failure surfaces through the view model's error alert.
     private func saveDirect(_ rawURL: String) async {
         let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard let result = await viewModel.save(url: trimmed) else { return }
         await viewModel.selectSection(.all)
-        if result.duplicate {
-            saveNotice = "Link này đã lưu trước đó."
+        switch result {
+        case .single(let single):
+            if single.duplicate {
+                saveNotice = "Link này đã lưu trước đó."
+            }
+        case .collection(let coll):
+            var notice = "Đã lưu \(coll.created) video mới"
+            if coll.duplicates > 0 {
+                notice += " (\(coll.duplicates) video đã có trước đó)"
+            }
+            if coll.capped {
+                notice += " — chỉ lấy 100 video đầu"
+            }
+            if let title = coll.title, !title.isEmpty {
+                notice = "Collection “\(title)”: " + notice
+            }
+            saveNotice = notice + "."
         }
-    }
-
-    /// Saves every video in a TikTok Collection. On success the home
-    /// switches to Tất cả and a notice reports how many videos were
-    /// new (and how many were already saved); the videos are also
-    /// grouped into a My collection named after the TikTok collection
-    /// when it has a title. A failure surfaces through the view
-    /// model's error alert.
-    private func saveCollectionDirect(_ rawURL: String) async {
-        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard let result = await viewModel.saveCollection(url: trimmed) else { return }
-        await viewModel.selectSection(.all)
-        var notice = "Đã lưu \(result.created) video mới"
-        if result.duplicates > 0 {
-            notice += " (\(result.duplicates) video đã có trước đó)"
-        }
-        if result.capped {
-            notice += " — chỉ lấy 100 video đầu"
-        }
-        if let title = result.title, !title.isEmpty {
-            notice = "Collection “\(title)”: " + notice
-        }
-        saveNotice = notice + "."
     }
 
     /// Reads the first http(s) URL on the clipboard and saves it right

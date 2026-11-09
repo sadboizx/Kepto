@@ -24,7 +24,7 @@ struct SaveView: View {
 
     @State private var urlText: String
     @State private var isSaving = false
-    @State private var savedResult: SaveResult?
+    @State private var savedResult: SaveOutcome?
     @State private var errorMessage: String?
 
     init(initialURL: String = "", autoSave: Bool = false) {
@@ -61,34 +61,41 @@ struct SaveView: View {
 
                 if let savedResult {
                     Section {
-                        HStack(spacing: 12) {
-                            StatusBadge(status: savedResult.item.status)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(savedResult.item.displayTitle)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                    .lineLimit(2)
-                                Text(savedResult.item.platform.displayName)
+                        switch savedResult {
+                        case .single(let r):
+                            HStack(spacing: 12) {
+                                StatusBadge(status: r.item.status)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(r.item.displayTitle)
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .lineLimit(2)
+                                    Text(r.item.platform.displayName)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            if r.duplicate {
+                                Text("Link này đã lưu rồi — không tạo bản sao mới. Mở collection \(r.item.collectionName) để xem lại.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else if r.retried {
+                                Text("Link này đã lưu trước đó nhưng ingest bị lỗi — đã lưu lại, ingest đang chạy. Kéo xuống để refresh thư viện.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Saved as pending — ingest is running in the background. Pull to refresh the library to see it become ready.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                        }
-                        if savedResult.duplicate {
-                            Text("Link này đã lưu rồi — không tạo bản sao mới. Mở collection \(savedResult.item.collectionName) để xem lại.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else if savedResult.retried {
-                            Text("Link này đã lưu trước đó nhưng ingest bị lỗi — đã lưu lại, ingest đang chạy. Kéo xuống để refresh thư viện.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Saved as pending — ingest is running in the background. Pull to refresh the library to see it become ready.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        case .collection(let c):
+                            let title = (c.title?.isEmpty == false) ? "Collection “\(c.title!)”: " : ""
+                            Text("\(title)Đã lưu \(c.created) video mới" + (c.duplicates > 0 ? " (\(c.duplicates) video đã có trước đó)" : "") + ".")
+                                .font(.subheadline)
                         }
                         Button("Done") { dismiss() }
                     } header: {
-                        Text(savedResult.duplicate ? "Already saved" : "Saved")
+                        Text("Saved")
                     }
                 }
 

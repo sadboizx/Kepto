@@ -231,6 +231,14 @@ struct SaveResult {
     let retried: Bool
 }
 
+/// Result of POST /api/save. The Worker auto-detects a Collection link
+/// (full or short), so one save call returns either a single video or
+/// a whole collection — the app shows the matching notice.
+enum SaveOutcome {
+    case single(SaveResult)
+    case collection(SaveCollectionResult)
+}
+
 struct SaveCollectionResponse: Decodable {
     let ok: Bool
     let title: String?

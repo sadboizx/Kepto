@@ -257,40 +257,16 @@ final class LibraryViewModel: ObservableObject {
         )
     }
 
-    /// Save a pasted link. Returns the result on success so the Save sheet
-    /// can show "already saved" for a duplicate; the current section
-    /// refreshes to include the new item.
-    func save(url: String) async -> SaveResult? {
+    /// Save a pasted link. The Worker auto-detects a Collection link,
+    /// so this returns either a single video or a whole collection;
+    /// the current section refreshes to include the new item(s).
+    func save(url: String) async -> SaveOutcome? {
         guard let api else {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
             return nil
         }
         do {
             let result = try await api.save(url: url)
-            if isSearching {
-                await fetch()
-            } else if selectedSection == .collections {
-                await fetchCollections()
-            } else {
-                await fetch()
-            }
-            return result
-        } catch {
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            return nil
-        }
-    }
-
-    /// Save every video in a TikTok Collection. Returns the result on
-    /// success so the caller can show how many were new; the current
-    /// section refreshes to include the new items.
-    func saveCollection(url: String) async -> SaveCollectionResult? {
-        guard let api else {
-            errorMessage = KeptoAPIError.notConfigured.errorDescription
-            return nil
-        }
-        do {
-            let result = try await api.saveCollection(url: url)
             if isSearching {
                 await fetch()
             } else if selectedSection == .collections {
