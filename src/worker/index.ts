@@ -60,7 +60,10 @@ function bearer(c: { req: { header: (n: string) => string | undefined } }): stri
 }
 
 app.use("/api/*", async (c, next) => {
-  if (c.req.path === "/api/health") return next();
+  // /api/health is public; /api/ingest-complete does its own INGEST_TOKEN
+  // check in its handler — it must NOT go through the KEPTO_API_KEY check
+  // below (the ingest service authenticates with INGEST_TOKEN, not the key).
+  if (c.req.path === "/api/health" || c.req.path === "/api/ingest-complete") return next();
   const token = bearer(c);
   if (!c.env.KEPTO_API_KEY || token !== c.env.KEPTO_API_KEY) {
     return c.json({ ok: false, error: "Unauthorized." }, 401);
