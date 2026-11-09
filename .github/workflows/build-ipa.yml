@@ -21,7 +21,7 @@ permissions:
 jobs:
   build:
     name: Build unsigned IPA
-    runs-on: macos-14 # runner có sẵn Xcode 15.x + iOS 17 SDK
+    runs-on: macos-15 # macos-14 đã bị GitHub khai tử 2026-11-02; macos-15 có Xcode 16, vẫn build được target iOS 17.4
     timeout-minutes: 30
 
     steps:
