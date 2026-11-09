@@ -466,20 +466,15 @@ struct LibraryView: View {
 /// tab): a SQUARE cover (1:1) with the name overlaid at the bottom — the
 /// bookmark icon above the name, the lock at bottom-right — and no text
 /// or count below the card. Side padding 16, gap 12, corner radius 12.
+/// The cover image is forced to fill the square (a 9:16 video frame is
+/// centre-cropped, never letterboxed), so the card reads as a square
+/// thumbnail exactly like TikTok's.
 private struct CollectionCard: View {
     let collection: CollectionInfo
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            if let coverId = collection.coverItemId {
-                AuthenticatedThumbnail(itemId: coverId)
-            } else {
-                ZStack {
-                    Color(.systemGray5)
-                    Image(systemName: "photo")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            cover
             // Bottom gradient so the white overlay text stays legible.
             LinearGradient(
                 colors: [.clear, .black.opacity(0.65)],
@@ -515,6 +510,23 @@ private struct CollectionCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    /// The cover, forced to fill the square card (centre-cropped).
+    private var cover: some View {
+        Group {
+            if let coverId = collection.coverItemId {
+                AuthenticatedThumbnail(itemId: coverId)
+            } else {
+                ZStack {
+                    Color(.systemGray5)
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
     private var nameLine: String {
         if let author = collection.author, !author.isEmpty { return author }
         return collection.displayName
@@ -530,22 +542,14 @@ private struct CollectionCard: View {
 
 /// One user-created collection card (square, like the per-creator
 /// cards): cover thumbnail (or a folder placeholder), name + video
-/// count overlaid at the bottom.
+/// count overlaid at the bottom. The cover is forced to fill the
+/// square (centre-cropped, never letterboxed), like TikTok's.
 private struct MyCollectionCard: View {
     let collection: MyCollection
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            if let coverId = collection.coverItemId {
-                AuthenticatedThumbnail(itemId: coverId)
-            } else {
-                ZStack {
-                    Color(.systemGray5)
-                    Image(systemName: "folder")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            cover
             LinearGradient(
                 colors: [.clear, .black.opacity(0.65)],
                 startPoint: .center,
@@ -569,6 +573,24 @@ private struct MyCollectionCard: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// The cover, forced to fill the square card (centre-cropped).
+    private var cover: some View {
+        Group {
+            if let coverId = collection.coverItemId {
+                AuthenticatedThumbnail(itemId: coverId)
+            } else {
+                ZStack {
+                    Color(.systemGray5)
+                    Image(systemName: "folder")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 }
 
