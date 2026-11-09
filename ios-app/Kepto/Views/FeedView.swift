@@ -152,12 +152,16 @@ struct FeedView: View {
         }
     }
 
-    /// One page of the feed.
+    /// One page of the feed. (Argument order matters: the memberwise
+    /// init follows the property order — `onDeleteRequest` is declared
+    /// before the `isScrubbing` binding — so onDeleteRequest must come
+    /// first here. The v25 call had them swapped, which the v26
+    /// type-check timeout had been masking; v27's split exposed it.)
     private func feedPageRow(for item: Item) -> some View {
-        FeedVideoPage(item: item, isCurrent: item.id == currentItemId, isScrubbing: $isScrubbing, onDeleteRequest: { video in
+        FeedVideoPage(item: item, isCurrent: item.id == currentItemId, onDeleteRequest: { video in
             itemPendingDelete = video
             showingDeleteConfirmation = true
-        })
+        }, isScrubbing: $isScrubbing)
             .id(item.id)
             .containerRelativeFrame(.vertical)
     }
