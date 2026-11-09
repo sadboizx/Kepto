@@ -1,0 +1,35 @@
+# Kepto — Cloudflare Workers backend
+# Cloud-only social archive: Workers API + D1 metadata + R2 media.
+# Stack decided 2026-11-09: no local storage, everything on cloud.
+#
+# Setup (secrets, never in code or chat):
+#   npx wrangler d1 create kepto-items
+#   -> paste the returned `database_id` below
+#   npx wrangler d1 migrations apply kepto-items
+#   npx wrangler r2 bucket create kepto-media
+#   npx wrangler secret put KEPTO_API_KEY   # Bearer token for the iOS app
+#   npx wrangler secret put INGEST_TOKEN    # Bearer token the ingest service uses
+# Local dev: put both keys in .dev.vars (gitignored).
+
+name = "kepto"
+main = "src/worker/index.ts"
+compatibility_date = "2026-11-01"
+
+# D1 — metadata, search, collections. R2 holds bytes only.
+[[d1_databases]]
+binding = "DB"
+database_name = "kepto-items"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# R2 — media files. Private bucket; the Worker streams playback.
+# Free tier: 10 GB storage. Egress is $0, so re-watching costs nothing.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "kepto-media"
+
+# Non-secret vars (visible in code — never put tokens here)
+[vars]
+# URL of the ingest service (Railway/Fly worker: Cobalt / yt-dlp + ffmpeg).
+# Leave empty until the ingest service exists — /api/save still stores the
+# item as `pending` and the ingest call is skipped.
+INGEST_URL = ""
