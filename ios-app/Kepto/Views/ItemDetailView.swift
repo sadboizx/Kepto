@@ -100,7 +100,7 @@ struct ItemDetailView: View {
                 Label("Ingest failed", systemImage: "exclamationmark.triangle")
                     .font(.headline)
                     .foregroundStyle(.red)
-                Text(currentItem.ingestError ?? "Unknown error.")
+                Text(currentItem.friendlyIngestError)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

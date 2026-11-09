@@ -114,6 +114,26 @@ struct Item: Codable, Identifiable, Equatable {
             && (previewCount ?? 0) > 0
     }
 
+    /// Human-readable version of ingestError. The stored error is a
+    /// machine code (e.g. cobalt_error.api.content.post.age); this
+    /// translates the known ones into plain language. Unknown errors
+    /// are shown as-is.
+    var friendlyIngestError: String {
+        guard let error = ingestError else { return "Unknown error." }
+        if error.contains("post.age")
+            || error.contains("Log in for access")
+            || error.contains("comfortable for some audiences") {
+            return "Video này bị giới hạn độ tuổi (18+) — TikTok yêu cầu đăng nhập mới xem được nên Kepto không tải được. Thử lưu video khác không bị giới hạn."
+        }
+        if error.contains("post.unavailable") {
+            return "Bài đăng không còn khả dụng (đã bị xóa hoặc để riêng tư)."
+        }
+        if error.contains("Unexpected response from webpage request") {
+            return "TikTok không trả về trang video cho máy chủ (thường là video bị giới hạn tuổi hoặc TikTok đang chặn IP máy chủ). Thử lưu video khác hoặc thử lại sau."
+        }
+        return error
+    }
+
     /// Duration in seconds formatted as m:ss, e.g. 52 -> "0:52".
     var formattedDuration: String? {
         guard let duration, duration > 0 else { return nil }
