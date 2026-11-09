@@ -8,10 +8,16 @@
  *
  * Endpoints (all /api/* except /api/health need `Authorization: Bearer <KEPTO_API_KEY>`):
  * - POST /api/save            { url } -> 202 { item } (status pending)
- * - GET  /api/list            ?platform=&q=&status=&limit=&cursor=
+ *                             or 200 { item, duplicate: true } if the link
+ *                             was already saved (no second copy is made);
+ *                             a previously failed save is retried instead.
+ * - GET  /api/list            ?platform=&q=&status=&author_username=&limit=&cursor=
+ * - GET  /api/collections     one row per author username (the Library's
+ *                             home screen), with count + cover item id
  * - GET  /api/items/:id       metadata for one item
  * - GET  /api/play/:id        streams the media from R2, Range/seek supported
  * - GET  /api/thumb/:id       streams the thumbnail from R2
+ * - GET  /api/preview/:id     streams the scrub-preview sprite from R2
  * - DELETE /api/items/:id     deletes R2 objects + D1 row
  * - POST /api/ingest-complete Bearer <INGEST_TOKEN>, called by the ingest service
  * - GET  /api/health          liveness probe, no auth
@@ -22,11 +28,13 @@
  *                       Authorization: Bearer <INGEST_TOKEN>
  *   Ingest -> Worker:  POST /api/ingest-complete, same Bearer token, body:
  *     success: { item_id, r2_key, thumb_key?, preview_key?, content_type?,
- *                title?, caption?, author?, author_avatar_url?, posted_at?,
- *                duration?, width?, height?, file_size?, sha256? }
+ *                title?, caption?, author?, author_username?,
+ *                author_avatar_url?, posted_at?, duration?, width?, height?,
+ *                file_size?, sha256?, preview_cols?, preview_rows?,
+ *                preview_interval?, preview_count? }
  *     failure: { item_id, error }
  *   Ingest uploads straight to R2 at
- *     users/<userId>/items/<itemId>/original.mp4 (and thumb.jpg / preview.mp4).
+ *     users/<userId>/items/<itemId>/original.mp4 (and thumb.jpg / sprite.jpg).
  *   The Worker never downloads video itself — Workers is the wrong place for
  *   large downloads. The iOS app never uploads either (double bandwidth).
  *
@@ -40,11 +48,15 @@ import type { Env } from "./env";
 import {
   deleteItem,
   detectPlatform,
+  findByUrl,
   getItem,
   insertItem,
+  listCollections,
   listItems,
   markFailed,
   markReady,
+  normalizeSaveUrl,
+  resetForRetry,
   type IngestResult,
 } from "./db";
 
@@ -79,7 +91,39 @@ async function readJson(c: Context<{ Bindings: Env }>): Promise<unknown> {
   return raw ? JSON.parse(raw) : {};
 }
 
-/** Save a link. Stores a pending row, then asks the ingest service to fetch it. */
+/**
+ * Asks the ingest service to fetch a saved item. Fire-and-forget: a slow
+ * ingest must not block the save response, and a failed dispatch marks the
+ * item failed so the app shows the real error instead of stuck Pending.
+ */
+function fireIngest(c: Context<{ Bindings: Env }>, id: string, url: string): void {
+  if (!c.env.INGEST_URL) return;
+  c.executionCtx.waitUntil(
+    (async () => {
+      try {
+        const res = await fetch(c.env.INGEST_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${c.env.INGEST_TOKEN}`,
+          },
+          body: JSON.stringify({ item_id: id, url }),
+        });
+        if (!res.ok) {
+          await markFailed(c.env.DB, id, `ingest_http_${res.status}`);
+        }
+      } catch (e) {
+        await markFailed(c.env.DB, id, `ingest_unreachable: ${String(e).slice(0, 200)}`);
+      }
+    })(),
+  );
+}
+
+/**
+ * Save a link. Dedupe: an already-saved link returns the existing item with
+ * `duplicate: true` instead of a second copy. A previously failed save is
+ * retried (back to pending + ingest re-fired) instead of duplicating it.
+ */
 app.post("/api/save", async (c) => {
   let body: unknown;
   try {
@@ -87,37 +131,34 @@ app.post("/api/save", async (c) => {
   } catch {
     return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
   }
-  const url = (body as { url?: unknown })?.url;
-  if (typeof url !== "string" || !/^https?:\/\//i.test(url)) {
+  const rawUrl = (body as { url?: unknown })?.url;
+  if (typeof rawUrl !== "string" || !/^https?:\/\//i.test(rawUrl)) {
     return c.json({ ok: false, error: "url phải là link http(s)." }, 422);
   }
+  const url = normalizeSaveUrl(rawUrl);
+
+  const existing = await findByUrl(c.env.DB, url);
+  if (existing) {
+    if (existing.status === "failed") {
+      await resetForRetry(c.env.DB, existing.id);
+      fireIngest(c, existing.id, url);
+      const item = await getItem(c.env.DB, existing.id);
+      return c.json(
+        { ok: true, item, duplicate: false, retried: true, ingest_configured: Boolean(c.env.INGEST_URL) },
+        202,
+      );
+    }
+    return c.json(
+      { ok: true, item: existing, duplicate: true, ingest_configured: Boolean(c.env.INGEST_URL) },
+      200,
+    );
+  }
+
   const id = crypto.randomUUID();
   const userId = "me";
   const platform = detectPlatform(url);
   await insertItem(c.env.DB, { id, user_id: userId, platform, original_url: url });
-
-  if (c.env.INGEST_URL) {
-    // Fire-and-forget: a slow ingest must not block the save response.
-    c.executionCtx.waitUntil(
-      (async () => {
-        try {
-          const res = await fetch(c.env.INGEST_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${c.env.INGEST_TOKEN}`,
-            },
-            body: JSON.stringify({ item_id: id, url }),
-          });
-          if (!res.ok) {
-            await markFailed(c.env.DB, id, `ingest_http_${res.status}`);
-          }
-        } catch (e) {
-          await markFailed(c.env.DB, id, `ingest_unreachable: ${String(e).slice(0, 200)}`);
-        }
-      })(),
-    );
-  }
+  fireIngest(c, id, url);
 
   const item = await getItem(c.env.DB, id);
   return c.json({ ok: true, item, ingest_configured: Boolean(c.env.INGEST_URL) }, 202);
@@ -128,6 +169,7 @@ app.get("/api/list", async (c) => {
   const q = c.req.query("q") ?? undefined;
   const platform = c.req.query("platform") ?? undefined;
   const status = c.req.query("status") ?? undefined;
+  const authorUsername = c.req.query("author_username") ?? undefined;
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 100);
   let cursor: { saved_at: string; id: string } | undefined;
   const rawCursor = c.req.query("cursor");
@@ -143,6 +185,7 @@ app.get("/api/list", async (c) => {
     platform,
     status,
     q,
+    authorUsername,
     limit,
     cursor,
   });
@@ -154,6 +197,12 @@ app.get("/api/list", async (c) => {
       ? btoa(JSON.stringify({ saved_at: last.saved_at, id: last.id }))
       : null;
   return c.json({ ok: true, items: page, next_cursor: nextCursor });
+});
+
+/** Collections: one row per author username, newest first. The Library home screen. */
+app.get("/api/collections", async (c) => {
+  const collections = await listCollections(c.env.DB, "me");
+  return c.json({ ok: true, collections });
 });
 
 app.get("/api/items/:id", async (c) => {
@@ -271,6 +320,13 @@ app.get("/api/thumb/:id", async (c) => {
   const item = await getItem(c.env.DB, c.req.param("id"));
   if (!item) return c.json({ ok: false, error: "Không tìm thấy item." }, 404);
   return streamFromR2(c, item.thumb_key, `${item.id}.jpg`);
+});
+
+/** Scrub-preview sprite: the tile grid of thumbnails the player crops per timestamp. */
+app.get("/api/preview/:id", async (c) => {
+  const item = await getItem(c.env.DB, c.req.param("id"));
+  if (!item) return c.json({ ok: false, error: "Không tìm thấy item." }, 404);
+  return streamFromR2(c, item.preview_key, `${item.id}.jpg`);
 });
 
 export default app;

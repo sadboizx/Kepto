@@ -130,22 +130,33 @@ final class KeptoAPI {
         return body.ok
     }
 
-    /// GET /api/list — newest first. `platform` / `status` / `q` are sent
-    /// only when set; the backend treats an absent param as "no filter".
+    /// GET /api/list — newest first. `platform` / `status` / `q` /
+    /// `authorUsername` are sent only when set; the backend treats an
+    /// absent param as "no filter". Pass "__unknown__" as the username to
+    /// list items whose creator could not be identified.
     func list(platform: Platform? = nil,
               status: ItemStatus? = nil,
               query: String? = nil,
+              authorUsername: String? = nil,
               limit: Int = 50,
               cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
         var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
         if let platform { items.append(URLQueryItem(name: "platform", value: platform.rawValue)) }
         if let status { items.append(URLQueryItem(name: "status", value: status.rawValue)) }
+        if let authorUsername { items.append(URLQueryItem(name: "author_username", value: authorUsername)) }
         let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedQuery.isEmpty { items.append(URLQueryItem(name: "q", value: trimmedQuery)) }
         if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/list", queryItems: items)))
         let body = try handle(data, response, as: ListResponse.self)
         return (body.items, body.nextCursor)
+    }
+
+    /// GET /api/collections — one row per creator username, newest first.
+    func collections() async throws -> [CollectionInfo] {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/collections")))
+        let body = try handle(data, response, as: CollectionsResponse.self)
+        return body.collections
     }
 
     /// GET /api/items/:id
@@ -158,7 +169,9 @@ final class KeptoAPI {
     /// POST /api/save — returns 202 with the new item in `pending` status.
     /// The ingest service runs in the background; the item becomes `ready`
     /// later. Throws `.invalidURL` for a non-http(s) link before any call.
-    func save(url rawURL: String) async throws -> Item {
+    /// When the link was already saved, the backend returns the existing
+    /// item with `duplicate: true` instead of a second copy.
+    func save(url rawURL: String) async throws -> SaveResult {
         let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsed = URL(string: trimmed),
               parsed.scheme == "http" || parsed.scheme == "https" else {
@@ -167,7 +180,7 @@ final class KeptoAPI {
         let body = try JSONSerialization.data(withJSONObject: ["url": trimmed])
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/save"), method: "POST", jsonBody: body))
         let decoded = try handle(data, response, as: SaveResponse.self)
-        return decoded.item
+        return SaveResult(item: decoded.item, duplicate: decoded.duplicate ?? false, retried: decoded.retried ?? false)
     }
 
     /// DELETE /api/items/:id
@@ -210,7 +223,22 @@ final class KeptoAPI {
     /// with URLSession here and kept in memory only (no disk cache —
     /// the app is cloud-only by design).
     func fetchThumbnail(for item: Item) async throws -> UIImage? {
-        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/thumb/\(item.id)")))
+        try await fetchThumbnail(id: item.id)
+    }
+
+    func fetchThumbnail(id: String) async throws -> UIImage? {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/thumb/\(id)")))
+        guard let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else { return nil }
+        return UIImage(data: data)
+    }
+
+    /// GET /api/preview/:id — the scrub-preview sprite (tile grid of
+    /// thumbnails). Same auth + memory-only handling as thumbnails.
+    /// Returns nil when the item has no sprite (older saves, or the
+    /// sprite step failed during ingest).
+    func fetchSprite(for item: Item) async throws -> UIImage? {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/preview/\(item.id)")))
         guard let http = response as? HTTPURLResponse,
               (200...299).contains(http.statusCode) else { return nil }
         return UIImage(data: data)

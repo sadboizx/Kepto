@@ -62,6 +62,7 @@ struct Item: Codable, Identifiable, Equatable {
     let title: String?
     let caption: String?
     let author: String?
+    let authorUsername: String?
     let authorAvatarUrl: String?
     let postedAt: String?
     let savedAt: String
@@ -70,6 +71,10 @@ struct Item: Codable, Identifiable, Equatable {
     let height: Int?
     let fileSize: Int?
     let sha256: String?
+    let previewCols: Int?
+    let previewRows: Int?
+    let previewInterval: Double?
+    let previewCount: Int?
     let status: ItemStatus
     let ingestError: String?
     let createdAt: String
@@ -88,6 +93,25 @@ struct Item: Codable, Identifiable, Equatable {
     var displayAuthor: String {
         guard let author, !author.isEmpty else { return platform.displayName }
         return author
+    }
+
+    /// Collection name for this item: @username, else the author name,
+    /// else "Unknown" (items whose creator could not be identified).
+    var collectionName: String {
+        if let authorUsername, !authorUsername.isEmpty { return "@\(authorUsername)" }
+        if let author, !author.isEmpty { return author }
+        return "Unknown"
+    }
+
+    /// True when the ingest service generated a scrub-preview sprite for
+    /// this item (all four geometry values present). The player uses it to
+    /// show a frame preview while the user drags the progress bar.
+    var hasScrubSprite: Bool {
+        previewKey != nil
+            && (previewCols ?? 0) > 0
+            && (previewRows ?? 0) > 0
+            && (previewInterval ?? 0) > 0
+            && (previewCount ?? 0) > 0
     }
 
     /// Duration in seconds formatted as m:ss, e.g. 52 -> "0:52".
@@ -141,6 +165,42 @@ struct SaveResponse: Decodable {
     let ok: Bool
     let item: Item
     let ingestConfigured: Bool?
+    /// True when the link was already saved — no second copy was made.
+    let duplicate: Bool?
+    /// True when a previously failed save was retried (back to pending).
+    let retried: Bool?
+}
+
+/// Result of POST /api/save: the item plus whether it was already saved.
+struct SaveResult {
+    let item: Item
+    let duplicate: Bool
+    let retried: Bool
+}
+
+/// One collection: all saved items from one creator username.
+/// `authorUsername` is nil for the "Unknown" collection (creator not identified).
+struct CollectionInfo: Codable, Identifiable, Equatable {
+    let authorUsername: String?
+    let author: String?
+    let count: Int
+    let coverItemId: String?
+    let latestSavedAt: String
+
+    /// The id used for the /api/list filter: the username, or the
+    /// "__unknown__" sentinel the backend treats as NULL username.
+    var id: String { authorUsername ?? "__unknown__" }
+
+    var displayName: String {
+        if let authorUsername, !authorUsername.isEmpty { return "@\(authorUsername)" }
+        if let author, !author.isEmpty { return author }
+        return "Unknown"
+    }
+}
+
+struct CollectionsResponse: Decodable {
+    let ok: Bool
+    let collections: [CollectionInfo]
 }
 
 struct HealthResponse: Decodable {

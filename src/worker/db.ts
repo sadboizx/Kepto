@@ -22,6 +22,7 @@ export interface Item {
   title: string | null;
   caption: string | null;
   author: string | null;
+  author_username: string | null;
   author_avatar_url: string | null;
   posted_at: string | null;
   saved_at: string;
@@ -30,6 +31,10 @@ export interface Item {
   height: number | null;
   file_size: number | null;
   sha256: string | null;
+  preview_cols: number | null;
+  preview_rows: number | null;
+  preview_interval: number | null;
+  preview_count: number | null;
   status: "pending" | "ready" | "failed";
   ingest_error: string | null;
   created_at: string;
@@ -57,6 +62,16 @@ export function r2Key(userId: string, itemId: string, name: string): string {
   return `users/${userId}/items/${itemId}/${name}`;
 }
 
+/**
+ * Normalizes a saved URL before storing/comparing it, so the same link
+ * pasted with different trailing slashes or surrounding whitespace does
+ * not create a second copy. Only trailing slashes are stripped — the
+ * scheme, host, path, and query are kept exactly as pasted.
+ */
+export function normalizeSaveUrl(rawUrl: string): string {
+  return rawUrl.trim().replace(/\/+$/, "");
+}
+
 export async function insertItem(
   db: D1Database,
   item: Pick<Item, "id" | "user_id" | "platform" | "original_url">,
@@ -78,11 +93,32 @@ export async function getItem(db: D1Database, id: string): Promise<Item | null> 
   return row ?? null;
 }
 
+/** Dedupe lookup for POST /api/save: the row for this exact (normalized) URL, if any. */
+export async function findByUrl(db: D1Database, url: string): Promise<Item | null> {
+  const row = await db
+    .prepare(`SELECT * FROM items WHERE original_url = ?1 LIMIT 1`)
+    .bind(url)
+    .first<Item>();
+  return row ?? null;
+}
+
+/** A previously failed save can be retried: back to pending, error cleared. */
+export async function resetForRetry(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE items SET status = 'pending', ingest_error = NULL WHERE id = ?1`,
+    )
+    .bind(id)
+    .run();
+}
+
 export interface ListParams {
   userId: string;
   platform?: string;
   status?: string;
   q?: string;
+  /** Filter to one collection. The sentinel "__unknown__" means NULL username. */
+  authorUsername?: string;
   limit: number;
   cursor?: { saved_at: string; id: string };
 }
@@ -103,13 +139,21 @@ export async function listItems(
     where.push(`status = ${next()}`);
     binds.push(p.status);
   }
+  if (p.authorUsername !== undefined) {
+    if (p.authorUsername === "__unknown__") {
+      where.push(`author_username IS NULL`);
+    } else {
+      where.push(`author_username = ${next()}`);
+      binds.push(p.authorUsername);
+    }
+  }
   if (p.q) {
     // Escape LIKE wildcards so a search for "%" matches literally.
     const q = p.q.replace(/[%_\\]/g, (m) => `\\${m}`);
     where.push(
-      `(title LIKE ${next()} ESCAPE '\\' OR caption LIKE ${next()} ESCAPE '\\' OR author LIKE ${next()} ESCAPE '\\')`,
+      `(title LIKE ${next()} ESCAPE '\\' OR caption LIKE ${next()} ESCAPE '\\' OR author LIKE ${next()} ESCAPE '\\' OR author_username LIKE ${next()} ESCAPE '\\')`,
     );
-    binds.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    binds.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
   }
   if (p.cursor) {
     where.push(`(saved_at, id) < (${next()}, ${next()})`);
@@ -125,6 +169,47 @@ export async function listItems(
   return results ?? [];
 }
 
+export interface CollectionRow {
+  author_username: string | null;
+  author: string | null;
+  count: number;
+  cover_item_id: string | null;
+  latest_saved_at: string;
+}
+
+/**
+ * One collection per author username (NULL = author unknown), newest first.
+ * `cover_item_id` is the newest item in the collection that has a thumbnail,
+ * so the app can show a cover without a second query. `author` is the newest
+ * display name seen for that username (MAX over the group is good enough —
+ * the handle is the grouping key, the name is just a label).
+ */
+export async function listCollections(
+  db: D1Database,
+  userId: string,
+): Promise<CollectionRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT
+         author_username,
+         MAX(author) AS author,
+         COUNT(*) AS count,
+         MAX(saved_at) AS latest_saved_at,
+         (SELECT i2.id FROM items i2
+            WHERE i2.user_id = items.user_id
+              AND i2.author_username IS items.author_username
+              AND i2.thumb_key IS NOT NULL
+            ORDER BY i2.saved_at DESC, i2.id DESC LIMIT 1) AS cover_item_id
+       FROM items
+       WHERE user_id = ?1
+       GROUP BY author_username
+       ORDER BY latest_saved_at DESC`,
+    )
+    .bind(userId)
+    .all<CollectionRow>();
+  return results ?? [];
+}
+
 export interface IngestResult {
   item_id: string;
   r2_key: string;
@@ -134,6 +219,7 @@ export interface IngestResult {
   title?: string | null;
   caption?: string | null;
   author?: string | null;
+  author_username?: string | null;
   author_avatar_url?: string | null;
   posted_at?: string | null;
   duration?: number | null;
@@ -141,6 +227,10 @@ export interface IngestResult {
   height?: number | null;
   file_size?: number | null;
   sha256?: string | null;
+  preview_cols?: number | null;
+  preview_rows?: number | null;
+  preview_interval?: number | null;
+  preview_count?: number | null;
 }
 
 export async function markReady(db: D1Database, r: IngestResult): Promise<void> {
@@ -148,10 +238,12 @@ export async function markReady(db: D1Database, r: IngestResult): Promise<void> 
     .prepare(
       `UPDATE items SET
          r2_key = ?1, thumb_key = ?2, preview_key = ?3, content_type = ?4,
-         title = ?5, caption = ?6, author = ?7, author_avatar_url = ?8,
-         posted_at = ?9, duration = ?10, width = ?11, height = ?12,
-         file_size = ?13, sha256 = ?14, status = 'ready', ingest_error = NULL
-       WHERE id = ?15`,
+         title = ?5, caption = ?6, author = ?7, author_username = ?8,
+         author_avatar_url = ?9, posted_at = ?10, duration = ?11,
+         width = ?12, height = ?13, file_size = ?14, sha256 = ?15,
+         preview_cols = ?16, preview_rows = ?17, preview_interval = ?18,
+         preview_count = ?19, status = 'ready', ingest_error = NULL
+       WHERE id = ?20`,
     )
     .bind(
       r.r2_key,
@@ -161,6 +253,7 @@ export async function markReady(db: D1Database, r: IngestResult): Promise<void> 
       r.title ?? null,
       r.caption ?? null,
       r.author ?? null,
+      r.author_username ?? null,
       r.author_avatar_url ?? null,
       r.posted_at ?? null,
       r.duration ?? null,
@@ -168,6 +261,10 @@ export async function markReady(db: D1Database, r: IngestResult): Promise<void> 
       r.height ?? null,
       r.file_size ?? null,
       r.sha256 ?? null,
+      r.preview_cols ?? null,
+      r.preview_rows ?? null,
+      r.preview_interval ?? null,
+      r.preview_count ?? null,
       r.item_id,
     )
     .run();

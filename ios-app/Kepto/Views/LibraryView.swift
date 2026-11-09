@@ -1,15 +1,28 @@
 import SwiftUI
 
-/// Library: the app's home screen. Lists saved items newest-first with
-/// pull-to-refresh, server-side search (`q`), platform filter, and status
-/// filter. Rows show an authenticated thumbnail — AsyncImage cannot send
-/// the Authorization header, so `AuthenticatedThumbnail` loads it with
-/// URLSession instead (see `KeptoAPI.fetchThumbnail`).
+/// Library: the app's home screen. Home is collections — one per creator
+/// username, like TikTok's Collections tab (cover thumbnail, @username,
+/// video count). Tapping a collection opens its 3-column video grid.
+/// Searching shows a flat grid of matching items instead.
+/// Thumbnails are authenticated (AsyncImage cannot send the Authorization
+/// header), so `AuthenticatedThumbnail` loads them with URLSession
+/// (see `KeptoAPI.fetchThumbnail`) and keeps them in memory only.
 struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var showingSave = false
     @State private var showingSettings = false
     @State private var searchTask: Task<Void, Never>?
+    @State private var incomingShareURL: String?
+
+    private let collectionColumns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
+    private let videoColumns = [
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2),
+    ]
 
     var body: some View {
         NavigationStack {
@@ -31,7 +44,7 @@ struct LibraryView: View {
                         }
                     }
                 }
-                .searchable(text: $viewModel.searchText, prompt: "Search title, caption, author")
+                .searchable(text: $viewModel.searchText, prompt: "Search title, caption, @username")
                 .onChange(of: viewModel.searchText) { _, _ in
                     // Debounce: wait for the user to stop typing before
                     // hitting the server with a new `q` query.
@@ -42,24 +55,33 @@ struct LibraryView: View {
                         await viewModel.fetch()
                     }
                 }
-                .onChange(of: viewModel.selectedPlatform) { _, _ in
-                    Task { await viewModel.fetch() }
-                }
-                .onChange(of: viewModel.selectedStatus) { _, _ in
-                    Task { await viewModel.fetch() }
-                }
                 .refreshable {
-                    await viewModel.fetch()
+                    if viewModel.isSearching {
+                        await viewModel.fetch()
+                    } else {
+                        await viewModel.fetchCollections()
+                    }
                 }
                 .task {
-                    await viewModel.fetch()
+                    await viewModel.fetchCollections()
+                }
+                .onChange(of: viewModel.pendingShareURL) { _, newValue in
+                    // A link handed over by the Share Extension: open the
+                    // Save sheet for it (auto-save on appear).
+                    if let newValue { incomingShareURL = newValue }
                 }
                 .sheet(isPresented: $showingSave) {
                     SaveView()
                 }
+                .sheet(isPresented: .constant(incomingShareURL != nil), onDismiss: {
+                    incomingShareURL = nil
+                    viewModel.pendingShareURL = nil
+                }) {
+                    SaveView(initialURL: incomingShareURL ?? "", autoSave: true)
+                }
                 .sheet(isPresented: $showingSettings, onDismiss: {
                     viewModel.reloadConfig()
-                    Task { await viewModel.fetch() }
+                    Task { await viewModel.fetchCollections() }
                 }) {
                     SettingsView()
                 }
@@ -82,7 +104,9 @@ struct LibraryView: View {
                 Button("Open Settings") { showingSettings = true }
                     .buttonStyle(.borderedProminent)
             }
-        } else if viewModel.items.isEmpty && !viewModel.isLoading {
+        } else if viewModel.isSearching {
+            searchResults
+        } else if viewModel.collections.isEmpty && !viewModel.isLoading {
             ContentUnavailableView {
                 Label("Nothing saved yet", systemImage: "tray")
             } description: {
@@ -92,95 +116,138 @@ struct LibraryView: View {
                     .buttonStyle(.borderedProminent)
             }
         } else {
-            List {
-                filtersSection
-                ForEach(viewModel.items) { item in
-                    NavigationLink {
-                        ItemDetailView(item: item)
-                    } label: {
-                        ItemRow(item: item)
-                    }
-                }
-                if viewModel.hasMore {
-                    HStack {
-                        Spacer()
-                        if viewModel.isLoadingMore {
-                            ProgressView()
-                        } else {
-                            Button("Load more") {
-                                Task { await viewModel.loadMore() }
-                            }
+            ScrollView {
+                LazyVGrid(columns: collectionColumns, spacing: 12) {
+                    ForEach(viewModel.collections) { collection in
+                        NavigationLink {
+                            CollectionDetailView(collection: collection)
+                        } label: {
+                            CollectionCard(collection: collection)
                         }
-                        Spacer()
+                        .buttonStyle(.plain)
                     }
-                    .listRowSeparator(.hidden)
                 }
+                .padding()
             }
-            .listStyle(.plain)
             .overlay {
-                if viewModel.isLoading && viewModel.items.isEmpty {
+                if viewModel.isLoading && viewModel.collections.isEmpty {
                     ProgressView("Loading…")
                 }
             }
         }
     }
 
-    private var filtersSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Picker("Platform", selection: $viewModel.selectedPlatform) {
-                Text("All").tag(nil as Platform?)
-                ForEach(Platform.allCases) { platform in
-                    Text(platform.displayName).tag(platform as Platform?)
+    private var searchResults: some View {
+        ScrollView {
+            LazyVGrid(columns: videoColumns, spacing: 2) {
+                ForEach(viewModel.items) { item in
+                    NavigationLink {
+                        ItemDetailView(item: item)
+                    } label: {
+                        VideoGridCell(item: item)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .pickerStyle(.menu)
-            Picker("Status", selection: $viewModel.selectedStatus) {
-                Text("All").tag(nil as ItemStatus?)
-                ForEach(ItemStatus.allCases) { status in
-                    Text(status.displayName).tag(status as ItemStatus?)
+            if viewModel.hasMore {
+                HStack {
+                    Spacer()
+                    if viewModel.isLoadingMore {
+                        ProgressView()
+                    } else {
+                        Button("Load more") {
+                            Task { await viewModel.loadMore() }
+                        }
+                    }
+                    Spacer()
                 }
+                .padding(.vertical, 12)
             }
-            .pickerStyle(.segmented)
         }
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+        .overlay {
+            if viewModel.isLoading && viewModel.items.isEmpty {
+                ProgressView("Loading…")
+            } else if viewModel.items.isEmpty && !viewModel.isLoading {
+                ContentUnavailableView {
+                    Label("No matches", systemImage: "magnifyingglass")
+                } description: {
+                    Text("Nothing saved matches this search yet.")
+                }
+            }
+        }
     }
 }
 
-/// One library row: thumbnail, title, author + platform, duration, status.
-private struct ItemRow: View {
-    let item: Item
+/// One collection card (home grid): cover thumbnail, @username, video count.
+private struct CollectionCard: View {
+    let collection: CollectionInfo
 
     var body: some View {
-        HStack(spacing: 12) {
-            AuthenticatedThumbnail(item: item)
-                .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.displayTitle)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .lineLimit(2)
-                HStack(spacing: 6) {
-                    Text(item.displayAuthor)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(item.platform.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let duration = item.formattedDuration {
-                        Text("· \(duration)")
-                            .font(.caption)
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .bottomLeading) {
+                if let coverId = collection.coverItemId {
+                    AuthenticatedThumbnail(itemId: coverId)
+                } else {
+                    ZStack {
+                        Color(.systemGray5)
+                        Image(systemName: "photo")
                             .foregroundStyle(.secondary)
                     }
                 }
-                StatusBadge(status: item.status)
+            }
+            .aspectRatio(4 / 5, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(collection.displayName)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Text("\(collection.count) video\(collection.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 6)
+        }
+    }
+}
+
+/// One video cell in the 3-column grid (TikTok profile style): portrait
+/// thumbnail with a duration badge, a spinner while pending, and a red
+/// dot when ingest failed.
+struct VideoGridCell: View {
+    let item: Item
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            AuthenticatedThumbnail(item: item)
+                .aspectRatio(3 / 4, contentMode: .fill)
+                .clipped()
+            if item.status == .pending {
+                ZStack {
+                    Color.black.opacity(0.35)
+                    ProgressView()
+                        .tint(.white)
+                }
+            }
+            if let duration = item.formattedDuration, item.status == .ready {
+                Text(duration)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Color.black.opacity(0.65))
+                    .clipShape(Capsule())
+                    .padding(6)
+            }
+            if item.status == .failed {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 8, height: 8)
+                    .padding(6)
             }
         }
-        .padding(.vertical, 2)
+        .background(Color(.systemGray5))
     }
 }
 
@@ -224,10 +291,18 @@ struct StatusBadge: View {
 /// AsyncImage cannot send an Authorization header, so it cannot load
 /// GET /api/thumb/:id at all — this view exists because of that.
 /// The image is kept in memory only; nothing is written to disk.
-private struct AuthenticatedThumbnail: View {
-    let item: Item
+struct AuthenticatedThumbnail: View {
+    let itemId: String
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var image: UIImage?
+
+    init(item: Item) {
+        self.itemId = item.id
+    }
+
+    init(itemId: String) {
+        self.itemId = itemId
+    }
 
     var body: some View {
         Group {
@@ -243,9 +318,9 @@ private struct AuthenticatedThumbnail: View {
                 }
             }
         }
-        .task(id: item.id) {
+        .task(id: itemId) {
             guard image == nil, let api = viewModel.api else { return }
-            image = try? await api.fetchThumbnail(for: item)
+            image = try? await api.fetchThumbnail(id: itemId)
         }
     }
 }

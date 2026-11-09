@@ -1,5 +1,3 @@
-import AVFoundation
-import AVKit
 import SwiftUI
 
 /// Detail for one saved item. Ready items play by streaming from R2 via
@@ -10,7 +8,6 @@ struct ItemDetailView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var player: AVPlayer?
     @State private var showingDeleteConfirmation = false
     @State private var deleteError: String?
 
@@ -50,13 +47,6 @@ struct ItemDetailView: View {
         } message: {
             Text(deleteError ?? "")
         }
-        .onAppear {
-            startPlayerIfReady()
-        }
-        .onDisappear {
-            player?.pause()
-            player = nil
-        }
         .task {
             // A pending item may have become ready while we were away.
             await viewModel.refreshItem(item)
@@ -69,14 +59,9 @@ struct ItemDetailView: View {
     private var playerSection: some View {
         switch item.status {
         case .ready:
-            if let player {
-                VideoPlayer(player: player)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else {
-                ProgressView("Preparing video…")
-                    .frame(maxWidth: .infinity, minHeight: 200)
-            }
+            // Custom player: tap to play/pause, and a scrub preview while
+            // dragging the progress bar (sprite frame at that timestamp).
+            ScrubPreviewPlayer(item: item)
         case .pending:
             VStack(spacing: 8) {
                 ProgressView()
@@ -102,30 +87,6 @@ struct ItemDetailView: View {
             .background(Color(.systemGray6))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-    }
-
-    /// Builds the player with an authenticated AVURLAsset.
-    ///
-    /// Why AVURLAsset and not `AVPlayer(url:)`:
-    /// `AVPlayer(url:)` sends a bare GET with no way to attach the
-    /// `Authorization: Bearer …` header, so the Worker would answer 401.
-    /// The `AVURLAssetHTTPHeaderFieldsKey` option attaches the header to
-    /// the asset's requests instead. There is no public Swift constant
-    /// for that key (Xcode 16 reports it as not in scope), so it is
-    /// passed as the documented literal string below.
-    /// Caveat: AVFoundation may drop custom headers if the server
-    /// redirects — the Kepto Worker never redirects, so the header
-    /// survives the whole stream, including Range/seek requests.
-    private func startPlayerIfReady() {
-        guard item.status == .ready,
-              player == nil,
-              let api = viewModel.api else { return }
-        let asset = AVURLAsset(
-            url: api.playURL(for: item),
-            options: ["AVURLAssetHTTPHeaderFieldsKey": ["Authorization": api.authorizationHeader]]
-        )
-        let playerItem = AVPlayerItem(asset: asset)
-        player = AVPlayer(playerItem: playerItem)
     }
 
     // MARK: - Metadata
