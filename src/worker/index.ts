@@ -71,6 +71,7 @@ import {
   deleteMyCollection,
   detectPlatform,
   findByUrl,
+  findMyCollectionByName,
   getItem,
   getMyCollection,
   insertItem,
@@ -326,13 +327,19 @@ async function saveCollectionResponse(
   // Group the new videos into a user-created collection named after the
   // TikTok collection. Best-effort: a missing my_collections table
   // (migration 0004 not applied) must not fail the save — the videos
-  // are already saved; they just are not grouped.
+  // are already saved; they just are not grouped. Re-saving a
+  // collection whose folder already exists REUSES that folder instead
+  // of creating a duplicate with the same name.
   let collectionId: string | null = null;
   const title = typeof expanded.title === "string" ? expanded.title.trim() : "";
   if (title) {
     try {
-      const id = crypto.randomUUID();
-      await createMyCollection(c.env.DB, { id, user_id: "me", name: title.slice(0, 100) });
+      const name = title.slice(0, 100);
+      const existing = await findMyCollectionByName(c.env.DB, "me", name);
+      const id = existing?.id ?? crypto.randomUUID();
+      if (!existing) {
+        await createMyCollection(c.env.DB, { id, user_id: "me", name });
+      }
       for (const item of items) {
         await addItemToMyCollection(c.env.DB, id, item.id);
       }

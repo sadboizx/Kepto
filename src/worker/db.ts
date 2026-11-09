@@ -387,6 +387,22 @@ export async function createMyCollection(
     .run();
 }
 
+/** Finds a user collection by exact name, or null. Used by the
+ *  collection-save flow so re-saving the same TikTok collection reuses
+ *  the existing folder instead of creating a duplicate with the same
+ *  name. */
+export async function findMyCollectionByName(
+  db: D1Database,
+  userId: string,
+  name: string,
+): Promise<MyCollection | null> {
+  const row = await db
+    .prepare(`SELECT * FROM my_collections WHERE user_id = ?1 AND name = ?2 LIMIT 1`)
+    .bind(userId, name)
+    .first<MyCollection>();
+  return row ?? null;
+}
+
 /** Adds a video to a collection. Returns false when it was already there. */
 export async function addItemToMyCollection(
   db: D1Database,
