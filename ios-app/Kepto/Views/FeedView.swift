@@ -29,7 +29,9 @@ struct FeedView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var currentItemId: String
+    /// The id of the page the feed is showing. Optional because
+    /// `.scrollPosition(id:)` needs a `Binding<String?>`.
+    @State private var currentItemId: String?
     @State private var showingActionSheet = false
     @State private var showingDetail = false
     @State private var showingDeleteConfirmation = false
