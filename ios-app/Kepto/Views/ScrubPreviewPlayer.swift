@@ -24,9 +24,13 @@ struct ScrubPreviewPlayer: View {
     @State private var duration: Double = 0
     @State private var isScrubbing = false
     @State private var scrubFraction: Double = 0
-    /// Pre-cropped sprite cells (one per preview frame), built once when
-    /// the sprite loads. The drag handler only picks one by index (O(1)).
-    @State private var frames: [UIImage] = []
+    /// The preview sprite, fetched once when the player opens.
+    @State private var sprite: UIImage?
+    /// On-demand crop cache: each sprite cell is cropped at most once
+    /// (the first time the drag passes over it) and reused afterwards.
+    /// A reference-type cache with no @Published state, so filling it
+    /// during a view update does not trigger another render.
+    @StateObject private var frameCache = SpriteFrameCache()
     @State private var timeObserver: Any?
     /// Mute toggle state (mirrors player.isMuted).
     @State private var isMuted = false
@@ -69,16 +73,7 @@ struct ScrubPreviewPlayer: View {
             startPlayer()
             Task {
                 guard item.hasScrubSprite, let api = viewModel.api else { return }
-                guard let sprite = try? await api.fetchSprite(for: item) else { return }
-                // Crop all cells once, here — not inside the drag
-                // handler. The old code cropped a CGImage on every
-                // finger move, so the preview lagged behind the drag.
-                frames = Self.cropFrames(
-                    sprite: sprite,
-                    cols: item.previewCols ?? 0,
-                    rows: item.previewRows ?? 0,
-                    count: item.previewCount ?? 0
-                )
+                sprite = try? await api.fetchSprite(for: item)
             }
         }
         .onDisappear {
@@ -200,35 +195,41 @@ struct ScrubPreviewPlayer: View {
 
     // MARK: - Sprite frame
 
-    /// Crops every sprite cell once (when the sprite loads). The old code
-    /// cropped inside the drag handler, so each finger move paid a CGImage
-    /// crop + UIImage alloc on the main thread and the preview lagged
-    /// behind the finger. Now the drag only picks a pre-cropped frame.
-    private static func cropFrames(sprite: UIImage, cols: Int, rows: Int, count: Int) -> [UIImage] {
-        guard cols > 0, rows > 0, count > 0, let cg = sprite.cgImage else { return [] }
-        let cellWidth = cg.width / cols
-        let cellHeight = cg.height / rows
-        var out: [UIImage] = []
-        out.reserveCapacity(count)
-        for index in 0..<count {
-            let rect = CGRect(x: (index % cols) * cellWidth,
-                              y: (index / cols) * cellHeight,
-                              width: cellWidth, height: cellHeight)
-            guard let cropped = cg.cropping(to: rect) else { continue }
-            out.append(UIImage(cgImage: cropped, scale: sprite.scale, orientation: sprite.imageOrientation))
-        }
-        return out
+    /// The sprite cell for the given timestamp.
+    /// Frame index = floor(seconds / interval), clamped to the last frame.
+    /// The cell is cropped on first use (one sub-millisecond CGImage crop)
+    /// and cached, so the drag never re-crops a frame it already showed.
+    private func frameImage(for seconds: Double) -> UIImage? {
+        guard let sprite,
+              let cols = item.previewCols, let rows = item.previewRows,
+              let interval = item.previewInterval, let count = item.previewCount,
+              cols > 0, rows > 0, interval > 0, count > 0 else { return nil }
+        let index = min(max(Int(seconds / interval), 0), count - 1)
+        return frameCache.frame(at: index, from: sprite, cols: cols, rows: rows)
     }
 
-    /// The pre-cropped frame for the given timestamp.
-    /// Frame index = floor(seconds / interval), clamped to the last frame.
-    private func frameImage(for seconds: Double) -> UIImage? {
-        guard !frames.isEmpty,
-              let interval = item.previewInterval, let count = item.previewCount,
-              interval > 0, count > 0 else { return nil }
-        let index = min(max(Int(seconds / interval), 0), min(count, frames.count) - 1)
-        return frames[index]
+    /// Crops sprite cells on demand and caches them by index, so the scrub
+/// preview only ever pays one sub-millisecond crop per frame and never
+/// re-crops a frame the finger already passed over. It holds no
+/// @Published state, so filling the cache during a view update does not
+/// trigger another render.
+private final class SpriteFrameCache: ObservableObject {
+    private var frames: [Int: UIImage] = [:]
+
+    func frame(at index: Int, from sprite: UIImage, cols: Int, rows: Int) -> UIImage? {
+        if let cached = frames[index] { return cached }
+        guard let cg = sprite.cgImage, cols > 0, rows > 0 else { return nil }
+        let cellWidth = cg.width / cols
+        let cellHeight = cg.height / rows
+        let rect = CGRect(x: (index % cols) * cellWidth,
+                          y: (index / cols) * cellHeight,
+                          width: cellWidth, height: cellHeight)
+        guard let cropped = cg.cropping(to: rect) else { return nil }
+        let image = UIImage(cgImage: cropped, scale: sprite.scale, orientation: sprite.imageOrientation)
+        frames[index] = image
+        return image
     }
+}
 
     // MARK: - Playback
 
