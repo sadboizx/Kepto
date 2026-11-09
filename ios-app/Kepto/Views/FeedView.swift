@@ -251,6 +251,11 @@ private struct FeedVideoPage: View {
     @State private var fullImage: UIImage?
     /// Playback speed from the long-press menu (1.0 = normal).
     @State private var playbackRate: Float = 1.0
+    /// Set when this page becomes current after a swipe: the next
+    /// playCurrent starts from 0 (TikTok restarts the video every time
+    /// you land on it) instead of resuming where the kept player left
+    /// off. Cleared by playCurrent once it seeks to 0.
+    @State private var restartFromStart = false
     /// Long-press menu (bottom sheet).
     @State private var showingLongPressMenu = false
     /// Whether the video was playing when the long-press menu opened
@@ -430,7 +435,17 @@ private struct FeedVideoPage: View {
         }
         .onAppear {
             setupPlayer()
-            if isCurrent { schedulePlay() }
+            if isCurrent {
+                // (Re)appearing as the current page: restart from the
+                // beginning, same as the isCurrent change above.
+                // onAppear covers the case where SwiftUI recreates
+                // this page while it is current (onChange does not
+                // fire for a freshly created view).
+                currentTime = 0
+                isScrubbing = false
+                restartFromStart = true
+                schedulePlay()
+            }
             if isImage, item.status == .ready {
                 Task { await loadFullImage() }
             }
@@ -452,6 +467,13 @@ private struct FeedVideoPage: View {
         }
         .onChange(of: isCurrent) { _, current in
             if current {
+                // Swipe landed on this page: restart from the
+                // beginning (reset the start time to 0 and the scrub
+                // preview with it), then play. The kept player would
+                // otherwise resume where it left off.
+                currentTime = 0
+                isScrubbing = false
+                restartFromStart = true
                 schedulePlay()
             } else {
                 playTask?.cancel()
@@ -493,7 +515,7 @@ private struct FeedVideoPage: View {
         player = newPlayer
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-            guard !isScrubbing else { return }
+            guard !isScrubbing, !restartFromStart else { return }
             currentTime = time.seconds
             let total = newPlayer.currentItem?.duration.seconds ?? 0
             if total.isFinite && total > 0 { duration = total }
@@ -527,13 +549,18 @@ private struct FeedVideoPage: View {
     }
 
     /// Seek to the current frame (restart from the top if the video
-    /// already ended) and play at the chosen speed. The seek is what
-    /// makes the layer render a frame instead of staying frozen/black.
+    /// already ended, or if this page just became current after a
+    /// swipe — restartFromStart) and play at the chosen speed. The
+    /// seek is what makes the layer render a frame instead of staying
+    /// frozen/black.
     private func playCurrent() {
         guard let player, isCurrent else { return }
         let rate = playbackRate
         let target: CMTime
-        if duration > 0 && currentTime >= duration - 0.5 {
+        if restartFromStart {
+            target = .zero
+            restartFromStart = false
+        } else if duration > 0 && currentTime >= duration - 0.5 {
             target = .zero
         } else {
             target = player.currentTime()
@@ -980,9 +1007,16 @@ private struct FeedProgressBar: View {
                 }
                 .frame(height: 2)
             }
-            .frame(height: 28, alignment: .bottom)
+            .frame(height: 40, alignment: .bottom)
             .contentShape(Rectangle())
-            .gesture(
+            // High-priority: the feed is a vertical paging ScrollView
+            // and it sometimes steals this drag (the bar "misses" the
+            // scrub). A plain .gesture loses to the ScrollView when the
+            // finger moves even slightly vertical; high-priority makes
+            // a touch that starts on the bar always scrub. The bar is
+            // only 40pt tall at the very bottom, so vertical swipes
+            // starting elsewhere still page normally (same as TikTok).
+            .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         let fraction = min(max(value.location.x / geo.size.width, 0), 1)
@@ -1002,7 +1036,9 @@ private struct FeedProgressBar: View {
                 }
             }
         }
-        .frame(height: 28)
+        // 40pt tall touch area (the visible line is only 2pt, at the
+        // bottom) so the bar is easy to grab.
+        .frame(height: 40)
     }
 
     /// Preview popup: the sprite frame at the scrub timestamp + the
