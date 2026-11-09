@@ -213,7 +213,9 @@ struct ScrubPreviewPlayer: View {
 /// re-crops a frame the finger already passed over. It holds no
 /// @Published state, so filling the cache during a view update does not
 /// trigger another render.
-private final class SpriteFrameCache: ObservableObject {
+/// Internal (not private): the full-screen feed reuses it for its own
+/// scrub preview.
+final class SpriteFrameCache: ObservableObject {
     private var frames: [Int: UIImage] = [:]
 
     func frame(at index: Int, from sprite: UIImage, cols: Int, rows: Int) -> UIImage? {
@@ -309,7 +311,8 @@ private final class SpriteFrameCache: ObservableObject {
 }
 
 /// UIView wrapper around AVPlayerLayer (SwiftUI has no native player layer).
-private struct PlayerView: UIViewRepresentable {
+/// Internal (not private): the full-screen feed reuses it for its pages.
+struct PlayerView: UIViewRepresentable {
     let player: AVPlayer
 
     func makeUIView(context: Context) -> PlayerUIView {
@@ -322,7 +325,7 @@ private struct PlayerView: UIViewRepresentable {
     func updateUIView(_ uiView: PlayerUIView, context: Context) {}
 }
 
-private final class PlayerUIView: UIView {
+final class PlayerUIView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
 
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }

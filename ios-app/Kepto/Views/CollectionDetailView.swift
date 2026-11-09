@@ -2,7 +2,8 @@ import SwiftUI
 
 /// One collection's videos: a 3-column portrait grid like a TikTok profile
 /// page, newest first, with a status filter on top. Tapping a video opens
-/// its detail view (and player). Pull-to-refresh reloads the collection.
+/// it in the full-screen feed (swipe up/down for the next video in this
+/// collection). Pull-to-refresh reloads the collection.
 struct CollectionDetailView: View {
     let collection: CollectionInfo
     @EnvironmentObject private var viewModel: LibraryViewModel
@@ -13,6 +14,8 @@ struct CollectionDetailView: View {
     @State private var isLoadingMore = false
     @State private var selectedStatus: ItemStatus?
     @State private var errorMessage: String?
+    /// The video the feed opens on (nil = feed closed).
+    @State private var feedStartItem: Item?
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -34,8 +37,8 @@ struct CollectionDetailView: View {
                 .padding(.vertical, 8)
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(items) { item in
-                        NavigationLink {
-                            ItemDetailView(item: item)
+                        Button {
+                            feedStartItem = item
                         } label: {
                             VideoGridCell(item: item)
                         }
@@ -84,6 +87,14 @@ struct CollectionDetailView: View {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+        }
+        .fullScreenCover(item: $feedStartItem) { startItem in
+            FeedView(
+                items: $items,
+                startItemId: startItem.id,
+                onNearEnd: { await loadMore() },
+                showCloseButton: true
+            )
         }
     }
 

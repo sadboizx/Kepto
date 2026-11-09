@@ -21,6 +21,7 @@
 		BB2000000000000000000002 /* KeptoShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000003 /* KeptoShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BB2000000000000000000003 /* CollectionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000006 /* CollectionDetailView.swift */; };
 		BB2000000000000000000004 /* ScrubPreviewPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000005 /* ScrubPreviewPlayer.swift */; };
+		BB2000000000000000000005 /* FeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000007 /* FeedView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +41,7 @@
 		AA2000000000000000000003 /* KeptoShare.appex */ = {isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = KeptoShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA2000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA2000000000000000000005 /* ScrubPreviewPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrubPreviewPlayer.swift; sourceTree = "<group>"; };
+		AA2000000000000000000007 /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
 		AA2000000000000000000006 /* CollectionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionDetailView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -138,6 +140,7 @@
 				AA2000000000000000000006 /* CollectionDetailView.swift */,
 				AA1000000000000000000007 /* ItemDetailView.swift */,
 				AA2000000000000000000005 /* ScrubPreviewPlayer.swift */,
+				AA2000000000000000000007 /* FeedView.swift */,
 				AA1000000000000000000008 /* SettingsView.swift */,
 				AA1000000000000000000009 /* SaveView.swift */,
 			);
@@ -261,6 +264,7 @@
 				BB2000000000000000000003 /* CollectionDetailView.swift in Sources */,
 				BB1000000000000000000007 /* ItemDetailView.swift in Sources */,
 				BB2000000000000000000004 /* ScrubPreviewPlayer.swift in Sources */,
+				BB2000000000000000000005 /* FeedView.swift in Sources */,
 				BB1000000000000000000008 /* SettingsView.swift in Sources */,
 				BB1000000000000000000009 /* SaveView.swift in Sources */,
 			);
