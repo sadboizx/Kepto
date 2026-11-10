@@ -105,15 +105,16 @@ struct LibraryView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if viewModel.isConfigured {
-                        HStack(spacing: 16) {
+                        HStack(spacing: 8) {
                             // Photos style: "Select" is a dark pill
                             // with white text (not plain blue text),
-                            // floating over the grid.
+                            // floating over the grid. Footnote size,
+                            // like the real Photos app.
                             Button {
                                 toggleSelecting()
                             } label: {
                                 Text(isSelecting ? "Cancel" : "Select")
-                                    .font(.subheadline)
+                                    .font(.footnote)
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 14)

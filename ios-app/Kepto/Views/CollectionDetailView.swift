@@ -31,6 +31,8 @@ struct CollectionDetailView: View {
     @State private var isSelecting = false
     @State private var selectedIDs: Set<String> = []
     @State private var showingBulkDeleteConfirmation = false
+    /// Presents the Settings sheet from the "…" menu.
+    @State private var showingSettings = false
 
     /// Detail-grid columns: 2 on narrow screens, 3 on wide ones
     /// (spec: "2 hoặc 3 cột tùy kích thước màn hình"). iPhone 12 Pro
@@ -84,15 +86,49 @@ struct CollectionDetailView: View {
             }
         }
         .navigationTitle(collection.displayName)
-        .navigationBarTitleDisplayMode(.inline)
+        // Large title, left-aligned below the "< Albums" back button,
+        // like the real Photos app (not a small inline title).
+        .navigationBarTitleDisplayMode(.large)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
+        // White back button ("< Albums"), like the real Photos app
+        // (the accent color is blue, which would tint it blue).
+        .tint(.white)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(isSelecting ? "Cancel" : "Select") {
-                    toggleSelecting()
+                HStack(spacing: 8) {
+                    // Photos style: "Select" is a dark pill with
+                    // white footnote text, like the Library tab.
+                    Button {
+                        toggleSelecting()
+                    } label: {
+                        Text(isSelecting ? "Cancel" : "Select")
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Menu {
+                        Button { showingSettings = true } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    } label: {
+                        // Photos style: a dark circle with a white
+                        // ellipsis, like the Library tab.
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
                 }
             }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
         }
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
@@ -405,29 +441,51 @@ struct MyCollectionDetailView: View {
             }
         }
         .navigationTitle(collection.name)
-        .navigationBarTitleDisplayMode(.inline)
+        // Large title, left-aligned below the "< Albums" back button,
+        // like the real Photos app (not a small inline title).
+        .navigationBarTitleDisplayMode(.large)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
+        // White back button ("< Albums"), like the real Photos app
+        // (the accent color is blue, which would tint it blue).
+        .tint(.white)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(isSelecting ? "Cancel" : "Select") {
-                    toggleSelecting()
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                // The trash button is gone — deleting the whole
-                // collection lives in the "…" menu instead, so it
-                // cannot be hit by accident next to Select. Hidden
-                // while selecting videos, like the trash was.
-                if !isSelecting {
-                    Menu {
-                        Button(role: .destructive) {
-                            showingDeleteCollection = true
-                        } label: {
-                            Label("Delete collection", systemImage: "trash")
-                        }
+                HStack(spacing: 8) {
+                    // Photos style: "Select" is a dark pill with
+                    // white footnote text, like the Library tab.
+                    Button {
+                        toggleSelecting()
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Text(isSelecting ? "Cancel" : "Select")
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    // The trash button is gone — deleting the whole
+                    // collection lives in the "…" menu instead, so it
+                    // cannot be hit by accident next to Select. Hidden
+                    // while selecting videos, like the trash was.
+                    if !isSelecting {
+                        Menu {
+                            Button(role: .destructive) {
+                                showingDeleteCollection = true
+                            } label: {
+                                Label("Delete collection", systemImage: "trash")
+                            }
+                        } label: {
+                            // Photos style: a dark circle with a white
+                            // ellipsis, like the Library tab.
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 32, height: 32)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
                     }
                 }
             }
@@ -1039,6 +1097,8 @@ struct AlbumItemsView: View {
     @State private var isSelecting = false
     @State private var selectedIDs: Set<String> = []
     @State private var showingBulkDeleteConfirmation = false
+    /// Presents the Settings sheet from the "…" menu.
+    @State private var showingSettings = false
 
     private var columns: [GridItem] { albumGridColumns() }
 
@@ -1092,15 +1152,49 @@ struct AlbumItemsView: View {
             }
         }
         .navigationTitle(kind.title)
-        .navigationBarTitleDisplayMode(.inline)
+        // Large title, left-aligned below the "< Albums" back button,
+        // like the real Photos app (not a small inline title).
+        .navigationBarTitleDisplayMode(.large)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
+        // White back button ("< Albums"), like the real Photos app
+        // (the accent color is blue, which would tint it blue).
+        .tint(.white)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(isSelecting ? "Cancel" : "Select") {
-                    toggleSelecting()
+                HStack(spacing: 8) {
+                    // Photos style: "Select" is a dark pill with
+                    // white footnote text, like the Library tab.
+                    Button {
+                        toggleSelecting()
+                    } label: {
+                        Text(isSelecting ? "Cancel" : "Select")
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Menu {
+                        Button { showingSettings = true } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    } label: {
+                        // Photos style: a dark circle with a white
+                        // ellipsis, like the Library tab.
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
                 }
             }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
         }
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
