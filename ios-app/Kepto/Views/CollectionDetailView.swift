@@ -918,9 +918,11 @@ struct AlbumsView: View {
         case .kind(.favorites):
             return AlbumCardView(name: "Favorites", count: favoritesCount, coverItemId: viewModel.items.first(where: { $0.isFavorite })?.id, showsHeart: true)
         case .myCollection(let collection):
-            return AlbumCardView(name: collection.name, count: collection.count, coverItemId: collection.coverItemId)
+            // User albums show in lowercase; Recents / Favorites
+            // (the .kind cases above) keep their Title Case.
+            return AlbumCardView(name: collection.name.lowercased(), count: collection.count, coverItemId: collection.coverItemId)
         case .creator(let collection):
-            return AlbumCardView(name: collection.displayName, count: collection.count, coverItemId: collection.coverItemId)
+            return AlbumCardView(name: collection.displayName.lowercased(), count: collection.count, coverItemId: collection.coverItemId)
         }
     }
 
@@ -985,9 +987,12 @@ private struct AlbumCardView: View {
                         .padding(10)
                 }
             }
-            // Album names show in lowercase, not Title Case.
-            Text(name.lowercased())
-                .font(.headline)
+            // Album names are NOT bold (Photos style: regular
+            // weight). The name is shown as given — Recents and
+            // Favorites keep their Title Case, while My collections
+            // and creator albums are lowercased at the call site.
+            Text(name)
+                .font(.body)
                 .foregroundStyle(.white)
                 .lineLimit(1)
             Text("\(count)")

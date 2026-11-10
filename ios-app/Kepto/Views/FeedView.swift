@@ -78,18 +78,22 @@ struct FeedView: View {
                 }
             }
             // Back swipe to go back (there is no X button): a
-            // deliberate rightward swipe on the video dismisses the
-            // player. Simultaneous, so it never blocks the vertical
-            // paging or the progress-bar scrub. Drags that start
-            // near the bottom (the progress bar / caption area) are
-            // ignored, so scrubbing cannot dismiss the player.
+            // deliberate rightward swipe that STARTS FROM THE LEFT
+            // EDGE of the screen dismisses the player (like iOS's
+            // native edge back-swipe). A rightward swipe starting
+            // anywhere else does nothing. Simultaneous, so it never
+            // blocks the vertical paging or the progress-bar scrub.
+            // Drags that start near the bottom (the progress bar /
+            // caption area) are ignored, so scrubbing cannot dismiss
+            // the player.
             .simultaneousGesture(
                 DragGesture(minimumDistance: 20)
                     .onEnded { value in
+                        let startedAtLeftEdge = value.startLocation.x < 20
                         let isSwipeRight = value.translation.width > 120
                             && abs(value.translation.height) < 60
                         let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
-                        if isSwipeRight && startedAboveBottomBar {
+                        if startedAtLeftEdge && isSwipeRight && startedAboveBottomBar {
                             dismiss()
                         }
                     }

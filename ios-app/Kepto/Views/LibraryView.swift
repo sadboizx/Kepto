@@ -106,9 +106,21 @@ struct LibraryView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     if viewModel.isConfigured {
                         HStack(spacing: 16) {
-                            Button(isSelecting ? "Cancel" : "Select") {
+                            // Photos style: "Select" is a dark pill
+                            // with white text (not plain blue text),
+                            // floating over the grid.
+                            Button {
                                 toggleSelecting()
+                            } label: {
+                                Text(isSelecting ? "Cancel" : "Select")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(.ultraThinMaterial, in: Capsule())
                             }
+                            .buttonStyle(.plain)
                             Menu {
                                 Button { Task { await saveDirectFromClipboard() } } label: {
                                     Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
@@ -117,7 +129,14 @@ struct LibraryView: View {
                                     Label("Settings", systemImage: "gearshape")
                                 }
                             } label: {
-                                Image(systemName: "ellipsis.circle")
+                                // Photos style: a dark circle with a
+                                // white ellipsis (not the blue
+                                // ellipsis.circle symbol).
+                                Image(systemName: "ellipsis")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 32, height: 32)
+                                    .background(.ultraThinMaterial, in: Circle())
                             }
                         }
                     }
@@ -253,7 +272,9 @@ struct LibraryView: View {
                     Text(mode.title)
                         .font(.subheadline)
                         .fontWeight(.bold)
-                        .foregroundStyle(selected ? .white : .white.opacity(0.7))
+                        // Photos: selected is white, unselected is a
+                        // medium gray.
+                        .foregroundStyle(selected ? .white : .white.opacity(0.6))
                         .padding(.horizontal, 14)
                         .padding(.vertical, 7)
                         .background(selected ? Color.white.opacity(0.25) : Color.clear)
@@ -263,8 +284,9 @@ struct LibraryView: View {
             }
         }
         .padding(4)
-        .background(Color.white.opacity(0.12))
-        .clipShape(Capsule())
+        // Photos: the pill is a dark frosted material (not a flat
+        // white wash), so the grid shows through softly behind it.
+        .background(.ultraThinMaterial, in: Capsule())
     }
 
     /// The grid for the current view mode (loading / empty / grid).
