@@ -410,9 +410,7 @@ struct LibraryView: View {
                             feedStartItem = first
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
-                                AuthenticatedThumbnail(item: first)
-                                    .aspectRatio(1, contentMode: .fit)
-                                    .clipped()
+                                AspectThumbnail(itemId: first.id)
                                 Text(Self.yearFormatter.string(from: group.key))
                                     .font(.headline)
                                     .foregroundStyle(.white)
@@ -736,14 +734,7 @@ struct PhotosGridCell: View {
 
     var body: some View {
         ZStack {
-            AuthenticatedThumbnail(item: item)
-                // NOTE: `.fit`, NOT `.fill`. With `.fill` the cell
-                // falls back to the video's intrinsic 9:16 aspect
-                // when the grid proposes a flexible height, so the
-                // grid rendered tall portrait cells instead of
-                // squares (v29 screenshots). `.fit` forces 1:1.
-                .aspectRatio(1, contentMode: .fit)
-                .clipped()
+            AspectThumbnail(itemId: item.id)
             if item.status == .pending {
                 ZStack {
                     Color.black.opacity(0.35)
@@ -924,6 +915,32 @@ struct AuthenticatedThumbnail: View {
     }
 }
 
+/// A thumbnail forced to a fixed aspect ratio (square by default).
+///
+/// Why this exists: `.aspectRatio(1, .fit)` applied directly to an
+/// `AuthenticatedThumbnail` (or to a `Group` wrapping one) does NOT
+/// force the ratio once the image has loaded — the resizable `Image`
+/// keeps its intrinsic 9:16 aspect and the cell renders tall
+/// (v29 Albums screenshot: Recents stayed 9:16 while the Favorites
+/// placeholder, a plain `Color`, did go square). A concrete `Color`
+/// has no intrinsic aspect, so `.aspectRatio(.fit)` on it reliably
+/// sizes the frame; the thumbnail then fills that frame via
+/// `.overlay` (center-cropped by `.clipped()`), exactly like iOS
+/// Photos' square thumbnails.
+struct AspectThumbnail: View {
+    let itemId: String
+    var ratio: CGFloat = 1
+
+    var body: some View {
+        Color.clear
+            .aspectRatio(ratio, contentMode: .fit)
+            .overlay {
+                AuthenticatedThumbnail(itemId: itemId)
+            }
+            .clipped()
+    }
+}
+
 /// Identifiable wrapper so a downloaded file URL can drive a
 /// `.sheet(item:)` — the iOS share sheet. Shared by the grid and the
 /// player context menus.
@@ -1058,9 +1075,7 @@ struct ForYouView: View {
                         feedStartItem = first
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
-                            AuthenticatedThumbnail(item: first)
-                                .aspectRatio(16 / 9, contentMode: .fit)
-                                .clipped()
+                            AspectThumbnail(itemId: first.id, ratio: 16 / 9)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             Text(Self.monthFormatter.string(from: memory.key))
                                 .font(.headline)

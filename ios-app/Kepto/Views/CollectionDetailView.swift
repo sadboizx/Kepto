@@ -889,21 +889,16 @@ private struct AlbumCardView: View {
             ZStack(alignment: .bottomLeading) {
                 Group {
                     if let coverItemId {
-                        AuthenticatedThumbnail(itemId: coverItemId)
+                        AspectThumbnail(itemId: coverItemId)
                     } else {
-                        ZStack {
-                            Color(.systemGray5)
-                            Image(systemName: "photo")
-                                .foregroundStyle(.secondary)
-                        }
+                        Color(.systemGray5)
+                            .aspectRatio(1, contentMode: .fit)
+                            .overlay {
+                                Image(systemName: "photo")
+                                    .foregroundStyle(.secondary)
+                            }
                     }
                 }
-                // NOTE: `.fit`, NOT `.fill` — `.fill` lets the
-                // cover fall back to the video's intrinsic 9:16
-                // aspect, so the card rendered tall instead of
-                // square (v29 screenshots).
-                .aspectRatio(1, contentMode: .fit)
-                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 if showsHeart {
                     Image(systemName: "heart.fill")
