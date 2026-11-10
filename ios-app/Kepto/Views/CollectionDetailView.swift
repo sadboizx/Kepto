@@ -121,7 +121,7 @@ struct CollectionDetailView: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .fullScreenCover(item: $feedStartItem) { startItem in
+        .navigationDestination(item: $feedStartItem) { startItem in
             FeedView(
                 items: $items,
                 startItemId: startItem.id,
@@ -474,7 +474,7 @@ struct MyCollectionDetailView: View {
         } message: {
             Text("The videos in it stay saved in the library.")
         }
-        .fullScreenCover(item: $feedStartItem) { startItem in
+        .navigationDestination(item: $feedStartItem) { startItem in
             FeedView(
                 items: $items,
                 startItemId: startItem.id,
@@ -999,6 +999,10 @@ private struct AlbumCardView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
+        // The tappable region is exactly this card's bounds (see
+        // PhotosGridCell): a tap on the bottom edge must open this
+        // album, not the one below it.
+        .contentShape(Rectangle())
     }
 }
 
@@ -1125,7 +1129,7 @@ struct AlbumItemsView: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .fullScreenCover(item: $feedStartItem) { startItem in
+        .navigationDestination(item: $feedStartItem) { startItem in
             FeedView(
                 items: $items,
                 startItemId: startItem.id,

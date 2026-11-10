@@ -39,7 +39,6 @@ struct FeedView: View {
     var onNearEnd: (() async -> Void)? = nil
 
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
 
     /// The id of the page the feed is showing. Optional because
     /// `.scrollPosition(id:)` needs a `Binding<String?>`.
@@ -77,29 +76,19 @@ struct FeedView: View {
                     feedPages
                 }
             }
-            // Back swipe to go back (there is no X button): a
-            // deliberate rightward swipe that STARTS FROM THE LEFT
-            // EDGE of the screen dismisses the player (like iOS's
-            // native edge back-swipe). A rightward swipe starting
-            // anywhere else does nothing. Simultaneous, so it never
-            // blocks the vertical paging or the progress-bar scrub.
-            // Drags that start near the bottom (the progress bar /
-            // caption area) are ignored, so scrubbing cannot dismiss
-            // the player.
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 20)
-                    .onEnded { value in
-                        let startedAtLeftEdge = value.startLocation.x < 20
-                        let isSwipeRight = value.translation.width > 120
-                            && abs(value.translation.height) < 60
-                        let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
-                        if startedAtLeftEdge && isSwipeRight && startedAboveBottomBar {
-                            dismiss()
-                        }
-                    }
-            )
+            // No custom back-swipe gesture any more: the player is
+            // pushed in a NavigationStack now, so iOS's native
+            // edge back-swipe (interactive pop gesture) dismisses
+            // it — the view follows the finger and can be cancelled
+            // mid-swipe, which a DragGesture could not do.
         }
         .preferredColorScheme(.dark)
+        // Full-screen player: hide the navigation bar (no back
+        // button/title) and the tab bar, so the video fills the
+        // whole screen exactly like the old full-screen cover did.
+        // The native back gesture still works with both hidden.
+        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
         .confirmationDialog("Delete this saved item?",
                             isPresented: $showingDeleteConfirmation,
                             titleVisibility: .visible) {

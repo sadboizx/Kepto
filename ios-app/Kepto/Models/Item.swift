@@ -50,7 +50,10 @@ enum ItemStatus: String, Codable, CaseIterable, Identifiable {
 
 /// One saved social post. Field names are camelCase; the JSON decoder
 /// converts the backend's snake_case keys (`original_url`, `saved_at`, ...).
-struct Item: Codable, Identifiable, Equatable {
+/// Hashable so the player can be pushed with
+/// `.navigationDestination(item:)` (the native iOS back gesture),
+/// like CollectionInfo and MyCollection in this file.
+struct Item: Codable, Identifiable, Equatable, Hashable {
     let id: String
     let userId: String
     let platform: Platform

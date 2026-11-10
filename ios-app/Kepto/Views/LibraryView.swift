@@ -169,7 +169,7 @@ struct LibraryView: View {
         }) {
             SettingsView()
         }
-        .fullScreenCover(item: $feedStartItem) { startItem in
+        .navigationDestination(item: $feedStartItem) { startItem in
             FeedView(
                 items: Binding(get: { viewModel.items }, set: { _ in }),
                 startItemId: startItem.id,
@@ -284,11 +284,11 @@ struct LibraryView: View {
             }
         }
         .padding(4)
-        // The pill needs a REAL background: .ultraThinMaterial was
-        // so thin over the busy grid that it looked like there was
-        // no background at all. A solid dark fill (like Photos')
-        // is always visible.
-        .background(Color.black.opacity(0.6), in: Capsule())
+        // Photos-style frosted pill: .regularMaterial (not the flat
+        // black 0.6 from v34, and thicker than the .ultraThinMaterial
+        // from v33 that looked like no background at all). The grid
+        // shows through softly, like the real Photos app.
+        .background(.regularMaterial, in: Capsule())
     }
 
     /// The grid for the current view mode (loading / empty / grid).
@@ -780,6 +780,12 @@ struct PhotosGridCell: View {
                     .stroke(Color.accentColor, lineWidth: 3)
             }
         }
+        // The tappable region is exactly this cell's square bounds.
+        // Without an explicit content shape, the thumbnail's content
+        // can shift hit-testing so a tap on the bottom edge lands on
+        // the cell below. (The thumbnail itself stays square — the
+        // ZStack + .aspectRatio in AspectThumbnail is untouched.)
+        .contentShape(Rectangle())
         .onTapGesture {
             onTap?()
         }
@@ -1055,7 +1061,7 @@ struct ForYouView: View {
                     await viewModel.fetch()
                 }
             }
-            .fullScreenCover(item: $feedStartItem) { startItem in
+            .navigationDestination(item: $feedStartItem) { startItem in
                 FeedView(
                     items: Binding(get: { viewModel.items }, set: { _ in }),
                     startItemId: startItem.id,
@@ -1194,7 +1200,7 @@ struct SearchView: View {
             .onChange(of: selectedPlatform) { _, _ in
                 Task { await performSearch() }
             }
-            .fullScreenCover(item: $feedStartItem) { startItem in
+            .navigationDestination(item: $feedStartItem) { startItem in
                 FeedView(
                     items: Binding(get: { viewModel.searchResults }, set: { _ in }),
                     startItemId: startItem.id,
