@@ -284,9 +284,11 @@ struct LibraryView: View {
             }
         }
         .padding(4)
-        // Photos: the pill is a dark frosted material (not a flat
-        // white wash), so the grid shows through softly behind it.
-        .background(.ultraThinMaterial, in: Capsule())
+        // The pill needs a REAL background: .ultraThinMaterial was
+        // so thin over the busy grid that it looked like there was
+        // no background at all. A solid dark fill (like Photos')
+        // is always visible.
+        .background(Color.black.opacity(0.6), in: Capsule())
     }
 
     /// The grid for the current view mode (loading / empty / grid).
