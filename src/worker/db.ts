@@ -196,6 +196,52 @@ export async function listItems(
   return results ?? [];
 }
 
+export interface LibraryStats {
+  total: number;
+  photos: number;
+  videos: number;
+  favorites: number;
+}
+
+/**
+ * Counts for the Photos-style Library header ("N Photos, M Videos")
+ * and the Albums tab (Recents = total, Favorites = favorites).
+ * The favorites count reads `is_favorite` (migration 0005); if that
+ * column does not exist yet the count falls back to 0 instead of
+ * failing the whole endpoint.
+ */
+export async function getStats(
+  db: D1Database,
+  userId: string,
+): Promise<LibraryStats> {
+  const row = (await db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(CASE WHEN content_type LIKE 'image%' THEN 1 ELSE 0 END), 0) AS photos,
+              COALESCE(SUM(CASE WHEN content_type LIKE 'video%' THEN 1 ELSE 0 END), 0) AS videos
+         FROM items WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<{
+      total: number;
+      photos: number;
+      videos: number;
+    }>()) ?? { total: 0, photos: 0, videos: 0 };
+  let favorites = 0;
+  try {
+    const fav = await db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM items WHERE user_id = ?1 AND is_favorite = 1`,
+      )
+      .bind(userId)
+      .first<{ n: number }>();
+    favorites = fav?.n ?? 0;
+  } catch {
+    favorites = 0;
+  }
+  return { total: row.total, photos: row.photos, videos: row.videos, favorites };
+}
+
 export interface CollectionRow {
   author_username: string | null;
   author: string | null;

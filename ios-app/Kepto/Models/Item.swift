@@ -194,6 +194,11 @@ struct Item: Codable, Identifiable, Equatable {
 
     var formattedSavedAt: String? { Self.displayDate(savedAt) }
     var formattedPostedAt: String? { Self.displayDate(postedAt) }
+
+    /// The saved date as a Date (for the Library Years/Months/Days
+    /// grouping and the For You memories). Nil when the stored
+    /// ISO string does not parse.
+    var savedDate: Date? { Self.isoFormatter.date(from: savedAt) }
 }
 
 // MARK: - API response envelopes (backend returns { ok, ... })
@@ -285,6 +290,25 @@ struct CollectionInfo: Codable, Identifiable, Equatable, Hashable {
 struct CollectionsResponse: Decodable {
     let ok: Bool
     let collections: [CollectionInfo]
+}
+
+/// GET /api/stats response envelope (backend returns { ok, total,
+/// photos, videos, favorites }).
+struct StatsResponse: Decodable {
+    let ok: Bool
+    let total: Int
+    let photos: Int
+    let videos: Int
+    let favorites: Int
+}
+
+/// Library counts for the Photos-style header ("N Photos, M Videos")
+/// and the Albums tab (Recents = total, Favorites = favorites).
+struct LibraryStats: Equatable {
+    let total: Int
+    let photos: Int
+    let videos: Int
+    let favorites: Int
 }
 
 /// One user-created collection ("My collections", TikTok-style "Add to

@@ -1,7 +1,8 @@
 import SwiftUI
+import UIKit
 
-/// One collection's videos: a 3-column portrait grid like a TikTok profile
-/// page, newest first. Tapping a video opens it in the full-screen feed
+/// One collection's videos: a square grid (Photos style, 2 or 3 columns
+/// by screen width), newest first. Tapping a video opens it in the full-screen feed
 /// (swipe up/down for the next video in this collection). Pull-to-refresh
 /// reloads the collection. (No status filter: the All/Pending/Ready/Failed
 /// picker was removed — a collection just shows all its videos.)
@@ -31,18 +32,17 @@ struct CollectionDetailView: View {
     @State private var selectedIDs: Set<String> = []
     @State private var showingBulkDeleteConfirmation = false
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-    ]
+    /// Detail-grid columns: 2 on narrow screens, 3 on wide ones
+    /// (spec: "2 hoặc 3 cột tùy kích thước màn hình"). iPhone 12 Pro
+    /// Max (428pt) gets 3; iPhone SE / 12 (375–390pt) get 2.
+    private var columns: [GridItem] { albumGridColumns() }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(items) { item in
-                        VideoGridCell(
+                        PhotosGridCell(
                             item: item,
                             isSelectionMode: isSelecting,
                             isSelected: selectedIDs.contains(item.id),
@@ -317,8 +317,8 @@ struct CollectionDetailView: View {
     }
 }
 
-/// One user-created collection's videos: a 3-column portrait grid,
-/// newest-added first. Tapping a video opens it in the full-screen
+/// One user-created collection's videos: a square grid (Photos style,
+/// 2 or 3 columns by screen width), newest-added first. Tapping a video opens it in the full-screen
 /// feed (swipe up/down for the next video in this collection).
 /// Long-press a cell (0.25s) opens the grid menu (Favorite / Add to
 /// Collection / Remove from collection / Delete). The toolbar trash
@@ -351,17 +351,16 @@ struct MyCollectionDetailView: View {
     @State private var selectedIDs: Set<String> = []
     @State private var showingBulkDeleteConfirmation = false
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-    ]
+    /// Detail-grid columns: 2 on narrow screens, 3 on wide ones
+    /// (spec: "2 hoặc 3 cột tùy kích thước màn hình"). iPhone 12 Pro
+    /// Max (428pt) gets 3; iPhone SE / 12 (375–390pt) get 2.
+    private var columns: [GridItem] { albumGridColumns() }
 
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(items) { item in
-                    VideoGridCell(
+                    PhotosGridCell(
                         item: item,
                         isSelectionMode: isSelecting,
                         isSelected: selectedIDs.contains(item.id),
@@ -677,6 +676,570 @@ struct MyCollectionDetailView: View {
         do {
             try await viewModel.deleteMyCollection(id: collection.id)
             dismiss()
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+}
+
+/// Grid columns for album/collection detail grids: 2 columns on
+/// narrow screens, 3 on wide ones (spec: "2 hoặc 3 cột tùy kích
+/// thước màn hình"). iPhone 12 Pro Max (428pt) gets 3; iPhone SE /
+/// 12 (375–390pt) get 2.
+private func albumGridColumns() -> [GridItem] {
+    let count = UIScreen.main.bounds.width < 400 ? 2 : 3
+    return Array(repeating: GridItem(.flexible(), spacing: 2), count: count)
+}
+
+/// Which built-in album the Albums tab's detail page shows.
+enum AlbumKind: String, Hashable {
+    case recents, favorites
+
+    var title: String {
+        switch self {
+        case .recents: return "Recents"
+        case .favorites: return "Favorites"
+        }
+    }
+}
+
+/// Albums: the Photos-style Albums tab. "My Albums" is a 2-column
+/// grid of square album cards (cover + name + count below, like
+/// Photos iOS 17.4): Recents (all saved items), Favorites
+/// (hearted items), the user's own collections, then the
+/// per-creator collections. A blue "+" at the top-left creates a
+/// new album (a user-created collection). Tapping a card opens its
+/// videos in a square grid; tapping a video there opens the feed.
+/// There is no Shared Albums section — Kepto has no sharing, so
+/// there is nothing to list there (the spec says "nếu có").
+/// Dark mode is forced at the app root (KeptoTabView).
+struct AlbumsView: View {
+    @EnvironmentObject private var viewModel: LibraryViewModel
+    /// "New collection" name alert (from the "+" button).
+    @State private var showingNewCollection = false
+    @State private var newCollectionName = ""
+    @State private var saveNotice: String?
+    /// The collection whose detail page is open (nil = closed).
+    /// Navigation is a Button + navigationDestination, NOT an inline
+    /// NavigationLink in the LazyVGrid: inline links in a lazy grid
+    /// are flaky on iOS 17 (some cards simply never navigate).
+    @State private var selectedCollection: CollectionInfo?
+    @State private var selectedMyCollection: MyCollection?
+    @State private var selectedAlbumKind: AlbumKind?
+
+    /// 2-column album grid (Photos Albums tab): 12pt gaps.
+    private let albumColumns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    sectionHeader("My Albums")
+                    LazyVGrid(columns: albumColumns, spacing: 16) {
+                        Button {
+                            selectedAlbumKind = .recents
+                        } label: {
+                            AlbumCardView(
+                                name: "Recents",
+                                count: recentsCount,
+                                coverItemId: viewModel.items.first?.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            selectedAlbumKind = .favorites
+                        } label: {
+                            AlbumCardView(
+                                name: "Favorites",
+                                count: favoritesCount,
+                                coverItemId: viewModel.items.first(where: { $0.isFavorite })?.id,
+                                showsHeart: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        ForEach(viewModel.myCollections) { collection in
+                            Button {
+                                selectedMyCollection = collection
+                            } label: {
+                                AlbumCardView(
+                                    name: collection.name,
+                                    count: collection.count,
+                                    coverItemId: collection.coverItemId
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        ForEach(viewModel.collections) { collection in
+                            Button {
+                                selectedCollection = collection
+                            } label: {
+                                AlbumCardView(
+                                    name: collection.displayName,
+                                    count: collection.count,
+                                    coverItemId: collection.coverItemId
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom)
+                }
+            }
+            .navigationTitle("Albums")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingNewCollection = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.blue)
+                    }
+                }
+            }
+            .navigationDestination(item: $selectedCollection) { collection in
+                CollectionDetailView(collection: collection)
+            }
+            .navigationDestination(item: $selectedMyCollection) { collection in
+                MyCollectionDetailView(collection: collection)
+            }
+            .navigationDestination(item: $selectedAlbumKind) { kind in
+                AlbumItemsView(kind: kind)
+            }
+            .task {
+                await viewModel.fetchCollections()
+                await viewModel.fetchStats()
+                if viewModel.items.isEmpty {
+                    await viewModel.fetch()
+                }
+            }
+            .refreshable {
+                await viewModel.fetchCollections()
+                await viewModel.fetchStats()
+            }
+            .alert("New collection", isPresented: $showingNewCollection) {
+                TextField("Tên collection", text: $newCollectionName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Tạo") {
+                    let name = newCollectionName
+                    newCollectionName = ""
+                    Task {
+                        if let created = await viewModel.createMyCollection(name: name) {
+                            saveNotice = "Đã tạo collection \"\(created.name)\"."
+                        }
+                    }
+                }
+                Button("Hủy", role: .cancel) { newCollectionName = "" }
+            }
+            .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
+                Button("OK") { saveNotice = nil }
+            } message: {
+                Text(saveNotice ?? "")
+            }
+            .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
+                Button("OK") { viewModel.errorMessage = nil }
+            } message: {
+                Text(viewModel.errorMessage ?? "")
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.title2)
+            .fontWeight(.bold)
+            .foregroundStyle(.white)
+            .padding(.horizontal)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+    }
+
+    /// Recents count: the real total from /api/stats when available,
+    /// else the number of items loaded so far.
+    private var recentsCount: Int {
+        viewModel.libraryStats?.total ?? viewModel.items.count
+    }
+
+    /// Favorites count: from /api/stats when available, else the
+    /// favorited items among the loaded ones.
+    private var favoritesCount: Int {
+        viewModel.libraryStats?.favorites ?? viewModel.items.filter(\.isFavorite).count
+    }
+}
+
+/// One album card (Photos Albums style): a SQUARE cover (1:1,
+/// centre-cropped, slightly rounded corners) with the name and the
+/// item count BELOW the card — not overlaid on it. (The old
+/// TikTok-style cards overlaid the name on the cover; Photos puts
+/// the text underneath.) `showsHeart` adds the white heart Photos
+/// shows on the Favorites album cover.
+private struct AlbumCardView: View {
+    let name: String
+    let count: Int
+    let coverItemId: String?
+    var showsHeart: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack(alignment: .bottomLeading) {
+                Group {
+                    if let coverItemId {
+                        AuthenticatedThumbnail(itemId: coverItemId)
+                    } else {
+                        ZStack {
+                            Color(.systemGray5)
+                            Image(systemName: "photo")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .aspectRatio(1, contentMode: .fill)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                if showsHeart {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
+                        .padding(10)
+                }
+            }
+            Text(name)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text("\(count)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// One built-in album's videos (Recents = all saved items,
+/// Favorites = hearted items): a square grid (Photos style, 2 or 3
+/// columns by screen width), newest first. Tapping a video opens it
+/// in the full-screen feed (swipe up/down for the next video in
+/// this album). Pull-to-refresh reloads. Long-press a cell opens
+/// the native iOS context menu (Save to Photos / Share / Favorite /
+/// Add to Album / Delete); Select mode bulk-deletes like the other
+/// grids.
+struct AlbumItemsView: View {
+    let kind: AlbumKind
+    @EnvironmentObject private var viewModel: LibraryViewModel
+
+    @State private var items: [Item] = []
+    @State private var nextCursor: String?
+    @State private var isLoading = false
+    @State private var isLoadingMore = false
+    @State private var errorMessage: String?
+    /// The video the feed opens on (nil = feed closed).
+    @State private var feedStartItem: Item?
+    /// The video the context menu's "Add to Album" opened the picker
+    /// for (nil = picker closed).
+    @State private var itemForAlbumPicker: Item?
+    /// A downloaded file ready for the iOS share sheet (nil = closed).
+    @State private var shareFile: ShareFile?
+    /// The video awaiting delete confirmation from the grid menu.
+    @State private var itemPendingDelete: Item?
+    @State private var showingDeleteConfirmation = false
+    /// Multi-select mode for bulk delete (same pattern as the other
+    /// grids): tap toggles selection, bottom bar has Select All /
+    /// Delete (N).
+    @State private var isSelecting = false
+    @State private var selectedIDs: Set<String> = []
+    @State private var showingBulkDeleteConfirmation = false
+
+    private var columns: [GridItem] { albumGridColumns() }
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(items) { item in
+                    PhotosGridCell(
+                        item: item,
+                        isSelectionMode: isSelecting,
+                        isSelected: selectedIDs.contains(item.id),
+                        onTap: {
+                            if isSelecting {
+                                toggleSelection(item)
+                            } else {
+                                feedStartItem = item
+                            }
+                        }
+                    )
+                    .contextMenu {
+                        GridItemContextMenu(
+                            item: item,
+                            isSelecting: isSelecting,
+                            onSaveToPhotos: { saveToPhotos($0) },
+                            onShare: { shareItem($0) },
+                            onToggleFavorite: { toggleGridFavorite($0) },
+                            onAddToAlbum: { itemForAlbumPicker = $0 },
+                            onDelete: { requestGridDelete($0) }
+                        )
+                    }
+                    .onAppear {
+                        if item.id == items.last?.id {
+                            Task { await loadMore() }
+                        }
+                    }
+                }
+            }
+            if nextCursor != nil {
+                HStack {
+                    Spacer()
+                    if isLoadingMore {
+                        ProgressView()
+                    } else {
+                        Button("Load more") {
+                            Task { await loadMore() }
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 12)
+            }
+        }
+        .navigationTitle(kind.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(isSelecting ? "Cancel" : "Select") {
+                    toggleSelecting()
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                selectionBar
+            }
+        }
+        .refreshable {
+            await fetch(reset: true)
+        }
+        .task {
+            await fetch(reset: true)
+        }
+        .overlay {
+            if isLoading && items.isEmpty {
+                ProgressView("Loading…")
+            } else if items.isEmpty && !isLoading {
+                ContentUnavailableView {
+                    Label("No videos yet", systemImage: "tray")
+                } description: {
+                    Text(kind == .favorites ? "Tap the heart on a video to add it to Favorites." : "Videos you save will appear here.")
+                }
+            }
+        }
+        .alert("Kepto", isPresented: .constant(errorMessage != nil)) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+        .fullScreenCover(item: $feedStartItem) { startItem in
+            FeedView(
+                items: $items,
+                startItemId: startItem.id,
+                onNearEnd: { await loadMore() },
+                showCloseButton: true
+            )
+        }
+        .sheet(item: $itemForAlbumPicker) { pickerItem in
+            AddToCollectionPickerView(
+                item: pickerItem,
+                onAddedToCollection: { _, _ in },
+                onCancel: { itemForAlbumPicker = nil }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.black)
+        }
+        .sheet(item: $shareFile) { file in
+            ShareSheet(activityItems: [file.url])
+        }
+        .confirmationDialog("Delete this saved item?",
+                            isPresented: $showingDeleteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteGridMenuItem() }
+            }
+            Button("Cancel", role: .cancel) { itemPendingDelete = nil }
+        } message: {
+            Text(itemPendingDelete?.displayTitle ?? "")
+        }
+        .confirmationDialog("Delete \(selectedIDs.count) videos?",
+                            isPresented: $showingBulkDeleteConfirmation,
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteSelected() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the saved copies from the cloud. This cannot be undone.")
+        }
+    }
+
+    /// Bottom bar in multi-select mode (see LibraryView).
+    private var selectionBar: some View {
+        SelectionActionBar(
+            selectedCount: selectedIDs.count,
+            totalCount: items.count,
+            onSelectAll: { selectAll() },
+            onDelete: { showingBulkDeleteConfirmation = true }
+        )
+    }
+
+    private func toggleSelecting() {
+        if isSelecting {
+            exitSelectionMode()
+        } else {
+            isSelecting = true
+        }
+    }
+
+    private func exitSelectionMode() {
+        isSelecting = false
+        selectedIDs.removeAll()
+    }
+
+    private func toggleSelection(_ item: Item) {
+        if selectedIDs.contains(item.id) {
+            selectedIDs.remove(item.id)
+        } else {
+            selectedIDs.insert(item.id)
+        }
+    }
+
+    /// Select all videos currently loaded in this album grid.
+    private func selectAll() {
+        if selectedIDs.count == items.count {
+            selectedIDs.removeAll()
+        } else {
+            selectedIDs = Set(items.map(\.id))
+        }
+    }
+
+    /// Delete every selected video (sequential, reusing the single
+    /// delete), then exit multi-select mode. A failure leaves the
+    /// video in the grid and is reported.
+    private func deleteSelected() async {
+        let targets = items.filter { selectedIDs.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        var failures = 0
+        for item in targets {
+            do {
+                try await viewModel.delete(item: item)
+                items.removeAll { $0.id == item.id }
+            } catch {
+                failures += 1
+            }
+        }
+        selectedIDs.removeAll()
+        isSelecting = false
+        if failures > 0 {
+            errorMessage = "Đã xóa \(targets.count - failures) video, \(failures) video lỗi."
+        }
+    }
+
+    /// Context menu "Save to Photos": download the item and save it
+    /// to the Photos library. Failures show in the error alert.
+    private func saveToPhotos(_ item: Item) {
+        Task {
+            do {
+                try await viewModel.saveToPhotos(item: item)
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Context menu "Share": download the item's file, then open the
+    /// iOS share sheet with it.
+    private func shareItem(_ item: Item) {
+        Task {
+            do {
+                shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Context menu "Favorite": toggle the heart and update the local
+    /// row in place.
+    private func toggleGridFavorite(_ item: Item) {
+        Task {
+            if let updated = await viewModel.toggleFavorite(item: item),
+               let idx = items.firstIndex(where: { $0.id == updated.id }) {
+                items[idx] = updated
+            }
+        }
+    }
+
+    /// Context menu "Delete": show the delete confirmation for this
+    /// video. (No sheet to dismiss first, unlike the old bottom-sheet
+    /// menu — the confirmation can appear immediately.)
+    private func requestGridDelete(_ item: Item) {
+        itemPendingDelete = item
+        showingDeleteConfirmation = true
+    }
+
+    private func deleteGridMenuItem() async {
+        guard let target = itemPendingDelete else { return }
+        itemPendingDelete = nil
+        do {
+            try await viewModel.delete(item: target)
+            items.removeAll { $0.id == target.id }
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func fetch(reset: Bool) async {
+        guard !isLoading && !isLoadingMore else { return }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            let (page, cursor): ([Item], String?)
+            switch kind {
+            case .recents:
+                (page, cursor) = try await viewModel.listAll(
+                    limit: 50,
+                    cursor: reset ? nil : nextCursor
+                )
+            case .favorites:
+                (page, cursor) = try await viewModel.listFavorites(
+                    limit: 50,
+                    cursor: reset ? nil : nextCursor
+                )
+            }
+            items = reset ? page : items + page
+            nextCursor = cursor
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func loadMore() async {
+        guard nextCursor != nil, !isLoadingMore else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        do {
+            let (page, cursor): ([Item], String?)
+            switch kind {
+            case .recents:
+                (page, cursor) = try await viewModel.listAll(limit: 50, cursor: nextCursor)
+            case .favorites:
+                (page, cursor) = try await viewModel.listFavorites(limit: 50, cursor: nextCursor)
+            }
+            items.append(contentsOf: page)
+            nextCursor = cursor
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }

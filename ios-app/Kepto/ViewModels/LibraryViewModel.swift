@@ -2,56 +2,32 @@ import Foundation
 import Photos
 import SwiftUI
 
-/// The home menu sections: all saved items, video-only (Reels),
-/// image-only posts (Bài viết), and the per-creator collections.
-/// "Âm thanh" is intentionally NOT a section: audio is stored inside
-/// each saved video, not as separate items, so there is nothing to list.
-enum LibrarySection: String, CaseIterable, Identifiable {
-    case all, reels, posts, collections
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: return "Tất cả"
-        case .reels: return "Reels"
-        case .posts: return "Bài viết"
-        case .collections: return "Collections"
-        }
-    }
-
-    /// Backend `media` filter for the section (nil = no filter).
-    var mediaFilter: String? {
-        switch self {
-        case .reels: return "video"
-        case .posts: return "image"
-        case .all, .collections: return nil
-        }
-    }
-}
-
-/// Owns the library screen state. Cloud-only: items live in D1 behind the
-/// Worker API; nothing is cached on disk. The home screen is a flat grid
-/// of all saved items (TikTok-style, 3 columns) with a menu to switch
-/// between Tất cả / Reels / Bài viết / Collections; search shows a flat
-/// grid of matching items. Pull-to-refresh and search both re-fetch
-/// from the server.
+/// Owns the library state. Cloud-only: items live in D1 behind the
+/// Worker API; nothing is cached on disk. The app is Photos-style now:
+/// the Library tab is a flat grid of all saved items (Years / Months /
+/// Days / All Photos view modes are a presentation choice in the view,
+/// not a server filter), the Albums tab shows per-creator and
+/// user-created collections, and the Search tab filters by text or
+/// platform. Pull-to-refresh re-fetches from the server.
 @MainActor
 final class LibraryViewModel: ObservableObject {
-    /// Search results (flat list), used only while the user is searching.
+    /// All saved items (Library tab, newest first).
     @Published private(set) var items: [Item] = []
-    /// Collections for the home screen (one per creator username).
+    /// Search results (Search tab only), newest first.
+    @Published private(set) var searchResults: [Item] = []
+    /// Library counts for the Photos-style header ("N Photos,
+    /// M Videos") and the Albums tab. Nil until fetched (the
+    /// /api/stats endpoint may be unavailable on an older Worker).
+    @Published private(set) var libraryStats: LibraryStats?
+    /// Collections for the Albums tab (one per creator username).
     @Published private(set) var collections: [CollectionInfo] = []
     /// User-created collections ("My collections").
     @Published private(set) var myCollections: [MyCollection] = []
-    /// The selected home menu section.
-    @Published var selectedSection: LibrarySection = .all
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
     @Published var errorMessage: String?
-    @Published var searchText = ""
     /// A link handed over by the Share Extension (kepto://save?url=...).
-    /// The Library opens the Save sheet for it, then clears it.
+    /// The app root saves it directly, then clears it.
     @Published var pendingShareURL: String?
 
     /// The configured API client, or nil until the user enters a Worker URL
@@ -59,14 +35,17 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var api: KeptoAPI?
 
     private var nextCursor: String?
+    private var searchCursor: String?
+    private var searchQuery: String?
+    private var searchPlatform: Platform?
     private var isFetching = false
 
     var isConfigured: Bool { api != nil }
 
     var hasMore: Bool { nextCursor != nil }
 
-    /// True while the search field has text (home shows results, not collections).
-    var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// True while a search (text or platform) has a next page.
+    var hasMoreSearchResults: Bool { searchCursor != nil }
 
     init() {
         reloadConfig()
@@ -78,13 +57,13 @@ final class LibraryViewModel: ObservableObject {
         api = KeptoAPI.configured()
     }
 
-    /// Switch home menu section and fetch its content.
-    func selectSection(_ section: LibrarySection) async {
-        selectedSection = section
-        if section == .collections {
-            await fetchCollections()
-        } else {
-            await fetch()
+    /// Library counts (GET /api/stats). Quiet: a failure (older
+    /// Worker without the endpoint) leaves the counts nil and the
+    /// Library simply hides the "N Photos, M Videos" line.
+    func fetchStats() async {
+        guard let api else { return }
+        if let stats = try? await api.stats() {
+            libraryStats = stats
         }
     }
 
@@ -223,10 +202,8 @@ final class LibraryViewModel: ObservableObject {
         return try await api.downloadVideoFile(for: item)
     }
 
-    /// First page of the current section's items (or search results
-    /// while searching — search ignores the section filter). Called on
-    /// pull-to-refresh and whenever the search text changes (debounced
-    /// by the view).
+    /// First page of all saved items (Library tab, newest first).
+    /// Called on pull-to-refresh and on appear.
     func fetch() async {
         guard let api else {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
@@ -241,11 +218,7 @@ final class LibraryViewModel: ObservableObject {
             isFetching = false
         }
         do {
-            let (page, cursor) = try await api.list(
-                query: searchText,
-                media: isSearching ? nil : selectedSection.mediaFilter,
-                limit: 50
-            )
+            let (page, cursor) = try await api.list(limit: 50)
             items = page
             nextCursor = cursor
         } catch {
@@ -263,17 +236,80 @@ final class LibraryViewModel: ObservableObject {
             isFetching = false
         }
         do {
-            let (page, next) = try await api.list(
-                query: searchText,
-                media: isSearching ? nil : selectedSection.mediaFilter,
-                limit: 50,
-                cursor: cursor
-            )
+            let (page, next) = try await api.list(limit: 50, cursor: cursor)
             items.append(contentsOf: page)
             nextCursor = next
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    /// Search (Search tab): first page of items matching a text query
+    /// and/or a platform. Either filter may be nil, but at least one
+    /// must be set — the view only calls this with a real query.
+    /// Replaces the previous results (the view debounces typing).
+    func search(query: String? = nil, platform: Platform? = nil) async {
+        guard let api else {
+            errorMessage = KeptoAPIError.notConfigured.errorDescription
+            return
+        }
+        searchQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchPlatform = platform
+        do {
+            let (page, cursor) = try await api.list(
+                platform: platform,
+                query: searchQuery,
+                limit: 50
+            )
+            searchResults = page
+            searchCursor = cursor
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Next page of the current search (same query / platform).
+    func searchMore() async {
+        guard let api, let cursor = searchCursor, !isFetching else { return }
+        isFetching = true
+        defer { isFetching = false }
+        do {
+            let (page, next) = try await api.list(
+                platform: searchPlatform,
+                query: searchQuery,
+                limit: 50,
+                cursor: cursor
+            )
+            searchResults.append(contentsOf: page)
+            searchCursor = next
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Clear the search results and filters (Search tab, when the
+    /// query is emptied and no category is selected).
+    func clearSearch() {
+        searchResults = []
+        searchCursor = nil
+        searchQuery = nil
+        searchPlatform = nil
+    }
+
+    /// One page of all saved items (used by the Albums tab's Recents
+    /// detail). Throws so the detail view can show the failure.
+    func listAll(limit: Int = 50,
+                 cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        return try await api.list(limit: limit, cursor: cursor)
+    }
+
+    /// One page of favorited items (used by the Albums tab's
+    /// Favorites detail). Throws so the detail view can show it.
+    func listFavorites(limit: Int = 50,
+                       cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        return try await api.list(favorite: true, limit: limit, cursor: cursor)
     }
 
     /// One page of a collection's items (used by CollectionDetailView).
@@ -293,8 +329,9 @@ final class LibraryViewModel: ObservableObject {
     }
 
     /// Save a pasted link. The Worker auto-detects a Collection link,
-    /// so this returns either a single video or a whole collection;
-    /// the current section refreshes to include the new item(s).
+    /// so this returns either a single video or a whole collection.
+    /// After a save the Library and the Albums tab both refresh, so
+    /// the new item (and any new creator collection) shows up.
     func save(url: String) async -> SaveOutcome? {
         guard let api else {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
@@ -302,13 +339,8 @@ final class LibraryViewModel: ObservableObject {
         }
         do {
             let result = try await api.save(url: url)
-            if isSearching {
-                await fetch()
-            } else if selectedSection == .collections {
-                await fetchCollections()
-            } else {
-                await fetch()
-            }
+            await fetch()
+            await fetchCollections()
             return result
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -317,11 +349,13 @@ final class LibraryViewModel: ObservableObject {
     }
 
     /// Delete an item on the server (R2 objects + D1 row), then drop it
-    /// from the search results. Throws so the detail view can show the failure.
+    /// from the Library list and the search results. Throws so the
+    /// detail view can show the failure.
     func delete(item: Item) async throws {
         guard let api else { throw KeptoAPIError.notConfigured }
         try await api.delete(id: item.id)
         items.removeAll { $0.id == item.id }
+        searchResults.removeAll { $0.id == item.id }
     }
 
     /// Heart / unheart an item. Updates the item in place (so the grid
@@ -337,6 +371,9 @@ final class LibraryViewModel: ObservableObject {
             let updated = try await api.setFavorite(id: item.id, favorite: !item.isFavorite)
             if let index = items.firstIndex(where: { $0.id == item.id }) {
                 items[index] = updated
+            }
+            if let index = searchResults.firstIndex(where: { $0.id == item.id }) {
+                searchResults[index] = updated
             }
             return updated
         } catch {

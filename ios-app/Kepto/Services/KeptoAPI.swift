@@ -140,6 +140,7 @@ final class KeptoAPI {
               query: String? = nil,
               authorUsername: String? = nil,
               media: String? = nil,
+              favorite: Bool? = nil,
               limit: Int = 50,
               cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
         var items: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
@@ -147,12 +148,23 @@ final class KeptoAPI {
         if let status { items.append(URLQueryItem(name: "status", value: status.rawValue)) }
         if let authorUsername { items.append(URLQueryItem(name: "author_username", value: authorUsername)) }
         if let media { items.append(URLQueryItem(name: "media", value: media)) }
+        if favorite == true { items.append(URLQueryItem(name: "favorite", value: "1")) }
         let trimmedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !trimmedQuery.isEmpty { items.append(URLQueryItem(name: "q", value: trimmedQuery)) }
         if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/list", queryItems: items)))
         let body = try handle(data, response, as: ListResponse.self)
         return (body.items, body.nextCursor)
+    }
+
+    /// GET /api/stats — library counts for the Photos-style header
+    /// ("N Photos, M Videos") and the Albums tab (Recents = total,
+    /// Favorites = favorites). Throws so the caller can fall back to
+    /// hiding the counts when the endpoint is unavailable.
+    func stats() async throws -> LibraryStats {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/stats")))
+        let body = try handle(data, response, as: StatsResponse.self)
+        return LibraryStats(total: body.total, photos: body.photos, videos: body.videos, favorites: body.favorites)
     }
 
     /// GET /api/collections — one row per creator username, newest first.

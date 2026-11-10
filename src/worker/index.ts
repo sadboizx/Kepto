@@ -24,6 +24,8 @@
  *                             named after the TikTok collection when it
  *                             has a title (best-effort).
  * - GET  /api/list            ?platform=&q=&status=&author_username=&limit=&cursor=
+ * - GET  /api/stats           counts for the Library header + Albums tab
+ *                             { total, photos, videos, favorites }
  * - GET  /api/collections     one row per author username (the Library's
  *                             home screen), with count + cover item id
  * - GET  /api/my-collections  user-created collections ("Add to collection")
@@ -74,6 +76,7 @@ import {
   findMyCollectionByName,
   getItem,
   getMyCollection,
+  getStats,
   insertItem,
   listCollections,
   listItems,
@@ -415,6 +418,13 @@ app.get("/api/list", async (c) => {
       ? btoa(JSON.stringify({ saved_at: last.saved_at, id: last.id }))
       : null;
   return c.json({ ok: true, items: page, next_cursor: nextCursor });
+});
+
+/** Library counts for the Photos-style header ("N Photos, M Videos")
+ * and the Albums tab (Recents = total, Favorites = favorites). */
+app.get("/api/stats", async (c) => {
+  const stats = await getStats(c.env.DB, "me");
+  return c.json({ ok: true, ...stats });
 });
 
 /** Collections: one row per author username, newest first. The Library home screen. */
