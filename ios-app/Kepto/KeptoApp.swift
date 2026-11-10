@@ -72,9 +72,11 @@ struct KeptoTabView: View {
                 .tag(3)
         }
         .preferredColorScheme(.dark)
-        // The tab bar (Library / For You / Albums / Search) uses the
-        // same frosted ultraThinMaterial as the real Photos app.
-        .toolbarBackground(.ultraThinMaterial, for: .tabBar)
+        // The tab bar (Library / For You / Albums / Search) uses
+        // regularMaterial — darker and more opaque than
+        // ultraThinMaterial, so the bar has a real visible background
+        // instead of looking transparent over the grid (IMG_0940).
+        .toolbarBackground(.regularMaterial, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
         .onChange(of: viewModel.pendingShareURL) { _, newValue in
             if let newValue {

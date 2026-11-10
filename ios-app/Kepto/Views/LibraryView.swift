@@ -284,9 +284,10 @@ struct LibraryView: View {
             }
         }
         .padding(4)
-        // Photos-style frosted pill (ultraThinMaterial, like the
-        // real Photos app's bottom pill and tab bar).
-        .background(.ultraThinMaterial, in: Capsule())
+        // Photos-style frosted pill — regularMaterial (darker and
+        // more opaque than ultraThinMaterial, so the pill has a real
+        // visible background over the grid, like the real Photos app).
+        .background(.regularMaterial, in: Capsule())
     }
 
     /// The grid for the current view mode (loading / empty / grid).
