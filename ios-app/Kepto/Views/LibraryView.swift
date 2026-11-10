@@ -36,7 +36,6 @@ enum LibraryViewMode: String, CaseIterable {
 /// Dark mode is forced at the app root (KeptoTabView).
 struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.safeAreaInsets) private var safeAreaInsets
     @State private var showingSettings = false
     /// URL-input alert (shown by the "+" menu's "Lưu link mới").
     /// The Worker auto-detects a Collection link, so there is no
@@ -79,27 +78,34 @@ struct LibraryView: View {
     ]
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            content
-            if viewModel.isConfigured {
-                topControls
-            }
-        }
-        .background(Color.black)
-        .safeAreaInset(edge: .bottom) {
-            if viewModel.isConfigured {
-                if isSelecting {
-                    selectionBar
-                } else {
-                    bottomBar
+        // GeometryReader supplies the status-bar height
+        // (`geometry.safeAreaInsets.top`): the top controls float
+        // just below the status bar, over the first grid row. There
+        // is no `@Environment(\.safeAreaInsets)` in SwiftUI — using
+        // it fails the build ("generic parameter 'T' could not be
+        // inferred", v29 log) — so the inset comes from here.
+        GeometryReader { geometry in
+            ZStack(alignment: .topTrailing) {
+                content
+                if viewModel.isConfigured {
+                    topControls(topInset: geometry.safeAreaInsets.top)
                 }
             }
-        }
-        .task {
-            await viewModel.fetch()
-            await viewModel.fetchStats()
-        }
-        .alert("Lưu link", isPresented: $showingURLInput) {
+            .background(Color.black)
+            .safeAreaInset(edge: .bottom) {
+                if viewModel.isConfigured {
+                    if isSelecting {
+                        selectionBar
+                    } else {
+                        bottomBar
+                    }
+                }
+            }
+            .task {
+                await viewModel.fetch()
+                await viewModel.fetchStats()
+            }
+            .alert("Lưu link", isPresented: $showingURLInput) {
             TextField(
                 "Dán link TikTok, Instagram…",
                 text: $urlInput
@@ -178,6 +184,7 @@ struct LibraryView: View {
         } message: {
             Text("Clipboard không có link http(s) nào.")
         }
+        }
     }
 
     @ViewBuilder
@@ -204,7 +211,7 @@ struct LibraryView: View {
     /// style): the "Select" pill, a "+" save menu, and a gear for
     /// Settings. They sit just below the status bar, over the first
     /// grid row — exactly where Photos puts Select / "…".
-    private var topControls: some View {
+    private func topControls(topInset: CGFloat) -> some View {
         HStack(spacing: 8) {
             Button(isSelecting ? "Cancel" : "Select") {
                 toggleSelecting()
@@ -247,7 +254,7 @@ struct LibraryView: View {
                     .clipShape(Circle())
             }
         }
-        .padding(.top, safeAreaInsets.top + 4)
+        .padding(.top, topInset + 4)
         .padding(.trailing, 16)
     }
 
