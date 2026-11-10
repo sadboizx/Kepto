@@ -1,4 +1,5 @@
 import Foundation
+import Photos
 import SwiftUI
 
 /// The home menu sections: all saved items, video-only (Reels),
@@ -186,6 +187,40 @@ final class LibraryViewModel: ObservableObject {
         guard let api else { throw KeptoAPIError.notConfigured }
         try await api.deleteMyCollection(id: id)
         myCollections.removeAll { $0.id == id }
+    }
+
+    /// Download the item's media file and save it to the Photos
+    /// library (camera roll) — the context menus' "Save to Photos".
+    /// Works for videos and for image posts: the Photos resource type
+    /// follows the item's content type (`.photo` for image/*,
+    /// `.video` otherwise). Prompts for the Photos "add only"
+    /// permission on first use. Throws so the caller can show it.
+    func saveToPhotos(item: Item) async throws {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        let fileURL = try await api.downloadVideoFile(for: item)
+        let isImage = item.contentType?.hasPrefix("image/") == true
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        if status == .notDetermined {
+            let newStatus = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            guard newStatus == .authorized || newStatus == .limited else {
+                throw KeptoAPIError.server("Chưa cấp quyền Photos.")
+            }
+        } else if status != .authorized && status != .limited {
+            throw KeptoAPIError.server("Chưa cấp quyền Photos.")
+        }
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+            request.addResource(with: isImage ? .photo : .video, fileURL: fileURL, options: nil)
+        }
+    }
+
+    /// Download the item's media file and return its temp URL, for the
+    /// iOS share sheet (the context menus' "Share"). The file lives in
+    /// the temp directory — present the share sheet promptly, the
+    /// system may clean it up. Throws so the caller can show it.
+    func shareFileURL(for item: Item) async throws -> URL {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        return try await api.downloadVideoFile(for: item)
     }
 
     /// First page of the current section's items (or search results

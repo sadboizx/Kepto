@@ -16,8 +16,11 @@ struct CollectionDetailView: View {
     @State private var errorMessage: String?
     /// The video the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
-    /// The video whose grid long-press menu is open (nil = closed).
-    @State private var itemForGridMenu: Item?
+    /// The video the context menu's "Add to Album" opened the picker
+    /// for (nil = picker closed).
+    @State private var itemForAlbumPicker: Item?
+    /// A downloaded file ready for the iOS share sheet (nil = closed).
+    @State private var shareFile: ShareFile?
     /// The video awaiting delete confirmation from the grid menu.
     @State private var itemPendingDelete: Item?
     @State private var showingDeleteConfirmation = false
@@ -49,9 +52,19 @@ struct CollectionDetailView: View {
                                 } else {
                                     feedStartItem = item
                                 }
-                            },
-                            onLongPress: isSelecting ? nil : { itemForGridMenu = $0 }
+                            }
                         )
+                        .contextMenu {
+                            GridItemContextMenu(
+                                item: item,
+                                isSelecting: isSelecting,
+                                onSaveToPhotos: { saveToPhotos($0) },
+                                onShare: { shareItem($0) },
+                                onToggleFavorite: { toggleGridFavorite($0) },
+                                onAddToAlbum: { itemForAlbumPicker = $0 },
+                                onDelete: { requestGridDelete($0) }
+                            )
+                        }
                     }
                 }
                 if nextCursor != nil {
@@ -114,31 +127,18 @@ struct CollectionDetailView: View {
                 showCloseButton: true
             )
         }
-        .sheet(item: $itemForGridMenu) { menuItem in
-            GridItemMenuView(
-                item: menuItem,
-                onToggleFavorite: {
-                    Task {
-                        if let updated = await viewModel.toggleFavorite(item: menuItem),
-                           let idx = items.firstIndex(where: { $0.id == updated.id }) {
-                            items[idx] = updated
-                        }
-                    }
-                },
-                onDelete: {
-                    itemForGridMenu = nil
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(400))
-                        guard !Task.isCancelled else { return }
-                        itemPendingDelete = menuItem
-                        showingDeleteConfirmation = true
-                    }
-                },
-                onAddedToCollection: { _, _ in }
+        .sheet(item: $itemForAlbumPicker) { pickerItem in
+            AddToCollectionPickerView(
+                item: pickerItem,
+                onAddedToCollection: { _, _ in },
+                onCancel: { itemForAlbumPicker = nil }
             )
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.black)
+        }
+        .sheet(item: $shareFile) { file in
+            ShareSheet(activityItems: [file.url])
         }
         .confirmationDialog("Delete this saved item?",
                             isPresented: $showingDeleteConfirmation,
@@ -225,6 +225,49 @@ struct CollectionDetailView: View {
     }
 
     /// Delete the video pending confirmation from the grid menu.
+    /// Context menu "Save to Photos": download the item and save it
+    /// to the Photos library. Failures show in the error alert.
+    private func saveToPhotos(_ item: Item) {
+        Task {
+            do {
+                try await viewModel.saveToPhotos(item: item)
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Context menu "Share": download the item's file, then open the
+    /// iOS share sheet with it.
+    private func shareItem(_ item: Item) {
+        Task {
+            do {
+                shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Context menu "Favorite": toggle the heart and update the local
+    /// row in place.
+    private func toggleGridFavorite(_ item: Item) {
+        Task {
+            if let updated = await viewModel.toggleFavorite(item: item),
+               let idx = items.firstIndex(where: { $0.id == updated.id }) {
+                items[idx] = updated
+            }
+        }
+    }
+
+    /// Context menu "Delete": show the delete confirmation for this
+    /// video. (No sheet to dismiss first, unlike the old bottom-sheet
+    /// menu — the confirmation can appear immediately.)
+    private func requestGridDelete(_ item: Item) {
+        itemPendingDelete = item
+        showingDeleteConfirmation = true
+    }
+
     private func deleteGridMenuItem() async {
         guard let target = itemPendingDelete else { return }
         itemPendingDelete = nil
@@ -292,8 +335,11 @@ struct MyCollectionDetailView: View {
     @State private var errorMessage: String?
     /// The video the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
-    /// The video whose grid long-press menu is open (nil = closed).
-    @State private var itemForGridMenu: Item?
+    /// The video the context menu's "Add to Album" opened the picker
+    /// for (nil = picker closed).
+    @State private var itemForAlbumPicker: Item?
+    /// A downloaded file ready for the iOS share sheet (nil = closed).
+    @State private var shareFile: ShareFile?
     /// The video awaiting delete confirmation from the grid menu.
     @State private var itemPendingDelete: Item?
     @State private var showingDeleteConfirmation = false
@@ -325,9 +371,22 @@ struct MyCollectionDetailView: View {
                             } else {
                                 feedStartItem = item
                             }
-                        },
-                        onLongPress: isSelecting ? nil : { itemForGridMenu = $0 }
+                        }
                     )
+                    .contextMenu {
+                        GridItemContextMenu(
+                            item: item,
+                            isSelecting: isSelecting,
+                            onSaveToPhotos: { saveToPhotos($0) },
+                            onShare: { shareItem($0) },
+                            onToggleFavorite: { toggleGridFavorite($0) },
+                            onAddToAlbum: { itemForAlbumPicker = $0 },
+                            onDelete: { requestGridDelete($0) },
+                            onRemoveFromCollection: { item in
+                                Task { await removeFromCollection(item) }
+                            }
+                        )
+                    }
                 }
             }
             if nextCursor != nil {
@@ -416,34 +475,18 @@ struct MyCollectionDetailView: View {
                 showCloseButton: true
             )
         }
-        .sheet(item: $itemForGridMenu) { menuItem in
-            GridItemMenuView(
-                item: menuItem,
-                onToggleFavorite: {
-                    Task {
-                        if let updated = await viewModel.toggleFavorite(item: menuItem),
-                           let idx = items.firstIndex(where: { $0.id == updated.id }) {
-                            items[idx] = updated
-                        }
-                    }
-                },
-                onDelete: {
-                    itemForGridMenu = nil
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .milliseconds(400))
-                        guard !Task.isCancelled else { return }
-                        itemPendingDelete = menuItem
-                        showingDeleteConfirmation = true
-                    }
-                },
+        .sheet(item: $itemForAlbumPicker) { pickerItem in
+            AddToCollectionPickerView(
+                item: pickerItem,
                 onAddedToCollection: { _, _ in },
-                onRemoveFromCollection: {
-                    Task { await removeFromCollection(menuItem) }
-                }
+                onCancel: { itemForAlbumPicker = nil }
             )
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.black)
+        }
+        .sheet(item: $shareFile) { file in
+            ShareSheet(activityItems: [file.url])
         }
         .confirmationDialog("Delete this saved item?",
                             isPresented: $showingDeleteConfirmation,
@@ -527,6 +570,49 @@ struct MyCollectionDetailView: View {
         if failures > 0 {
             errorMessage = "Đã xóa \(targets.count - failures) video, \(failures) video lỗi."
         }
+    }
+
+    /// Context menu "Save to Photos": download the item and save it
+    /// to the Photos library. Failures show in the error alert.
+    private func saveToPhotos(_ item: Item) {
+        Task {
+            do {
+                try await viewModel.saveToPhotos(item: item)
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Context menu "Share": download the item's file, then open the
+    /// iOS share sheet with it.
+    private func shareItem(_ item: Item) {
+        Task {
+            do {
+                shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
+            } catch {
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    /// Context menu "Favorite": toggle the heart and update the local
+    /// row in place.
+    private func toggleGridFavorite(_ item: Item) {
+        Task {
+            if let updated = await viewModel.toggleFavorite(item: item),
+               let idx = items.firstIndex(where: { $0.id == updated.id }) {
+                items[idx] = updated
+            }
+        }
+    }
+
+    /// Context menu "Delete": show the delete confirmation for this
+    /// video. (No sheet to dismiss first, unlike the old bottom-sheet
+    /// menu — the confirmation can appear immediately.)
+    private func requestGridDelete(_ item: Item) {
+        itemPendingDelete = item
+        showingDeleteConfirmation = true
     }
 
     /// Delete the video pending confirmation from the grid menu.

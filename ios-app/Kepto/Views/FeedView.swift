@@ -1,5 +1,4 @@
 import AVFoundation
-import Photos
 import SwiftUI
 import UIKit
 
@@ -256,13 +255,14 @@ struct FeedView: View {
 /// The player is created on appear and kept (paused)
 /// when the page scrolls away — see the note on `schedulePlay`
 /// for why it is not destroyed. It plays only while this page is
-/// the current one, and loops. Long-press opens the TikTok-style
-/// menu (Copy link, Download, Playback speed, Add to collection,
-/// Delete, username + caption).
+/// the current one, and loops. Long-press opens the native iOS
+/// context menu (Save to Photos, Share, Favorite, Playback speed,
+/// Add to Album, Delete). The username and caption are overlaid on
+/// the video itself, not repeated in the menu.
 private struct FeedVideoPage: View {
     let item: Item
     let isCurrent: Bool
-    /// Called when the user taps Delete in the long-press menu (the
+    /// Called when the user taps Delete in the context menu (the
     /// feed shows the delete confirmation for this video).
     var onDeleteRequest: ((Item) -> Void)? = nil
     @EnvironmentObject private var viewModel: LibraryViewModel
@@ -284,19 +284,20 @@ private struct FeedVideoPage: View {
     /// stops being current or disappears.
     @State private var playTask: Task<Void, Never>?
     @State private var fullImage: UIImage?
-    /// Playback speed from the long-press menu (1.0 = normal).
+    /// Playback speed from the context menu (1.0 = normal).
     @State private var playbackRate: Float = 1.0
+    /// Speeds offered by the context menu's Playback speed submenu.
+    private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    /// The context menu's "Add to Album" picker (nil = closed).
+    @State private var showingAlbumPicker = false
+    /// A downloaded file ready for the iOS share sheet (nil = closed).
+    @State private var shareFile: ShareFile?
     /// Set when this page becomes current after a swipe: the next
     /// playCurrent starts from 0 (TikTok restarts the video every time
     /// you land on it) instead of resuming where the kept player left
     /// off. Cleared by playCurrent once it seeks to 0.
     @State private var restartFromStart = false
-    /// Long-press menu (bottom sheet).
-    @State private var showingLongPressMenu = false
-    /// Whether the video was playing when the long-press menu opened
-    /// (it pauses while the menu is up, and resumes on dismiss).
-    @State private var wasPlayingBeforeMenu = false
-    /// Short notice above the progress bar (e.g. "Đã copy link").
+    /// Short notice above the progress bar (e.g. "Đã lưu vào Photos").
     @State private var notice: String?
     @State private var noticeTask: Task<Void, Never>?
 
@@ -430,43 +431,71 @@ private struct FeedVideoPage: View {
                 guard item.status == .ready, !isImage else { return }
                 togglePlay()
             }
-            .onLongPressGesture(minimumDuration: 0.25) {
-                guard item.status == .ready else { return }
-                showingLongPressMenu = true
+            .contextMenu {
+                // Native iOS context menu (long-press on the video):
+                // Save to Photos, Share, Favorite, Playback speed
+                // (submenu), Add to Album, Delete — same dark, large
+                // radius, right-side icons, red Delete as the grid
+                // menu. The video keeps playing while the menu is up
+                // (native context-menu behaviour); the old bottom
+                // sheet paused it, this one does not.
+                if item.status == .ready {
+                    Button { Task { await downloadVideo() } } label: {
+                        Label("Save to Photos", systemImage: "arrow.down.to.line")
+                    }
+                    Button { shareItem() } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    Button {
+                        Task {
+                            if let updated = await viewModel.toggleFavorite(item: item) {
+                                showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
+                            }
+                        }
+                    } label: {
+                        Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
+                    }
+                    Menu {
+                        ForEach(speeds, id: \.self) { rate in
+                            Button {
+                                selectRate(rate)
+                            } label: {
+                                if rate == playbackRate {
+                                    Label(String(format: "%gx", rate), systemImage: "checkmark")
+                                } else {
+                                    Text(String(format: "%gx", rate))
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Playback speed", systemImage: "gauge")
+                    }
+                    Button { showingAlbumPicker = true } label: {
+                        Label("Add to Album", systemImage: "folder.badge.plus")
+                    }
+                    Button(role: .destructive) {
+                        onDeleteRequest?(item)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
             }
         }
         .background(Color.black)
-        .sheet(isPresented: $showingLongPressMenu) {
-            LongPressMenuView(
+        .sheet(isPresented: $showingAlbumPicker) {
+            AddToCollectionPickerView(
                 item: item,
-                playbackRate: playbackRate,
-                onCopyLink: { Task { await copyLink() } },
-                onDownload: { Task { await downloadVideo() } },
-                onSelectRate: { selectRate($0) },
-                onToggleFavorite: {
-                    Task {
-                        if let updated = await viewModel.toggleFavorite(item: item) {
-                            showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
-                        }
-                    }
-                },
-                onDelete: {
-                    showingLongPressMenu = false
-                    Task { @MainActor in
-                        // Let the sheet dismiss before the delete
-                        // confirmation appears, or it may not show.
-                        try? await Task.sleep(for: .milliseconds(400))
-                        guard !Task.isCancelled else { return }
-                        onDeleteRequest?(item)
-                    }
-                },
                 onAddedToCollection: { name, added in
                     showNotice(added ? "Đã thêm vào \(name)" : "Đã có trong \(name)")
-                }
+                },
+                onCancel: { showingAlbumPicker = false }
             )
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.black)
+        }
+        .sheet(item: $shareFile) { file in
+            ShareSheet(activityItems: [file.url])
         }
         .onAppear {
             setupPlayer()
@@ -520,17 +549,6 @@ private struct FeedVideoPage: View {
             if scrubbing {
                 player?.pause()
             } else if isCurrent {
-                playCurrent()
-            }
-        }
-        .onChange(of: showingLongPressMenu) { _, showing in
-            // TikTok pauses the video while the long-press menu is
-            // up, and resumes it (at the chosen speed) on dismiss.
-            if showing {
-                wasPlayingBeforeMenu = isPlaying
-                player?.pause()
-                isPlaying = false
-            } else if wasPlayingBeforeMenu, isCurrent {
                 playCurrent()
             }
         }
@@ -606,7 +624,7 @@ private struct FeedVideoPage: View {
         isPlaying = true
     }
 
-    /// Playback speed from the long-press menu. Applies immediately
+    /// Playback speed from the context menu. Applies immediately
     /// when the video is playing; otherwise it applies on resume.
     private func selectRate(_ rate: Float) {
         playbackRate = rate
@@ -615,40 +633,26 @@ private struct FeedVideoPage: View {
         }
     }
 
-    /// Copy the original post link (the TikTok/Instagram/… link the
-    /// video was saved from, not a Kepto link) to the clipboard.
-    private func copyLink() async {
-        UIPasteboard.general.string = item.originalUrl
-        showNotice("Đã copy link")
-    }
-
-    /// Download the video file and save it to the Photos library
-    /// (camera roll), like TikTok's Download. Prompts for the Photos
-    /// "add only" permission on first use.
+    /// Context menu "Save to Photos": download the video (or image)
+    /// and save it to the Photos library, like TikTok's Download.
     private func downloadVideo() async {
-        guard let api = viewModel.api else { return }
         do {
-            let fileURL = try await api.downloadVideoFile(for: item)
-            try await saveVideoToPhotos(fileURL: fileURL)
-            showNotice("Đã lưu video vào Photos")
+            try await viewModel.saveToPhotos(item: item)
+            showNotice("Đã lưu vào Photos")
         } catch {
-            showNotice("Không lưu được video")
+            showNotice("Không lưu được")
         }
     }
 
-    private func saveVideoToPhotos(fileURL: URL) async throws {
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        if status == .notDetermined {
-            let newStatus = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-            guard newStatus == .authorized || newStatus == .limited else {
-                throw KeptoAPIError.server("Chưa cấp quyền Photos.")
+    /// Context menu "Share": download the video (or image) file, then
+    /// open the iOS share sheet with it.
+    private func shareItem() {
+        Task {
+            do {
+                shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
+            } catch {
+                showNotice("Không tải được file để chia sẻ")
             }
-        } else if status != .authorized && status != .limited {
-            throw KeptoAPIError.server("Chưa cấp quyền Photos.")
-        }
-        try await PHPhotoLibrary.shared().performChanges {
-            let request = PHAssetCreationRequest.forAsset()
-            request.addResource(with: .video, fileURL: fileURL, options: nil)
         }
     }
 
@@ -735,159 +739,11 @@ private struct FeedVideoPage: View {
     }
 }
 
-/// Long-press menu (TikTok-style bottom sheet): the actions the user
-/// asked to keep — Copy link, Download, Playback speed, Add to
-/// collection, Delete — plus the video's username and caption. No
-/// Share-with / Repost / friends list: this app has no social graph,
-/// and the sheet stays clean.
-///
-/// "Add to collection" switches the sheet to a picker: the user's
-/// own collections (newest first) plus a "New collection" row that
-/// creates one and adds the video to it. Tapping a collection adds
-/// the video and closes the sheet; the page shows a short notice.
-private struct LongPressMenuView: View {
-    let item: Item
-    let playbackRate: Float
-    let onCopyLink: () -> Void
-    let onDownload: () -> Void
-    let onSelectRate: (Float) -> Void
-    let onToggleFavorite: () -> Void
-    let onDelete: () -> Void
-    /// Called after a successful add (collection name, newly added?).
-    let onAddedToCollection: (String, Bool) -> Void
-
-    @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var showingSpeedPicker = false
-    @State private var showingCollectionPicker = false
-
-    private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if showingCollectionPicker {
-                collectionPicker
-            } else {
-                actionRow
-                if showingSpeedPicker {
-                    speedRow
-                }
-                Divider()
-                    .background(Color.white.opacity(0.2))
-                    .padding(.vertical, 16)
-                usernameCaption
-            }
-            Spacer()
-        }
-        .background(Color.black)
-        .preferredColorScheme(.dark)
-    }
-
-    /// The six action buttons in one row. Circles are 48pt (not 56pt)
-    /// so six of them fit on a phone screen.
-    private var actionRow: some View {
-        HStack(spacing: 12) {
-            menuButton(
-                icon: item.isFavorite ? "heart.fill" : "heart",
-                label: "Favorite",
-                tint: item.isFavorite ? .red : .white
-            ) {
-                onToggleFavorite()
-                dismiss()
-            }
-            menuButton(icon: "link", label: "Copy link") {
-                onCopyLink()
-                dismiss()
-            }
-            menuButton(icon: "arrow.down.to.line", label: "Download") {
-                onDownload()
-                dismiss()
-            }
-            menuButton(icon: "gauge", label: "Playback speed") {
-                showingSpeedPicker.toggle()
-            }
-            menuButton(icon: "folder.badge.plus", label: "Add to collection") {
-                showingCollectionPicker = true
-            }
-            menuButton(icon: "trash", label: "Delete", tint: .red) {
-                onDelete()
-            }
-        }
-        .padding(.top, 20)
-    }
-
-    private var speedRow: some View {
-        HStack(spacing: 8) {
-            ForEach(speeds, id: \.self) { rate in
-                Button {
-                    onSelectRate(rate)
-                    dismiss()
-                } label: {
-                    Text(String(format: "%gx", rate))
-                        .font(.subheadline)
-                        .fontWeight(rate == playbackRate ? .semibold : .regular)
-                        .foregroundStyle(rate == playbackRate ? Color.black : Color.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(rate == playbackRate ? Color.white : Color.white.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.top, 14)
-    }
-
-    private var usernameCaption: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(item.collectionName)
-                .font(.headline)
-                .foregroundStyle(.white)
-            if let caption = item.caption,
-               !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(caption)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
-    }
-
-    /// "Add to collection" picker (shared view — see
-    /// AddToCollectionPickerView).
-    private var collectionPicker: some View {
-        AddToCollectionPickerView(
-            item: item,
-            onAddedToCollection: onAddedToCollection,
-            onCancel: { showingCollectionPicker = false }
-        )
-    }
-
-    private func menuButton(icon: String, label: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 48, height: 48)
-                    .background(tint == .red ? Color.red.opacity(0.15) : Color.white.opacity(0.12))
-                    .clipShape(Circle())
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(tint)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 
 /// "Add to collection" picker: the user's collections plus a row to
 /// create a new one. The list refreshes when it opens. Shared by the
-/// feed long-press menu and the grid long-press menu (both show it
-/// inline in the sheet). `onCancel` returns to the action row.
+/// feed and grid context menus ("Add to Album") — presented as its own
+/// sheet from the menu. `onCancel` dismisses the sheet.
 struct AddToCollectionPickerView: View {
     let item: Item
     /// Called after a successful add (collection name, newly added?).

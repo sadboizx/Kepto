@@ -360,12 +360,21 @@ final class KeptoAPI {
         return dest
     }
 
+    /// File extension for a downloaded item, from its content type.
+    /// Image posts (photo posts) come back as image/* — they must keep
+    /// an image extension so Photos / the share sheet treat them as
+    /// photos, not as a misnamed .mp4.
     private func fileExtension(for item: Item) -> String {
         if let contentType = item.contentType?.lowercased() {
             if contentType.contains("mp4") { return "mp4" }
             if contentType.contains("mov") || contentType.contains("quicktime") { return "mov" }
             if contentType.contains("webm") { return "webm" }
             if contentType.contains("mkv") { return "mkv" }
+            if contentType.contains("jpeg") || contentType.contains("jpg") { return "jpg" }
+            if contentType.contains("png") { return "png" }
+            if contentType.contains("webp") { return "webp" }
+            if contentType.contains("gif") { return "gif" }
+            if contentType.contains("heic") { return "heic" }
         }
         return "mp4"
     }

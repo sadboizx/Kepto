@@ -31,8 +31,11 @@ struct LibraryView: View {
     @State private var saveNotice: String?
     /// The video the full-screen feed viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
-    /// The video whose grid long-press menu is open (nil = closed).
-    @State private var itemForGridMenu: Item?
+    /// The video the context menu's "Add to Album" opened the picker
+    /// for (nil = picker closed).
+    @State private var itemForAlbumPicker: Item?
+    /// A downloaded file ready for the iOS share sheet (nil = closed).
+    @State private var shareFile: ShareFile?
     /// The video awaiting delete confirmation from the grid menu.
     @State private var itemPendingDelete: Item?
     @State private var showingDeleteConfirmation = false
@@ -176,34 +179,20 @@ struct LibraryView: View {
                     showCloseButton: true
                 )
             }
-            .sheet(item: $itemForGridMenu) { menuItem in
-                GridItemMenuView(
-                    item: menuItem,
-                    onToggleFavorite: {
-                        Task {
-                            if let updated = await viewModel.toggleFavorite(item: menuItem) {
-                                saveNotice = updated.isFavorite ? "Đã thêm vào Favorite." : "Đã bỏ Favorite."
-                            }
-                        }
-                    },
-                    onDelete: {
-                        itemForGridMenu = nil
-                        Task { @MainActor in
-                            // Let the sheet dismiss before the delete
-                            // confirmation appears, or it may not show.
-                            try? await Task.sleep(for: .milliseconds(400))
-                            guard !Task.isCancelled else { return }
-                            itemPendingDelete = menuItem
-                            showingDeleteConfirmation = true
-                        }
-                    },
+            .sheet(item: $itemForAlbumPicker) { pickerItem in
+                AddToCollectionPickerView(
+                    item: pickerItem,
                     onAddedToCollection: { name, added in
                         saveNotice = added ? "Đã thêm vào \(name)." : "Đã có trong \(name)."
-                    }
+                    },
+                    onCancel: { itemForAlbumPicker = nil }
                 )
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Color.black)
+            }
+            .sheet(item: $shareFile) { file in
+                ShareSheet(activityItems: [file.url])
             }
             .confirmationDialog("Delete this saved item?",
                                 isPresented: $showingDeleteConfirmation,
@@ -408,9 +397,10 @@ struct LibraryView: View {
     /// 2pt gaps, rounded corners. The last cell loads the next page
     /// when it appears (waterfall); pull-to-refresh reloads.
     /// Tapping a cell opens the full-screen feed viewer at that video.
-    /// Long-pressing a cell (0.25s) opens the grid menu (Favorite /
-    /// Add to Collection / Delete). In multi-select mode a tap toggles
-    /// the cell's selection instead, and the long-press menu is off.
+    /// Long-pressing a cell opens the native iOS context menu (Save to
+    /// Photos / Share / Favorite / Add to Album / Delete) — the cell
+    /// lifts as the menu's preview. In multi-select mode a tap toggles
+    /// the cell's selection instead, and the context menu is off.
     private var videoGrid: some View {
         ScrollView {
             LazyVGrid(columns: videoColumns, spacing: 2) {
@@ -425,9 +415,19 @@ struct LibraryView: View {
                             } else {
                                 feedStartItem = item
                             }
-                        },
-                        onLongPress: isSelecting ? nil : { itemForGridMenu = $0 }
+                        }
                     )
+                    .contextMenu {
+                        GridItemContextMenu(
+                            item: item,
+                            isSelecting: isSelecting,
+                            onSaveToPhotos: { saveToPhotos($0) },
+                            onShare: { shareItem($0) },
+                            onToggleFavorite: { toggleGridFavorite($0) },
+                            onAddToAlbum: { itemForAlbumPicker = $0 },
+                            onDelete: { requestGridDelete($0) }
+                        )
+                    }
                     .onAppear {
                         if item.id == viewModel.items.last?.id {
                             Task { await viewModel.loadMore() }
@@ -515,6 +515,48 @@ struct LibraryView: View {
         } else {
             saveNotice = "Đã xóa \(deleted) video, \(failures) video lỗi."
         }
+    }
+
+    /// Context menu "Save to Photos": download the item and save it
+    /// to the Photos library. The notice reuses the save-notice line.
+    private func saveToPhotos(_ item: Item) {
+        Task {
+            do {
+                try await viewModel.saveToPhotos(item: item)
+                saveNotice = "Đã lưu vào Photos."
+            } catch {
+                saveNotice = "Không lưu được vào Photos."
+            }
+        }
+    }
+
+    /// Context menu "Share": download the item's file, then open the
+    /// iOS share sheet with it.
+    private func shareItem(_ item: Item) {
+        Task {
+            do {
+                shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
+            } catch {
+                saveNotice = "Không tải được file để chia sẻ."
+            }
+        }
+    }
+
+    /// Context menu "Favorite": toggle the heart, with a notice.
+    private func toggleGridFavorite(_ item: Item) {
+        Task {
+            if let updated = await viewModel.toggleFavorite(item: item) {
+                saveNotice = updated.isFavorite ? "Đã thêm vào Favorite." : "Đã bỏ Favorite."
+            }
+        }
+    }
+
+    /// Context menu "Delete": show the delete confirmation for this
+    /// video. (No sheet to dismiss first, unlike the old bottom-sheet
+    /// menu — the confirmation can appear immediately.)
+    private func requestGridDelete(_ item: Item) {
+        itemPendingDelete = item
+        showingDeleteConfirmation = true
     }
 
     /// Delete the video pending confirmation from the grid menu.
@@ -831,25 +873,28 @@ private struct MyCollectionCard: View {
 /// NOTE: used by the home grid and by the collection detail page
 /// (a per-creator overview, like a TikTok profile grid). Tapping a
 /// cell opens the video in the full-screen feed viewer. Long-press
-/// (0.25s, auto-opens the menu — no need to lift the finger) calls
-/// `onLongPress` with the item; the parent presents the grid
-/// long-press menu (Favorite / Add to Collection / Delete). A red
-/// heart at the top-right marks a favorited video.
+/// opens the native iOS context menu (Save to Photos / Share /
+/// Favorite / Add to Album / Delete), attached by the parent — the
+/// cell itself has no long-press gesture. A red heart at the
+/// top-right marks a favorited video.
 ///
-/// Tap and long-press are BOTH on this cell (no Button wrapper in
-/// the parent): a Button around the cell swallowed the tap once a
+/// Tap is on this cell and the long-press menu is the native
+/// `.contextMenu`, attached by the parent (no Button wrapper in the
+/// parent): a Button around the cell swallowed the tap once a
 /// long-press gesture was added inside it (v16 regression — cells
-/// stopped opening the feed). With both gestures on the same view,
-/// SwiftUI resolves tap vs long-press correctly.
+/// stopped opening the feed). With tap on the cell and the context
+/// menu on the same view, SwiftUI resolves tap vs long-press
+/// correctly.
 struct VideoGridCell: View {
     let item: Item
     /// Multi-select: when true the cell shows a selection circle
     /// (top-left) and a tap toggles selection (the parent's onTap
-    /// decides); the long-press menu is off (parent passes nil).
+    /// decides). The long-press menu is the native `.contextMenu`,
+    /// attached by the parent (LibraryView / CollectionDetailView) —
+    /// the cell itself has no long-press gesture any more.
     var isSelectionMode: Bool = false
     var isSelected: Bool = false
     var onTap: (() -> Void)? = nil
-    var onLongPress: ((Item) -> Void)? = nil
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -909,9 +954,6 @@ struct VideoGridCell: View {
         }
         .onTapGesture {
             onTap?()
-        }
-        .onLongPressGesture(minimumDuration: 0.25) {
-            onLongPress?(item)
         }
     }
 
@@ -1050,87 +1092,74 @@ struct AuthenticatedThumbnail: View {
 /// that collection, it stays saved). The parent presents this as a
 /// sheet and handles the delete confirmation (the menu only reports
 /// the tap, like the feed menu does).
-struct GridItemMenuView: View {
-    let item: Item
-    let onToggleFavorite: () -> Void
-    let onDelete: () -> Void
-    /// Called after a successful add (collection name, newly added?).
-    let onAddedToCollection: (String, Bool) -> Void
-    var onRemoveFromCollection: (() -> Void)? = nil
+/// Identifiable wrapper so a downloaded file URL can drive a
+/// `.sheet(item:)` — the iOS share sheet. Shared by the grid and the
+/// player context menus.
+struct ShareFile: Identifiable {
+    let id = UUID()
+    let url: URL
+}
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var showingCollectionPicker = false
+/// The iOS share sheet (UIActivityViewController) as a SwiftUI sheet.
+/// Shared by the grid and the player context menus ("Share").
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
 
-    var body: some View {
-        VStack(spacing: 0) {
-            if showingCollectionPicker {
-                AddToCollectionPickerView(
-                    item: item,
-                    onAddedToCollection: onAddedToCollection,
-                    onCancel: { showingCollectionPicker = false }
-                )
-            } else {
-                HStack(spacing: 20) {
-                    menuButton(
-                        icon: item.isFavorite ? "heart.fill" : "heart",
-                        label: "Favorite",
-                        tint: item.isFavorite ? .red : .white
-                    ) {
-                        onToggleFavorite()
-                        dismiss()
-                    }
-                    menuButton(icon: "folder.badge.plus", label: "Add to collection") {
-                        showingCollectionPicker = true
-                    }
-                    if let onRemoveFromCollection {
-                        menuButton(icon: "folder.badge.minus", label: "Remove from collection") {
-                            onRemoveFromCollection()
-                            dismiss()
-                        }
-                    }
-                    menuButton(icon: "trash", label: "Delete", tint: .red) {
-                        onDelete()
-                    }
-                }
-                .padding(.top, 20)
-                Divider()
-                    .background(Color.white.opacity(0.2))
-                    .padding(.vertical, 16)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.collectionName)
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    if let caption = item.caption,
-                       !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(caption)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.85))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-            }
-            Spacer()
-        }
-        .background(Color.black)
-        .preferredColorScheme(.dark)
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
     }
 
-    private func menuButton(icon: String, label: String, tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 56, height: 56)
-                    .background(tint == .red ? Color.red.opacity(0.15) : Color.white.opacity(0.12))
-                    .clipShape(Circle())
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(tint)
-                    .multilineTextAlignment(.center)
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+/// Native iOS context menu for a grid thumbnail (long-press), in the
+/// order the user asked for: Save to Photos, Share, Favorite, Add to
+/// Album, Delete. This is the system menu — dark, large corner radius,
+/// icons on the right of each row, Delete in red, smooth native
+/// animation — and the pressed cell lifts as the menu's preview
+/// (scale + shadow, like iOS Photos). The hold timing is iOS's native
+/// long-press, not the old custom 0.25s.
+///
+/// Actions are closures so each grid (home, per-creator collection,
+/// My collection) wires its own sheets/dialogs. The menu is empty
+/// while multi-select is on (long-press is off there; a tap toggles
+/// selection instead). `onRemoveFromCollection` is only set by the My
+/// collection grid, where a video can leave the collection without
+/// being deleted.
+struct GridItemContextMenu: View {
+    let item: Item
+    let isSelecting: Bool
+    let onSaveToPhotos: (Item) -> Void
+    let onShare: (Item) -> Void
+    let onToggleFavorite: (Item) -> Void
+    let onAddToAlbum: (Item) -> Void
+    let onDelete: (Item) -> Void
+    var onRemoveFromCollection: ((Item) -> Void)? = nil
+
+    var body: some View {
+        Group {
+            if !isSelecting {
+                Button { onSaveToPhotos(item) } label: {
+                    Label("Save to Photos", systemImage: "arrow.down.to.line")
+                }
+                Button { onShare(item) } label: {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                Button { onToggleFavorite(item) } label: {
+                    Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
+                }
+                Button { onAddToAlbum(item) } label: {
+                    Label("Add to Album", systemImage: "folder.badge.plus")
+                }
+                if let onRemoveFromCollection {
+                    Button { onRemoveFromCollection(item) } label: {
+                        Label("Remove from Album", systemImage: "folder.badge.minus")
+                    }
+                }
+                Button(role: .destructive) { onDelete(item) } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
-        .buttonStyle(.plain)
     }
 }
