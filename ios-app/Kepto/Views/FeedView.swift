@@ -55,6 +55,12 @@ struct FeedView: View {
     /// and turn into a page swipe (the bar "missing"). Lifted here
     /// from FeedVideoPage because the ScrollView lives in this view.
     @State private var isScrubbing = false
+    /// Horizontal offset while the user drags the player back from
+    /// the left edge (interactive back gesture). The view follows
+    /// the finger; releasing past the threshold pops it, releasing
+    /// short animates it back (cancel). See the simultaneousGesture
+    /// below.
+    @State private var backDragOffset: CGFloat = 0
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil) {
@@ -77,28 +83,43 @@ struct FeedView: View {
                     feedPages
                 }
             }
-            // Back-swipe fallback: the player is pushed, so iOS's
-            // native edge back-swipe SHOULD dismiss it — but in
-            // practice it does not fire here (the vertical paging
-            // ScrollView seems to swallow the edge pan), so this
-            // custom edge swipe is the one that actually goes back.
-            // A deliberate rightward swipe starting within 20pt of
-            // the left edge dismisses the player. Simultaneous, so it
-            // never blocks the vertical paging or the progress-bar
-            // scrub. Drags starting near the bottom (the progress bar
-            // / caption area) are ignored, so scrubbing cannot
-            // dismiss the player. Calling dismiss() on a pushed view
-            // pops it; if the native pop already fired, this is a
-            // no-op.
+            // Interactive back gesture (the native iOS edge pop does
+            // NOT fire here — the vertical paging ScrollView seems to
+            // swallow the edge pan — so this custom gesture is the
+            // one that actually goes back, and it behaves like the
+            // native one: the video FOLLOWS the finger while dragging
+            // (backDragOffset) and can be CANCELLED mid-swipe by
+            // dragging back left or releasing short of the threshold.
+            // A rightward drag starting within 20pt of the left edge
+            // moves the player with the finger; releasing past 120pt
+            // pops it (dismiss on a pushed view), releasing short
+            // animates it back to place. Simultaneous, so it never
+            // blocks the vertical paging or the progress-bar scrub.
+            // Drags starting near the bottom (the progress bar /
+            // caption area) are ignored, so scrubbing cannot dismiss
+            // the player.
+            .offset(x: backDragOffset)
             .simultaneousGesture(
-                DragGesture(minimumDistance: 20)
+                DragGesture(minimumDistance: 10)
+                    .onChanged { value in
+                        let startedAtLeftEdge = value.startLocation.x < 20
+                        let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
+                        let mostlyHorizontal = abs(value.translation.height) < 60
+                        if startedAtLeftEdge && startedAboveBottomBar && mostlyHorizontal {
+                            backDragOffset = max(0, value.translation.width)
+                        } else if abs(value.translation.height) >= 60 {
+                            backDragOffset = 0
+                        }
+                    }
                     .onEnded { value in
                         let startedAtLeftEdge = value.startLocation.x < 20
-                        let isSwipeRight = value.translation.width > 120
-                            && abs(value.translation.height) < 60
                         let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
-                        if startedAtLeftEdge && isSwipeRight && startedAboveBottomBar {
+                        if startedAtLeftEdge && startedAboveBottomBar && backDragOffset > 120 {
                             dismiss()
+                        } else {
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                backDragOffset = 0
+                            }
                         }
                     }
             )
