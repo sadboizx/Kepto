@@ -930,12 +930,18 @@ struct AspectThumbnail: View {
     var ratio: CGFloat = 1
 
     var body: some View {
-        Color.clear
-            .aspectRatio(ratio, contentMode: .fit)
-            .overlay {
-                AuthenticatedThumbnail(itemId: itemId)
-            }
-            .clipped()
+        // ZStack + .aspectRatio (NOT Color.clear + .overlay): the
+        // Color.clear + overlay pattern mis-attributes taps — a tap
+        // on the bottom edge of a cell opened the cell BELOW it
+        // (same bug as v20's collection cards). A ZStack has no
+        // intrinsic aspect, so .aspectRatio(.fit) sizes it to the
+        // right ratio and the tap lands on the right cell. The image
+        // fills the frame (scaledToFill, centre-cropped) like Photos.
+        ZStack {
+            AuthenticatedThumbnail(itemId: itemId)
+        }
+        .aspectRatio(ratio, contentMode: .fit)
+        .clipped()
     }
 }
 
