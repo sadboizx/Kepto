@@ -898,7 +898,11 @@ private struct AlbumCardView: View {
                         }
                     }
                 }
-                .aspectRatio(1, contentMode: .fill)
+                // NOTE: `.fit`, NOT `.fill` — `.fill` lets the
+                // cover fall back to the video's intrinsic 9:16
+                // aspect, so the card rendered tall instead of
+                // square (v29 screenshots).
+                .aspectRatio(1, contentMode: .fit)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 if showsHeart {

@@ -411,7 +411,7 @@ struct LibraryView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 AuthenticatedThumbnail(item: first)
-                                    .aspectRatio(1, contentMode: .fill)
+                                    .aspectRatio(1, contentMode: .fit)
                                     .clipped()
                                 Text(Self.yearFormatter.string(from: group.key))
                                     .font(.headline)
@@ -737,7 +737,12 @@ struct PhotosGridCell: View {
     var body: some View {
         ZStack {
             AuthenticatedThumbnail(item: item)
-                .aspectRatio(1, contentMode: .fill)
+                // NOTE: `.fit`, NOT `.fill`. With `.fill` the cell
+                // falls back to the video's intrinsic 9:16 aspect
+                // when the grid proposes a flexible height, so the
+                // grid rendered tall portrait cells instead of
+                // squares (v29 screenshots). `.fit` forces 1:1.
+                .aspectRatio(1, contentMode: .fit)
                 .clipped()
             if item.status == .pending {
                 ZStack {
@@ -1054,7 +1059,7 @@ struct ForYouView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             AuthenticatedThumbnail(item: first)
-                                .aspectRatio(16 / 9, contentMode: .fill)
+                                .aspectRatio(16 / 9, contentMode: .fit)
                                 .clipped()
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                             Text(Self.monthFormatter.string(from: memory.key))
