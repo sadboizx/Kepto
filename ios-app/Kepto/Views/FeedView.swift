@@ -39,6 +39,7 @@ struct FeedView: View {
     var onNearEnd: (() async -> Void)? = nil
 
     @EnvironmentObject private var viewModel: LibraryViewModel
+    @Environment(\.dismiss) private var dismiss
 
     /// The id of the page the feed is showing. Optional because
     /// `.scrollPosition(id:)` needs a `Binding<String?>`.
@@ -76,11 +77,31 @@ struct FeedView: View {
                     feedPages
                 }
             }
-            // No custom back-swipe gesture any more: the player is
-            // pushed in a NavigationStack now, so iOS's native
-            // edge back-swipe (interactive pop gesture) dismisses
-            // it — the view follows the finger and can be cancelled
-            // mid-swipe, which a DragGesture could not do.
+            // Back-swipe fallback: the player is pushed, so iOS's
+            // native edge back-swipe SHOULD dismiss it — but in
+            // practice it does not fire here (the vertical paging
+            // ScrollView seems to swallow the edge pan), so this
+            // custom edge swipe is the one that actually goes back.
+            // A deliberate rightward swipe starting within 20pt of
+            // the left edge dismisses the player. Simultaneous, so it
+            // never blocks the vertical paging or the progress-bar
+            // scrub. Drags starting near the bottom (the progress bar
+            // / caption area) are ignored, so scrubbing cannot
+            // dismiss the player. Calling dismiss() on a pushed view
+            // pops it; if the native pop already fired, this is a
+            // no-op.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        let startedAtLeftEdge = value.startLocation.x < 20
+                        let isSwipeRight = value.translation.width > 120
+                            && abs(value.translation.height) < 60
+                        let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
+                        if startedAtLeftEdge && isSwipeRight && startedAboveBottomBar {
+                            dismiss()
+                        }
+                    }
+            )
         }
         .preferredColorScheme(.dark)
         // Full-screen player: hide the navigation bar (no back

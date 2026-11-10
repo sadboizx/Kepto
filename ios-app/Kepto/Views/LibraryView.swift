@@ -284,11 +284,9 @@ struct LibraryView: View {
             }
         }
         .padding(4)
-        // Photos-style frosted pill: .regularMaterial (not the flat
-        // black 0.6 from v34, and thicker than the .ultraThinMaterial
-        // from v33 that looked like no background at all). The grid
-        // shows through softly, like the real Photos app.
-        .background(.regularMaterial, in: Capsule())
+        // Photos-style frosted pill (ultraThinMaterial, like the
+        // real Photos app's bottom pill and tab bar).
+        .background(.ultraThinMaterial, in: Capsule())
     }
 
     /// The grid for the current view mode (loading / empty / grid).
@@ -936,18 +934,23 @@ struct AspectThumbnail: View {
     var ratio: CGFloat = 1
 
     var body: some View {
-        // ZStack + .aspectRatio (NOT Color.clear + .overlay): the
-        // Color.clear + overlay pattern mis-attributes taps — a tap
-        // on the bottom edge of a cell opened the cell BELOW it
-        // (same bug as v20's collection cards). A ZStack has no
-        // intrinsic aspect, so .aspectRatio(.fit) sizes it to the
-        // right ratio and the tap lands on the right cell. The image
-        // fills the frame (scaledToFill, centre-cropped) like Photos.
-        ZStack {
-            AuthenticatedThumbnail(itemId: itemId)
-        }
-        .aspectRatio(ratio, contentMode: .fit)
-        .clipped()
+        // Color.clear + .aspectRatio + .overlay is what forces the
+        // square: a Color has no intrinsic aspect, so .aspectRatio
+        // (.fit) reliably sizes the frame, and the thumbnail fills
+        // it (scaledToFill, centre-cropped). A ZStack + .aspectRatio
+        // does NOT force it — the resizable Image keeps its intrinsic
+        // 9:16 aspect and the cell renders tall (v36 regression).
+        // The tap offset the overlay pattern can cause is fixed by
+        // the explicit .contentShape below: the hit area is exactly
+        // this square's bounds, so a tap on the bottom edge lands on
+        // this cell, not the one below it.
+        Color.clear
+            .aspectRatio(ratio, contentMode: .fit)
+            .overlay {
+                AuthenticatedThumbnail(itemId: itemId)
+            }
+            .clipped()
+            .contentShape(Rectangle())
     }
 }
 
