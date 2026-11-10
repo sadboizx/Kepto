@@ -37,9 +37,9 @@ enum LibraryViewMode: String, CaseIterable {
 struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var showingSettings = false
-    /// URL-input alert (shown by the "+" menu's "Lưu link mới").
-    /// The Worker auto-detects a Collection link, so there is no
-    /// separate "save collection" option any more.
+    /// URL-input alert (shown by the empty-state "Save a link"
+    /// button). The Worker auto-detects a Collection link, so there
+    /// is no separate "save collection" option any more.
     @State private var showingURLInput = false
     @State private var urlInput = ""
     @State private var clipboardAlert = false
@@ -80,55 +80,55 @@ struct LibraryView: View {
     var body: some View {
         // Photos Library style: a NavigationStack so "Select" and
         // "…" sit in the navigation bar — small, at the very top,
-        // like the real Photos app — instead of floating as large
-        // pills over the first grid row. The grid scrolls under the
-        // translucent bar. The "+" save button and the gear are gone;
-        // their actions live in the "…" menu (new link, clipboard,
-        // Settings). (The old floating controls used a GeometryReader
-        // for the status-bar height; that inset measured too low on
-        // device, so the pills sat mid-first-row instead of at the
-        // top — the toolbar fixes the position for good.)
+        // like the real Photos app. The navigation bar background is
+        // HIDDEN (transparent status bar): the grid shows through
+        // under the status bar and the nav bar, no solid band.
+        // The bottom bar (Years / Months / Days / All Photos pill)
+        // is a floating overlay over the grid, not a safe-area inset
+        // — so the gap under the pill is transparent too (the grid
+        // shows through it), and the grid's last row clears the pill
+        // via bottom content margins on each grid ScrollView.
+        // The "+" save button and the gear are gone; their actions
+        // live in the "…" menu (clipboard, Settings).
         NavigationStack {
-            content
-                .background(Color.black)
-                .safeAreaInset(edge: .bottom) {
-                    if viewModel.isConfigured {
-                        if isSelecting {
-                            selectionBar
-                        } else {
-                            bottomBar
-                        }
+            ZStack(alignment: .bottom) {
+                content
+                    .background(Color.black)
+                if viewModel.isConfigured {
+                    if isSelecting {
+                        selectionBar
+                    } else {
+                        bottomBar
                     }
                 }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        if viewModel.isConfigured {
-                            HStack(spacing: 16) {
-                                Button(isSelecting ? "Cancel" : "Select") {
-                                    toggleSelecting()
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if viewModel.isConfigured {
+                        HStack(spacing: 16) {
+                            Button(isSelecting ? "Cancel" : "Select") {
+                                toggleSelecting()
+                            }
+                            Menu {
+                                Button { Task { await saveDirectFromClipboard() } } label: {
+                                    Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
                                 }
-                                Menu {
-                                    Button { showingURLInput = true } label: {
-                                        Label("Lưu link mới", systemImage: "link.badge.plus")
-                                    }
-                                    Button { Task { await saveDirectFromClipboard() } } label: {
-                                        Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
-                                    }
-                                    Button { showingSettings = true } label: {
-                                        Label("Settings", systemImage: "gearshape")
-                                    }
-                                } label: {
-                                    Image(systemName: "ellipsis.circle")
+                                Button { showingSettings = true } label: {
+                                    Label("Settings", systemImage: "gearshape")
                                 }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
                             }
                         }
                     }
                 }
-                .navigationBarTitleDisplayMode(.inline)
-                .task {
-                    await viewModel.fetch()
-                    await viewModel.fetchStats()
-                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .task {
+                await viewModel.fetch()
+                await viewModel.fetchStats()
+            }
             .alert("Lưu link", isPresented: $showingURLInput) {
             TextField(
                 "Dán link TikTok, Instagram…",
@@ -154,8 +154,7 @@ struct LibraryView: View {
             FeedView(
                 items: Binding(get: { viewModel.items }, set: { _ in }),
                 startItemId: startItem.id,
-                onNearEnd: { await viewModel.loadMore() },
-                showCloseButton: true
+                onNearEnd: { await viewModel.loadMore() }
             )
         }
         .sheet(item: $itemForAlbumPicker) { pickerItem in
@@ -231,24 +230,14 @@ struct LibraryView: View {
         }
     }
 
-    /// Bottom bar above the tab bar (Photos Library style): the
-    /// "N Photos, M Videos" count, then the Years / Months / Days /
-    /// All Photos pill. Hidden while multi-select is on (the
-    /// selection bar takes its place).
+    /// Bottom bar above the tab bar (Photos Library style): just
+    /// the Years / Months / Days / All Photos pill, floating over
+    /// the grid. No count line (removed), and NO background — the
+    /// bar is transparent, so the grid shows through the gap under
+    /// the pill instead of a solid black band.
     private var bottomBar: some View {
-        VStack(spacing: 8) {
-            if let stats = viewModel.libraryStats {
-                Text("\(stats.photos) Photos, \(stats.videos) Videos")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-            }
-            viewModePicker
-        }
-        .padding(.top, 8)
-        .padding(.bottom, 4)
-        .frame(maxWidth: .infinity)
-        .background(Color.black)
+        viewModePicker
+            .padding(.bottom, 8)
     }
 
     /// The view-mode pill: a dark capsule with the selected segment
@@ -263,7 +252,7 @@ struct LibraryView: View {
                 } label: {
                     Text(mode.title)
                         .font(.subheadline)
-                        .fontWeight(selected ? .semibold : .regular)
+                        .fontWeight(.bold)
                         .foregroundStyle(selected ? .white : .white.opacity(0.7))
                         .padding(.horizontal, 14)
                         .padding(.vertical, 7)
@@ -316,6 +305,9 @@ struct LibraryView: View {
                 }
             }
         }
+        // Bottom margin so the last row scrolls clear of the
+        // floating Years/Months/Days/All Photos pill.
+        .contentMargins(.bottom, 100, for: .scrollContent)
         .refreshable {
             await viewModel.fetch()
         }
@@ -341,6 +333,9 @@ struct LibraryView: View {
                 }
             }
         }
+        // Bottom margin so the last row scrolls clear of the
+        // floating Years/Months/Days/All Photos pill.
+        .contentMargins(.bottom, 100, for: .scrollContent)
         .refreshable {
             await viewModel.fetch()
         }
@@ -366,6 +361,9 @@ struct LibraryView: View {
                 }
             }
         }
+        // Bottom margin so the last row scrolls clear of the
+        // floating Years/Months/Days/All Photos pill.
+        .contentMargins(.bottom, 100, for: .scrollContent)
         .refreshable {
             await viewModel.fetch()
         }
@@ -408,6 +406,9 @@ struct LibraryView: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        // Bottom margin so the last row scrolls clear of the
+        // floating Years/Months/Days/All Photos pill.
+        .contentMargins(.bottom, 100, for: .scrollContent)
         .refreshable {
             await viewModel.fetch()
         }
@@ -1028,8 +1029,7 @@ struct ForYouView: View {
                 FeedView(
                     items: Binding(get: { viewModel.items }, set: { _ in }),
                     startItemId: startItem.id,
-                    onNearEnd: { await viewModel.loadMore() },
-                    showCloseButton: true
+                    onNearEnd: { await viewModel.loadMore() }
                 )
             }
         }
@@ -1168,8 +1168,7 @@ struct SearchView: View {
                 FeedView(
                     items: Binding(get: { viewModel.searchResults }, set: { _ in }),
                     startItemId: startItem.id,
-                    onNearEnd: { await viewModel.searchMore() },
-                    showCloseButton: true
+                    onNearEnd: { await viewModel.searchMore() }
                 )
             }
             .sheet(item: $itemForAlbumPicker) { pickerItem in

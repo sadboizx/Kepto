@@ -85,6 +85,8 @@ struct CollectionDetailView: View {
         }
         .navigationTitle(collection.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        // Transparent status bar / nav bar (see AlbumsView).
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(isSelecting ? "Cancel" : "Select") {
@@ -123,8 +125,7 @@ struct CollectionDetailView: View {
             FeedView(
                 items: $items,
                 startItemId: startItem.id,
-                onNearEnd: { await loadMore() },
-                showCloseButton: true
+                onNearEnd: { await loadMore() }
             )
         }
         .sheet(item: $itemForAlbumPicker) { pickerItem in
@@ -405,6 +406,8 @@ struct MyCollectionDetailView: View {
         }
         .navigationTitle(collection.name)
         .navigationBarTitleDisplayMode(.inline)
+        // Transparent status bar / nav bar (see AlbumsView).
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(isSelecting ? "Cancel" : "Select") {
@@ -412,14 +415,19 @@ struct MyCollectionDetailView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // Deleting the whole collection is hidden while
-                // selecting videos, so the two deletes cannot be
-                // confused with each other.
+                // The trash button is gone — deleting the whole
+                // collection lives in the "…" menu instead, so it
+                // cannot be hit by accident next to Select. Hidden
+                // while selecting videos, like the trash was.
                 if !isSelecting {
-                    Button(role: .destructive) {
-                        showingDeleteCollection = true
+                    Menu {
+                        Button(role: .destructive) {
+                            showingDeleteCollection = true
+                        } label: {
+                            Label("Delete collection", systemImage: "trash")
+                        }
                     } label: {
-                        Label("Delete collection", systemImage: "trash")
+                        Image(systemName: "ellipsis.circle")
                     }
                 }
             }
@@ -470,8 +478,7 @@ struct MyCollectionDetailView: View {
             FeedView(
                 items: $items,
                 startItemId: startItem.id,
-                onNearEnd: { await loadMore() },
-                showCloseButton: true
+                onNearEnd: { await loadMore() }
             )
         }
         .sheet(item: $itemForAlbumPicker) { pickerItem in
@@ -770,6 +777,10 @@ struct AlbumsView: View {
                 .padding(.bottom, 16)
             }
             .navigationTitle("Albums")
+            // Transparent status bar / nav bar: the sections show
+            // through under the status bar and the title, no solid
+            // band.
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -974,7 +985,8 @@ private struct AlbumCardView: View {
                         .padding(10)
                 }
             }
-            Text(name)
+            // Album names show in lowercase, not Title Case.
+            Text(name.lowercased())
                 .font(.headline)
                 .foregroundStyle(.white)
                 .lineLimit(1)
@@ -1072,6 +1084,8 @@ struct AlbumItemsView: View {
         }
         .navigationTitle(kind.title)
         .navigationBarTitleDisplayMode(.inline)
+        // Transparent status bar / nav bar (see AlbumsView).
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(isSelecting ? "Cancel" : "Select") {
@@ -1110,8 +1124,7 @@ struct AlbumItemsView: View {
             FeedView(
                 items: $items,
                 startItemId: startItem.id,
-                onNearEnd: { await loadMore() },
-                showCloseButton: true
+                onNearEnd: { await loadMore() }
             )
         }
         .sheet(item: $itemForAlbumPicker) { pickerItem in

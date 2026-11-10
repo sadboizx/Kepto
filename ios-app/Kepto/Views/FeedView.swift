@@ -37,9 +37,6 @@ struct FeedView: View {
     let startItemId: String
     /// Called when the user nears the end (loads the next page).
     var onNearEnd: (() async -> Void)? = nil
-    /// Shows a close (X) button top-left. The feed is always a
-    /// full-screen cover now (opened from a grid), so this is true.
-    var showCloseButton: Bool = true
 
     @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss
@@ -60,11 +57,10 @@ struct FeedView: View {
     @State private var isScrubbing = false
 
     init(items: Binding<[Item]>, startItemId: String,
-         onNearEnd: (() async -> Void)? = nil, showCloseButton: Bool = true) {
+         onNearEnd: (() async -> Void)? = nil) {
         self._items = items
         self.startItemId = startItemId
         self.onNearEnd = onNearEnd
-        self.showCloseButton = showCloseButton
         self._currentItemId = State(initialValue: startItemId)
     }
 
@@ -80,10 +76,24 @@ struct FeedView: View {
                 } else {
                     feedPages
                 }
-                if showCloseButton {
-                    closeButton(topSafeArea: geo.safeAreaInsets.top)
-                }
             }
+            // Back swipe to go back (there is no X button): a
+            // deliberate rightward swipe on the video dismisses the
+            // player. Simultaneous, so it never blocks the vertical
+            // paging or the progress-bar scrub. Drags that start
+            // near the bottom (the progress bar / caption area) are
+            // ignored, so scrubbing cannot dismiss the player.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        let isSwipeRight = value.translation.width > 120
+                            && abs(value.translation.height) < 60
+                        let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
+                        if isSwipeRight && startedAboveBottomBar {
+                            dismiss()
+                        }
+                    }
+            )
         }
         .preferredColorScheme(.dark)
         .confirmationDialog("Delete this saved item?",
@@ -176,30 +186,6 @@ struct FeedView: View {
         if items.contains(where: { $0.id == startItemId }) {
             proxy.scrollTo(startItemId, anchor: .top)
         }
-    }
-
-    /// Close button (covers only, top-left). The video runs behind
-    /// the status bar, so the button sits just below it — not under
-    /// the clock/battery.
-    private func closeButton(topSafeArea: CGFloat) -> some View {
-        VStack {
-            HStack {
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(Color.black.opacity(0.35))
-                        .clipShape(Circle())
-                }
-                .padding(.leading, 16)
-                Spacer()
-            }
-            Spacer()
-        }
-        .padding(.top, topSafeArea + 4)
     }
 
     /// Near the end: load the next page so swiping never hits a dead
