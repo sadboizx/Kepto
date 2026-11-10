@@ -283,6 +283,13 @@ private struct FeedVideoPage: View {
     /// you land on it) instead of resuming where the kept player left
     /// off. Cleared by playCurrent once it seeks to 0.
     @State private var restartFromStart = false
+    /// Facebook Reels-style progress bar visibility: the bar shows
+    /// while the user interacts, then fades out after 2.5s idle.
+    /// Starts visible when the page becomes current.
+    @State private var controlsVisible: Bool = true
+    /// The auto-hide timer for the progress bar (cancelled and
+    /// restarted on every interaction).
+    @State private var hideControlsTask: Task<Void, Never>?
     /// Short notice above the progress bar (e.g. "Đã lưu vào Photos").
     @State private var notice: String?
     @State private var noticeTask: Task<Void, Never>?
@@ -365,6 +372,7 @@ private struct FeedVideoPage: View {
                             currentTime: currentTime,
                             duration: duration,
                             isScrubbing: $isScrubbing,
+                            controlsVisible: controlsVisible,
                             item: item,
                             sprite: sprite,
                             frameCache: frameCache,
@@ -416,6 +424,9 @@ private struct FeedVideoPage: View {
             .onTapGesture {
                 guard item.status == .ready, !isImage else { return }
                 togglePlay()
+                // Tapping is an interaction: show the progress bar
+                // again, then hide it after a while idle.
+                showControlsTemporarily()
             }
             .contextMenu {
                 // Native iOS context menu (long-press on the video):
@@ -495,6 +506,8 @@ private struct FeedVideoPage: View {
                 isScrubbing = false
                 restartFromStart = true
                 schedulePlay()
+                // Show the progress bar briefly, then fade it out.
+                showControlsTemporarily()
             }
             if isImage, item.status == .ready {
                 Task { await loadFullImage() }
@@ -514,6 +527,7 @@ private struct FeedVideoPage: View {
             isPlaying = false
             tapIconTask?.cancel()
             tapIcon = nil
+            hideControlsTask?.cancel()
         }
         .onChange(of: isCurrent) { _, current in
             if current {
@@ -525,6 +539,8 @@ private struct FeedVideoPage: View {
                 isScrubbing = false
                 restartFromStart = true
                 schedulePlay()
+                // Show the progress bar briefly, then fade it out.
+                showControlsTemporarily()
             } else {
                 playTask?.cancel()
                 player?.pause()
@@ -534,8 +550,14 @@ private struct FeedVideoPage: View {
         .onChange(of: isScrubbing) { _, scrubbing in
             if scrubbing {
                 player?.pause()
+                // Scrubbing keeps the bar visible; the hide timer
+                // must not fire mid-drag.
+                hideControlsTask?.cancel()
+                controlsVisible = true
             } else if isCurrent {
                 playCurrent()
+                // Scrub ended: the bar stays a moment, then fades.
+                showControlsTemporarily()
             }
         }
     }
@@ -694,6 +716,26 @@ private struct FeedVideoPage: View {
         let target = CMTime(seconds: seconds, preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             currentTime = seconds
+        }
+    }
+
+    /// Facebook Reels-style progress bar auto-hide: shows the bar
+    /// and fades it out after 2.5s with no interaction. Called on
+    /// every interaction (tap, page appearing, scrub ending) — each
+    /// call cancels the previous timer and starts a fresh one. Never
+    /// hides while the user is scrubbing (the timer checks
+    /// isScrubbing before hiding, and scrubbing cancels it).
+    private func showControlsTemporarily() {
+        controlsVisible = true
+        hideControlsTask?.cancel()
+        hideControlsTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled else { return }
+            if !isScrubbing {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    controlsVisible = false
+                }
+            }
         }
     }
 
@@ -875,10 +917,28 @@ struct AddToCollectionPickerView: View {
 /// Dragging scrubs; while dragging, a preview popup (sprite frame at
 /// that timestamp + time) floats above the bar. The touch area is
 /// taller than the visible line so it is easy to grab.
+/// Facebook Reels-style progress bar for the full-screen feed.
+///
+/// - Auto-hide: the bar is only visible while the user interacts.
+///   It fades in on tap / page-appear / scrub and fades out after
+///   2.5s idle (the timer lives in FeedVideoPage; this view only
+///   reads `controlsVisible`). While scrubbing it is always visible.
+/// - Enlarge on drag: the bar grows from a 2pt line to a 9pt pill
+///   while the finger is down, and shrinks back on release.
+/// - Seek preview: while scrubbing, a rounded thumbnail of the frame
+///   at the scrub timestamp floats above the finger, with the time
+///   ("0:12 / 0:36" — scrub time / total) in white below it. The
+///   popup is lifted ~40pt above the bar so the finger never covers
+///   the preview or the time. Even without a sprite (older saves)
+///   the time still shows while scrubbing.
 private struct FeedProgressBar: View {
     let currentTime: Double
     let duration: Double
     @Binding var isScrubbing: Bool
+    /// False after 2.5s idle (FeedVideoPage's timer). The bar fades
+    /// out, but the 64pt touch area stays live so the user can still
+    /// grab it to scrub — and any tap on the video shows it again.
+    let controlsVisible: Bool
     let item: Item
     let sprite: UIImage?
     let frameCache: ScrubPreviewPlayer.SpriteFrameCache
@@ -892,17 +952,28 @@ private struct FeedProgressBar: View {
         return min(max(currentTime / duration, 0), 1)
     }
 
+    /// True while the bar should be on screen (interacting, or
+    /// scrubbing — which forces it visible even after the idle
+    /// timer fired).
+    private var barVisible: Bool { controlsVisible || isScrubbing }
+
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottom) {
                 ZStack(alignment: .leading) {
-                    Rectangle()
+                    RoundedRectangle(cornerRadius: isScrubbing ? 4.5 : 1)
                         .fill(Color.white.opacity(0.3))
-                    Rectangle()
+                    RoundedRectangle(cornerRadius: isScrubbing ? 4.5 : 1)
                         .fill(Color.white)
                         .frame(width: geo.size.width * (isScrubbing ? scrubFraction : progress))
                 }
-                .frame(height: 2)
+                // Thin 2pt line at rest; grows to a 9pt pill while
+                // scrubbing (Facebook Reels). Fades out after 2.5s
+                // idle (barVisible), fades back in on interaction.
+                .frame(height: isScrubbing ? 9 : 2)
+                .animation(.easeInOut(duration: 0.2), value: isScrubbing)
+                .opacity(barVisible ? 1 : 0)
+                .animation(.easeInOut(duration: 0.3), value: barVisible)
             }
             // 64pt tall touch area (the visible line is only 2pt, at
             // the bottom): the bar is a thin line and the finger
@@ -942,8 +1013,8 @@ private struct FeedProgressBar: View {
                     }
             )
             .overlay(alignment: .bottomLeading) {
-                if isScrubbing, let frame = frameImage(for: scrubFraction * duration) {
-                    scrubPopup(frame: frame, in: geo.size.width)
+                if isScrubbing {
+                    scrubPopup(in: geo.size.width)
                 }
             }
         }
@@ -952,31 +1023,37 @@ private struct FeedProgressBar: View {
         .frame(height: 64)
     }
 
-    /// Preview popup: the sprite frame at the scrub timestamp + the
-    /// time, floating above the bar and centred on the finger (clamped
-    /// to the screen edges).
-    private func scrubPopup(frame: UIImage, in width: CGFloat) -> some View {
+    /// Seek preview popup (Facebook Reels style): the sprite frame at
+    /// the scrub timestamp, rounded with a soft shadow, with the time
+    /// ("0:12 / 0:36" — scrub time / total duration) in white below
+    /// it. Centred on the finger (clamped to the screen edges) and
+    /// lifted ~40pt above the bar, so the finger never covers the
+    /// preview or the time. Without a sprite the time still shows.
+    private func scrubPopup(in width: CGFloat) -> some View {
+        let frame = frameImage(for: scrubFraction * duration)
         let popupWidth: CGFloat = 120
-        let aspect = frame.size.width / max(frame.size.height, 1)
-        let frameHeight = popupWidth / aspect
+        let aspect: CGFloat = frame.map { $0.size.width / max($0.size.height, 1) } ?? (9.0 / 16.0)
+        // Cap the height so a tall portrait frame stays compact.
+        let frameHeight = min(popupWidth / aspect, 180)
         let half = popupWidth / 2
         let centerX = min(max(dragX, half + 8), width - half - 8)
-        return VStack(spacing: 4) {
-            Image(uiImage: frame)
-                .resizable()
-                .scaledToFit()
-                .frame(width: popupWidth, height: frameHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text(formatTime(scrubFraction * duration))
-                .font(.caption2)
-                .fontWeight(.semibold)
+        return VStack(spacing: 8) {
+            if let frame {
+                Image(uiImage: frame)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: popupWidth, height: frameHeight)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 2)
+            }
+            Text("\(formatTime(scrubFraction * duration)) / \(formatTime(duration))")
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
                 .foregroundStyle(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.black.opacity(0.7))
-                .clipShape(Capsule())
+                .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
         }
-        .offset(x: centerX - half, y: -10)
+        .offset(x: centerX - half, y: -40)
     }
 
     /// The sprite cell for the given timestamp (cropped on first use,
