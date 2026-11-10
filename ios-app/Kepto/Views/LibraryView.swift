@@ -138,6 +138,7 @@ struct LibraryView: View {
                                     .foregroundStyle(.white)
                                     .frame(width: 32, height: 32)
                                     .background(.ultraThinMaterial, in: Circle())
+                                    .accessibilityLabel("More options")
                             }
                         }
                     }
@@ -777,9 +778,37 @@ struct PhotosGridCell: View {
         // the cell below. (The thumbnail itself stays square — the
         // ZStack + .aspectRatio in AspectThumbnail is untouched.)
         .contentShape(Rectangle())
+        // One accessible element per cell (VoiceOver): the author /
+        // title, video duration or photo, favorite state. Dynamic
+        // Type scales the badge text automatically (caption2).
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .onTapGesture {
             onTap?()
         }
+    }
+
+    /// VoiceOver description for the cell.
+    private var accessibilityLabel: String {
+        var parts: [String] = []
+        if let author = item.authorUsername, !author.isEmpty {
+            parts.append("@\(author)")
+        } else if let author = item.author, !author.isEmpty {
+            parts.append(author)
+        }
+        if let title = item.title, !title.isEmpty {
+            parts.append(title)
+        }
+        if let duration = item.formattedDuration {
+            parts.append("video, \(duration)")
+        } else {
+            parts.append("photo")
+        }
+        if item.isFavorite { parts.append("favorite") }
+        if item.status == .pending { parts.append("loading") }
+        if item.status == .failed { parts.append("failed to save") }
+        return parts.joined(separator: ", ")
     }
 
     /// Duration first (Photos style); view count when the duration
@@ -1078,6 +1107,7 @@ struct ForYouView: View {
                             .foregroundStyle(.white)
                             .frame(width: 32, height: 32)
                             .background(.ultraThinMaterial, in: Circle())
+                            .accessibilityLabel("More options")
                     }
                 }
             }
@@ -1257,6 +1287,7 @@ struct SearchView: View {
                             .foregroundStyle(.white)
                             .frame(width: 32, height: 32)
                             .background(.ultraThinMaterial, in: Circle())
+                            .accessibilityLabel("More options")
                     }
                 }
             }

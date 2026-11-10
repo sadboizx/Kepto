@@ -138,6 +138,7 @@ struct CollectionDetailView: View {
                             .foregroundStyle(.white)
                             .frame(width: 32, height: 32)
                             .background(.ultraThinMaterial, in: Circle())
+                            .accessibilityLabel("More options")
                     }
                 }
             }
@@ -514,6 +515,7 @@ struct MyCollectionDetailView: View {
                                 .foregroundStyle(.white)
                                 .frame(width: 32, height: 32)
                                 .background(.ultraThinMaterial, in: Circle())
+                                .accessibilityLabel("More options")
                         }
                     }
                 }
@@ -904,6 +906,7 @@ struct AlbumsView: View {
                             .foregroundStyle(.white)
                             .frame(width: 32, height: 32)
                             .background(.ultraThinMaterial, in: Circle())
+                            .accessibilityLabel("More options")
                     }
                 }
             }
@@ -1264,6 +1267,7 @@ struct AlbumItemsView: View {
                             .foregroundStyle(.white)
                             .frame(width: 32, height: 32)
                             .background(.ultraThinMaterial, in: Circle())
+                            .accessibilityLabel("More options")
                     }
                 }
             }

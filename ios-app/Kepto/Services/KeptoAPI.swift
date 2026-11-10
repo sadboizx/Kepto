@@ -38,6 +38,15 @@ final class KeptoAPI {
     private let apiKey: String
     private let session: URLSession
 
+    /// Shared in-memory thumbnail cache (Photos-style smooth scrolling).
+    /// Thumbnails are remote (R2 via the Worker), not PHAssets, so
+    /// PHCachingImageManager does not apply — this NSCache is the
+    /// equivalent: a grid cell that scrolls off-screen and back does
+    /// NOT re-download its thumbnail, and thousands of items stay
+    /// smooth because only decoded UIImages are kept (NSCache evicts
+    /// under memory pressure). Keyed by item id.
+    private static let thumbnailCache = NSCache<NSString, UIImage>()
+
     /// UserDefaults key for the Worker base URL (not a secret).
     static let baseURLDefaultsKey = "kepto.baseURL"
 
@@ -336,10 +345,17 @@ final class KeptoAPI {
     }
 
     func fetchThumbnail(id: String) async throws -> UIImage? {
+        // Serve from the shared cache when possible (smooth scrolling
+        // with thousands of items — no re-download on scroll-back).
+        if let cached = Self.thumbnailCache.object(forKey: id as NSString) {
+            return cached
+        }
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/thumb/\(id)")))
         guard let http = response as? HTTPURLResponse,
               (200...299).contains(http.statusCode) else { return nil }
-        return UIImage(data: data)
+        guard let image = UIImage(data: data) else { return nil }
+        Self.thumbnailCache.setObject(image, forKey: id as NSString)
+        return image
     }
 
     /// GET /api/preview/:id — the scrub-preview sprite (tile grid of
