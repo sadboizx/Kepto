@@ -78,33 +78,57 @@ struct LibraryView: View {
     ]
 
     var body: some View {
-        // GeometryReader supplies the status-bar height
-        // (`geometry.safeAreaInsets.top`): the top controls float
-        // just below the status bar, over the first grid row. There
-        // is no `@Environment(\.safeAreaInsets)` in SwiftUI — using
-        // it fails the build ("generic parameter 'T' could not be
-        // inferred", v29 log) — so the inset comes from here.
-        GeometryReader { geometry in
-            ZStack(alignment: .topTrailing) {
-                content
-                if viewModel.isConfigured {
-                    topControls(topInset: geometry.safeAreaInsets.top)
-                }
-            }
-            .background(Color.black)
-            .safeAreaInset(edge: .bottom) {
-                if viewModel.isConfigured {
-                    if isSelecting {
-                        selectionBar
-                    } else {
-                        bottomBar
+        // Photos Library style: a NavigationStack so "Select" and
+        // "…" sit in the navigation bar — small, at the very top,
+        // like the real Photos app — instead of floating as large
+        // pills over the first grid row. The grid scrolls under the
+        // translucent bar. The "+" save button and the gear are gone;
+        // their actions live in the "…" menu (new link, clipboard,
+        // Settings). (The old floating controls used a GeometryReader
+        // for the status-bar height; that inset measured too low on
+        // device, so the pills sat mid-first-row instead of at the
+        // top — the toolbar fixes the position for good.)
+        NavigationStack {
+            content
+                .background(Color.black)
+                .safeAreaInset(edge: .bottom) {
+                    if viewModel.isConfigured {
+                        if isSelecting {
+                            selectionBar
+                        } else {
+                            bottomBar
+                        }
                     }
                 }
-            }
-            .task {
-                await viewModel.fetch()
-                await viewModel.fetchStats()
-            }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if viewModel.isConfigured {
+                            HStack(spacing: 16) {
+                                Button(isSelecting ? "Cancel" : "Select") {
+                                    toggleSelecting()
+                                }
+                                Menu {
+                                    Button { showingURLInput = true } label: {
+                                        Label("Lưu link mới", systemImage: "link.badge.plus")
+                                    }
+                                    Button { Task { await saveDirectFromClipboard() } } label: {
+                                        Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
+                                    }
+                                    Button { showingSettings = true } label: {
+                                        Label("Settings", systemImage: "gearshape")
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                }
+                            }
+                        }
+                    }
+                }
+                .navigationBarTitleDisplayMode(.inline)
+                .task {
+                    await viewModel.fetch()
+                    await viewModel.fetchStats()
+                }
             .alert("Lưu link", isPresented: $showingURLInput) {
             TextField(
                 "Dán link TikTok, Instagram…",
@@ -205,57 +229,6 @@ struct LibraryView: View {
             Button("Open Settings") { showingSettings = true }
                 .buttonStyle(.borderedProminent)
         }
-    }
-
-    /// Top-right controls floating over the grid (Photos Library
-    /// style): the "Select" pill, a "+" save menu, and a gear for
-    /// Settings. They sit just below the status bar, over the first
-    /// grid row — exactly where Photos puts Select / "…".
-    private func topControls(topInset: CGFloat) -> some View {
-        HStack(spacing: 8) {
-            Button(isSelecting ? "Cancel" : "Select") {
-                toggleSelecting()
-            }
-            .font(.subheadline)
-            .fontWeight(.semibold)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(Color.black.opacity(0.55))
-            .clipShape(Capsule())
-            .buttonStyle(.plain)
-            Menu {
-                Button {
-                    showingURLInput = true
-                } label: {
-                    Label("Lưu link mới", systemImage: "link.badge.plus")
-                }
-                Button {
-                    Task { await saveDirectFromClipboard() }
-                } label: {
-                    Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
-                    .background(Color.black.opacity(0.55))
-                    .clipShape(Circle())
-            }
-            Button {
-                showingSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
-                    .background(Color.black.opacity(0.55))
-                    .clipShape(Circle())
-            }
-        }
-        .padding(.top, topInset + 4)
-        .padding(.trailing, 16)
     }
 
     /// Bottom bar above the tab bar (Photos Library style): the

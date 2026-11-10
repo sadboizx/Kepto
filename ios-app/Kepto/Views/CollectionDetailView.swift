@@ -703,22 +703,44 @@ enum AlbumKind: String, Hashable {
     }
 }
 
-/// Albums: the Photos-style Albums tab. "My Albums" is a 2-column
-/// grid of square album cards (cover + name + count below, like
-/// Photos iOS 17.4): Recents (all saved items), Favorites
-/// (hearted items), the user's own collections, then the
-/// per-creator collections. A blue "+" at the top-left creates a
-/// new album (a user-created collection). Tapping a card opens its
-/// videos in a square grid; tapping a video there opens the feed.
-/// There is no Shared Albums section — Kepto has no sharing, so
-/// there is nothing to list there (the spec says "nếu có").
-/// Dark mode is forced at the app root (KeptoTabView).
+/// Which album section the "See All" page shows (Photos Albums
+/// style: each section header has a "See All" button on the right).
+enum AlbumSection: String, Hashable {
+    case myAlbums
+    case creators
+}
+
+/// One album card's identity, so the horizontal 2-row grids and the
+/// "See All" full grid can share the same card list and selection.
+enum AlbumCard: Hashable {
+    case kind(AlbumKind)
+    case myCollection(MyCollection)
+    case creator(CollectionInfo)
+}
+
+/// Albums: the Photos-style Albums tab. Two sections, each a
+/// sideways-scrolling 2-row grid of square album cards (cover +
+/// name + count below, like Photos iOS 17.4), with a "See All"
+/// button on the right of each header:
+///  - "My Albums": Recents (all saved items), Favorites (hearted
+///    items), then the user's own collections.
+///  - "Creators": one card per TikTok creator whose collection was
+///    saved (the old per-creator list, now in its own section —
+///    Photos' "Shared Albums" slot, renamed, since Kepto has no
+///    sharing).
+/// A blue "+" at the top-left creates a new album (a user-created
+/// collection). Tapping a card opens its videos in a square grid;
+/// tapping a video there opens the feed. "See All" opens the whole
+/// section as a 2-column grid. Dark mode is forced at the app root
+/// (KeptoTabView).
 struct AlbumsView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     /// "New collection" name alert (from the "+" button).
     @State private var showingNewCollection = false
     @State private var newCollectionName = ""
     @State private var saveNotice: String?
+    /// The section whose "See All" page is open (nil = closed).
+    @State private var seeAllSection: AlbumSection?
     /// The collection whose detail page is open (nil = closed).
     /// Navigation is a Button + navigationDestination, NOT an inline
     /// NavigationLink in the LazyVGrid: inline links in a lazy grid
@@ -736,58 +758,16 @@ struct AlbumsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    sectionHeader("My Albums")
-                    LazyVGrid(columns: albumColumns, spacing: 16) {
-                        Button {
-                            selectedAlbumKind = .recents
-                        } label: {
-                            AlbumCardView(
-                                name: "Recents",
-                                count: recentsCount,
-                                coverItemId: viewModel.items.first?.id
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        Button {
-                            selectedAlbumKind = .favorites
-                        } label: {
-                            AlbumCardView(
-                                name: "Favorites",
-                                count: favoritesCount,
-                                coverItemId: viewModel.items.first(where: { $0.isFavorite })?.id,
-                                showsHeart: true
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        ForEach(viewModel.myCollections) { collection in
-                            Button {
-                                selectedMyCollection = collection
-                            } label: {
-                                AlbumCardView(
-                                    name: collection.name,
-                                    count: collection.count,
-                                    coverItemId: collection.coverItemId
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        ForEach(viewModel.collections) { collection in
-                            Button {
-                                selectedCollection = collection
-                            } label: {
-                                AlbumCardView(
-                                    name: collection.displayName,
-                                    count: collection.count,
-                                    coverItemId: collection.coverItemId
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
+                VStack(alignment: .leading, spacing: 28) {
+                    albumSection(title: "My Albums", cards: myAlbumCards) {
+                        seeAllSection = .myAlbums
                     }
-                    .padding(.horizontal)
-                    .padding(.bottom)
+                    albumSection(title: "Creators", cards: creatorCards) {
+                        seeAllSection = .creators
+                    }
                 }
+                .padding(.top, 8)
+                .padding(.bottom, 16)
             }
             .navigationTitle("Albums")
             .toolbar {
@@ -809,6 +789,20 @@ struct AlbumsView: View {
             }
             .navigationDestination(item: $selectedAlbumKind) { kind in
                 AlbumItemsView(kind: kind)
+            }
+            .navigationDestination(item: $seeAllSection) { section in
+                ScrollView {
+                    LazyVGrid(columns: albumColumns, spacing: 16) {
+                        ForEach(section == .myAlbums ? myAlbumCards : creatorCards, id: \.self) { card in
+                            Button { select(card) } label: {
+                                cardView(for: card)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding()
+                }
+                .navigationTitle(section == .myAlbums ? "My Albums" : "Creators")
             }
             .task {
                 await viewModel.fetchCollections()
@@ -849,14 +843,86 @@ struct AlbumsView: View {
         }
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.title2)
-            .fontWeight(.bold)
-            .foregroundStyle(.white)
+    /// "My Albums" cards: Recents, Favorites, then the user's own
+    /// collections.
+    private var myAlbumCards: [AlbumCard] {
+        [.kind(.recents), .kind(.favorites)] + viewModel.myCollections.map { .myCollection($0) }
+    }
+
+    /// "Creators" cards: one per TikTok creator whose collection
+    /// was saved.
+    private var creatorCards: [AlbumCard] {
+        viewModel.collections.map { .creator($0) }
+    }
+
+    /// Two rows for the horizontal grids (Photos Albums style: each
+    /// section scrolls sideways and is at most 2 rows tall).
+    private var albumRows: [GridItem] {
+        [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    }
+
+    /// Card width in the horizontal grids: two full cards plus a
+    /// peek of the next one fit on screen, like Photos.
+    private var albumCardWidth: CGFloat {
+        (UIScreen.main.bounds.width - 44) / 2
+    }
+
+    /// One section (My Albums / Creators): a header with a "See All"
+    /// button on the right, then a sideways-scrolling 2-row grid of
+    /// album cards. Swipe sideways to see more albums.
+    private func albumSection(title: String, cards: [AlbumCard], onSeeAll: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(title)
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundStyle(.white)
+                Spacer()
+                Button("See All", action: onSeeAll)
+                    .font(.subheadline)
+                    .foregroundStyle(.blue)
+            }
             .padding(.horizontal)
-            .padding(.top, 12)
-            .padding(.bottom, 12)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHGrid(rows: albumRows, spacing: 12) {
+                    ForEach(cards, id: \.self) { card in
+                        Button { select(card) } label: {
+                            cardView(for: card)
+                                .frame(width: albumCardWidth)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
+    /// The card view for one album (square cover + name + count
+    /// below).
+    private func cardView(for card: AlbumCard) -> AlbumCardView {
+        switch card {
+        case .kind(.recents):
+            return AlbumCardView(name: "Recents", count: recentsCount, coverItemId: viewModel.items.first?.id)
+        case .kind(.favorites):
+            return AlbumCardView(name: "Favorites", count: favoritesCount, coverItemId: viewModel.items.first(where: { $0.isFavorite })?.id, showsHeart: true)
+        case .myCollection(let collection):
+            return AlbumCardView(name: collection.name, count: collection.count, coverItemId: collection.coverItemId)
+        case .creator(let collection):
+            return AlbumCardView(name: collection.displayName, count: collection.count, coverItemId: collection.coverItemId)
+        }
+    }
+
+    /// Opens the tapped album's detail page.
+    private func select(_ card: AlbumCard) {
+        switch card {
+        case .kind(let kind):
+            selectedAlbumKind = kind
+        case .myCollection(let collection):
+            selectedMyCollection = collection
+        case .creator(let collection):
+            selectedCollection = collection
+        }
     }
 
     /// Recents count: the real total from /api/stats when available,
