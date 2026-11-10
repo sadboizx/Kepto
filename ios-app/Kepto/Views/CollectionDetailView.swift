@@ -9,6 +9,7 @@ import UIKit
 struct CollectionDetailView: View {
     let collection: CollectionInfo
     @EnvironmentObject private var viewModel: LibraryViewModel
+    @Environment(\.dismiss) private var dismiss
 
     @State private var items: [Item] = []
     @State private var nextCursor: String?
@@ -86,15 +87,29 @@ struct CollectionDetailView: View {
             }
         }
         .navigationTitle(collection.displayName)
-        // Large title, left-aligned below the "< Albums" back button,
-        // like the real Photos app (not a small inline title).
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
-        // White back button ("< Albums"), like the real Photos app
-        // (the accent color is blue, which would tint it blue).
-        .tint(.white)
+        // Custom white back button: .tint(.white) did NOT recolor the
+        // system back button (still blue, v41), so hide it and draw
+        // our own "< Albums" in white. The swipe-back gesture still
+        // works (it is a navigation-controller gesture, not the
+        // button).
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Albums")
+                    }
+                    .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 8) {
                     // Photos style: "Select" is a dark pill with
@@ -441,15 +456,29 @@ struct MyCollectionDetailView: View {
             }
         }
         .navigationTitle(collection.name)
-        // Large title, left-aligned below the "< Albums" back button,
-        // like the real Photos app (not a small inline title).
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
-        // White back button ("< Albums"), like the real Photos app
-        // (the accent color is blue, which would tint it blue).
-        .tint(.white)
+        // Custom white back button: .tint(.white) did NOT recolor the
+        // system back button (still blue, v41), so hide it and draw
+        // our own "< Albums" in white. The swipe-back gesture still
+        // works (it is a navigation-controller gesture, not the
+        // button).
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Albums")
+                    }
+                    .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 8) {
                     // Photos style: "Select" is a dark pill with
@@ -804,6 +833,8 @@ struct AlbumsView: View {
     @State private var showingNewCollection = false
     @State private var newCollectionName = ""
     @State private var saveNotice: String?
+    /// Presents the Settings sheet from the "…" menu.
+    @State private var showingSettings = false
     /// The section whose "See All" page is open (nil = closed).
     @State private var seeAllSection: AlbumSection?
     /// The collection whose detail page is open (nil = closed).
@@ -849,6 +880,35 @@ struct AlbumsView: View {
                             .foregroundStyle(.blue)
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    // The "…" menu lives on every tab except the
+                    // Player: Clipboard, then Settings.
+                    Menu {
+                        Button {
+                            Task {
+                                if let notice = await viewModel.saveFromClipboard() {
+                                    saveNotice = notice
+                                } else {
+                                    saveNotice = "Không có link trên clipboard."
+                                }
+                            }
+                        } label: {
+                            Label("Clipboard", systemImage: "doc.on.clipboard")
+                        }
+                        Button { showingSettings = true } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
             }
             .navigationDestination(item: $selectedCollection) { collection in
                 CollectionDetailView(collection: collection)
@@ -1075,6 +1135,7 @@ private struct AlbumCardView: View {
 struct AlbumItemsView: View {
     let kind: AlbumKind
     @EnvironmentObject private var viewModel: LibraryViewModel
+    @Environment(\.dismiss) private var dismiss
 
     @State private var items: [Item] = []
     @State private var nextCursor: String?
@@ -1152,15 +1213,29 @@ struct AlbumItemsView: View {
             }
         }
         .navigationTitle(kind.title)
-        // Large title, left-aligned below the "< Albums" back button,
-        // like the real Photos app (not a small inline title).
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
-        // White back button ("< Albums"), like the real Photos app
-        // (the accent color is blue, which would tint it blue).
-        .tint(.white)
+        // Custom white back button: .tint(.white) did NOT recolor the
+        // system back button (still blue, v41), so hide it and draw
+        // our own "< Albums" in white. The swipe-back gesture still
+        // works (it is a navigation-controller gesture, not the
+        // button).
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Albums")
+                    }
+                    .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 8) {
                     // Photos style: "Select" is a dark pill with

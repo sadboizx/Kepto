@@ -124,7 +124,7 @@ struct LibraryView: View {
                             .buttonStyle(.plain)
                             Menu {
                                 Button { Task { await saveDirectFromClipboard() } } label: {
-                                    Label("Lưu từ Clipboard", systemImage: "doc.on.clipboard")
+                                    Label("Clipboard", systemImage: "doc.on.clipboard")
                                 }
                                 Button { showingSettings = true } label: {
                                     Label("Settings", systemImage: "gearshape")
@@ -686,20 +686,11 @@ struct LibraryView: View {
     /// Reads the first http(s) URL on the clipboard and saves it right
     /// away; warns when there is no link.
     private func saveDirectFromClipboard() async {
-        guard let text = UIPasteboard.general.string,
-              let url = Self.firstURL(in: text) else {
+        if let notice = await viewModel.saveFromClipboard() {
+            saveNotice = notice
+        } else {
             clipboardAlert = true
-            return
         }
-        await saveDirect(url.absoluteString)
-    }
-
-    private static func firstURL(in text: String) -> URL? {
-        let pattern = "https?://[^\\s\"'<>]+"
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range, in: text) else { return nil }
-        return URL(string: String(text[range]))
     }
 }
 
@@ -1038,6 +1029,10 @@ struct GridItemContextMenu: View {
 struct ForYouView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var feedStartItem: Item?
+    /// Presents the Settings sheet from the "…" menu.
+    @State private var showingSettings = false
+    /// Notice after a "…" Clipboard save (nil = no notice showing).
+    @State private var clipboardNotice: String?
 
     var body: some View {
         NavigationStack {
@@ -1058,6 +1053,42 @@ struct ForYouView: View {
                 }
             }
             .navigationTitle("For You")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    // The "…" menu lives on every tab except the
+                    // Player: Clipboard, then Settings.
+                    Menu {
+                        Button {
+                            Task {
+                                if let notice = await viewModel.saveFromClipboard() {
+                                    clipboardNotice = notice
+                                } else {
+                                    clipboardNotice = "Không có link trên clipboard."
+                                }
+                            }
+                        } label: {
+                            Label("Clipboard", systemImage: "doc.on.clipboard")
+                        }
+                        Button { showingSettings = true } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+            }
+            .alert("Kepto", isPresented: .constant(clipboardNotice != nil)) {
+                Button("OK") { clipboardNotice = nil }
+            } message: {
+                Text(clipboardNotice ?? "")
+            }
             .refreshable {
                 await viewModel.fetch()
             }
@@ -1175,6 +1206,8 @@ struct SearchView: View {
     @State private var itemPendingDelete: Item?
     @State private var showingDeleteConfirmation = false
     @State private var saveNotice: String?
+    /// Presents the Settings sheet from the "…" menu.
+    @State private var showingSettings = false
 
     /// 3-column square grid (Photos style): 2pt gaps.
     private let gridColumns = [
@@ -1199,6 +1232,37 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    // The "…" menu lives on every tab except the
+                    // Player: Clipboard, then Settings.
+                    Menu {
+                        Button {
+                            Task {
+                                if let notice = await viewModel.saveFromClipboard() {
+                                    saveNotice = notice
+                                } else {
+                                    saveNotice = "Không có link trên clipboard."
+                                }
+                            }
+                        } label: {
+                            Label("Clipboard", systemImage: "doc.on.clipboard")
+                        }
+                        Button { showingSettings = true } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+            }
             .onChange(of: query) { _, _ in
                 scheduleSearch()
             }

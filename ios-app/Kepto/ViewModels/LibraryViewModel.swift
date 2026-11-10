@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import SwiftUI
+import UIKit
 
 /// Owns the library state. Cloud-only: items live in D1 behind the
 /// Worker API; nothing is cached on disk. The app is Photos-style now:
@@ -346,6 +347,37 @@ final class LibraryViewModel: ObservableObject {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return nil
         }
+    }
+
+    /// Reads the first http(s) URL on the clipboard and saves it
+    /// (single video or whole collection, via save(url:)). Returns a
+    /// short notice string for the caller to display, or nil when
+    /// there is no link on the clipboard (the caller shows its own
+    /// "no link" warning then). Shared by the "…" Clipboard action
+    /// in every tab (Library, For You, Albums, Search).
+    func saveFromClipboard() async -> String? {
+        guard let text = UIPasteboard.general.string,
+              let url = Self.firstURL(in: text) else { return nil }
+        guard let result = await save(url: url.absoluteString) else { return nil }
+        switch result {
+        case .single(let single):
+            return single.duplicate ? "Link này đã lưu trước đó." : "Đã lưu."
+        case .collection(let coll):
+            var notice = "Đã lưu \(coll.created) video mới"
+            if coll.duplicates > 0 { notice += " (\(coll.duplicates) video đã có trước đó)" }
+            if coll.capped { notice += " — chỉ lấy 100 video đầu" }
+            if let title = coll.title, !title.isEmpty { notice = "Collection “\(title)”: " + notice }
+            return notice + "."
+        }
+    }
+
+    /// The first http(s) URL in a piece of text (clipboard content).
+    static func firstURL(in text: String) -> URL? {
+        let pattern = "https?://[^\\s\"'<>]+"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range, in: text) else { return nil }
+        return URL(string: String(text[range]))
     }
 
     /// Delete an item on the server (R2 objects + D1 row), then drop it
