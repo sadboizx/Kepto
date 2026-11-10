@@ -21,6 +21,25 @@ import SwiftUI
 struct KeptoApp: App {
     @StateObject private var viewModel = LibraryViewModel()
 
+    init() {
+        // The tab bar (Library / For You / Albums / Search) MUST have
+        // a solid, opaque dark background. SwiftUI's
+        // `.toolbarBackground(_:for: .tabBar)` did NOT take effect —
+        // the bar stayed fully transparent over the grid (IMG_0940,
+        // still transparent after both ultraThinMaterial in v37 and
+        // regularMaterial in v38), so configure the UITabBar itself
+        // at the UIKit level instead. An opaque appearance cannot be
+        // transparent. Both appearances are set: standardAppearance
+        // (scrolled) AND scrollEdgeAppearance (at the scroll edge) —
+        // if scrollEdgeAppearance is left unset, iOS falls back to a
+        // transparent bar at the top of the grid.
+        let tabBarAppearance = UITabBarAppearance()
+        tabBarAppearance.configureWithOpaqueBackground()
+        tabBarAppearance.backgroundColor = UIColor.systemGray6
+        UITabBar.appearance().standardAppearance = tabBarAppearance
+        UITabBar.appearance().scrollEdgeAppearance = tabBarAppearance
+    }
+
     var body: some Scene {
         WindowGroup {
             KeptoTabView()
@@ -72,12 +91,10 @@ struct KeptoTabView: View {
                 .tag(3)
         }
         .preferredColorScheme(.dark)
-        // The tab bar (Library / For You / Albums / Search) uses
-        // regularMaterial — darker and more opaque than
-        // ultraThinMaterial, so the bar has a real visible background
-        // instead of looking transparent over the grid (IMG_0940).
-        .toolbarBackground(.regularMaterial, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
+        // NOTE: no SwiftUI .toolbarBackground here — it did not take
+        // effect (bar stayed transparent, IMG_0940). The tab bar
+        // background is set at the UIKit level in KeptoApp.init()
+        // (UITabBarAppearance, opaque), which cannot be transparent.
         .onChange(of: viewModel.pendingShareURL) { _, newValue in
             if let newValue {
                 viewModel.pendingShareURL = nil
