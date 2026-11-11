@@ -759,7 +759,7 @@ struct PhotosGridCell: View {
             if isSelectionMode {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(isSelected ? Color.accentColor : .white)
+                    .foregroundStyle(isSelected ? .blue : .white)
                     .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -769,7 +769,7 @@ struct PhotosGridCell: View {
         .overlay {
             if isSelected {
                 Rectangle()
-                    .stroke(Color.accentColor, lineWidth: 3)
+                    .stroke(.blue, lineWidth: 3)
             }
         }
         // The tappable region is exactly this cell's square bounds.

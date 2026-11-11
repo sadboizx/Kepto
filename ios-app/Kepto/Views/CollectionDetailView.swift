@@ -9,7 +9,6 @@ import UIKit
 struct CollectionDetailView: View {
     let collection: CollectionInfo
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
 
     @State private var items: [Item] = []
     @State private var nextCursor: String?
@@ -90,26 +89,11 @@ struct CollectionDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
-        // Custom white back button: .tint(.white) did NOT recolor the
-        // system back button (still blue, v41), so hide it and draw
-        // our own "< Albums" in white. The swipe-back gesture still
-        // works (it is a navigation-controller gesture, not the
-        // button).
-        .navigationBarBackButtonHidden(true)
+        // The system back button ("< Albums") is white via
+        // .tint(.white) on the AlbumsView NavigationStack (the tint
+        // comes from the stack, not the pushed view). It stays the
+        // system button so the swipe-back gesture works.
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    dismiss()
-                } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text("Albums")
-                    }
-                    .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 8) {
                     // Photos style: "Select" is a dark pill with
@@ -460,26 +444,11 @@ struct MyCollectionDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
-        // Custom white back button: .tint(.white) did NOT recolor the
-        // system back button (still blue, v41), so hide it and draw
-        // our own "< Albums" in white. The swipe-back gesture still
-        // works (it is a navigation-controller gesture, not the
-        // button).
-        .navigationBarBackButtonHidden(true)
+        // The system back button ("< Albums") is white via
+        // .tint(.white) on the AlbumsView NavigationStack (the tint
+        // comes from the stack, not the pushed view). It stays the
+        // system button so the swipe-back gesture works.
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    dismiss()
-                } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text("Albums")
-                    }
-                    .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 8) {
                     // Photos style: "Select" is a dark pill with
@@ -973,6 +942,16 @@ struct AlbumsView: View {
                 Text(viewModel.errorMessage ?? "")
             }
         }
+        // White back button ("< Albums") in the pushed detail views:
+        // the back button's tint comes from the NavigationStack, NOT
+        // from the pushed view — that is why .tint(.white) on the
+        // detail views did nothing in v41. The system back button
+        // stays (so the swipe-back gesture works); hiding it with
+        // .navigationBarBackButtonHidden broke the gesture in v42.
+        // The "+" and "See All" buttons stay blue (explicit
+        // .foregroundStyle(.blue)); the selection checkmark stays
+        // blue (explicit .blue in PhotosGridCell).
+        .tint(.white)
     }
 
     /// "My Albums" cards: Recents, Favorites, then the user's own
@@ -1138,7 +1117,6 @@ private struct AlbumCardView: View {
 struct AlbumItemsView: View {
     let kind: AlbumKind
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
 
     @State private var items: [Item] = []
     @State private var nextCursor: String?
@@ -1219,26 +1197,11 @@ struct AlbumItemsView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
-        // Custom white back button: .tint(.white) did NOT recolor the
-        // system back button (still blue, v41), so hide it and draw
-        // our own "< Albums" in white. The swipe-back gesture still
-        // works (it is a navigation-controller gesture, not the
-        // button).
-        .navigationBarBackButtonHidden(true)
+        // The system back button ("< Albums") is white via
+        // .tint(.white) on the AlbumsView NavigationStack (the tint
+        // comes from the stack, not the pushed view). It stays the
+        // system button so the swipe-back gesture works.
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    dismiss()
-                } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
-                        Text("Albums")
-                    }
-                    .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 8) {
                     // Photos style: "Select" is a dark pill with
