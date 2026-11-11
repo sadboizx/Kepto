@@ -39,7 +39,6 @@ struct FeedView: View {
     var onNearEnd: (() async -> Void)? = nil
 
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
 
     /// The id of the page the feed is showing. Optional because
     /// `.scrollPosition(id:)` needs a `Binding<String?>`.
@@ -55,12 +54,6 @@ struct FeedView: View {
     /// and turn into a page swipe (the bar "missing"). Lifted here
     /// from FeedVideoPage because the ScrollView lives in this view.
     @State private var isScrubbing = false
-    /// Horizontal offset while the user drags the player back from
-    /// the left edge (interactive back gesture). The view follows
-    /// the finger; releasing past the threshold pops it, releasing
-    /// short animates it back (cancel). See the simultaneousGesture
-    /// below.
-    @State private var backDragOffset: CGFloat = 0
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil) {
@@ -83,46 +76,17 @@ struct FeedView: View {
                     feedPages
                 }
             }
-            // Interactive back gesture (the native iOS edge pop does
-            // NOT fire here — the vertical paging ScrollView seems to
-            // swallow the edge pan — so this custom gesture is the
-            // one that actually goes back, and it behaves like the
-            // native one: the video FOLLOWS the finger while dragging
-            // (backDragOffset) and can be CANCELLED mid-swipe by
-            // dragging back left or releasing short of the threshold.
-            // A rightward drag starting within 20pt of the left edge
-            // moves the player with the finger; releasing past 120pt
-            // pops it (dismiss on a pushed view), releasing short
-            // animates it back to place. Simultaneous, so it never
-            // blocks the vertical paging or the progress-bar scrub.
-            // Drags starting near the bottom (the progress bar /
-            // caption area) are ignored, so scrubbing cannot dismiss
-            // the player.
-            .offset(x: backDragOffset)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 10)
-                    .onChanged { value in
-                        let startedAtLeftEdge = value.startLocation.x < 20
-                        let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
-                        let mostlyHorizontal = abs(value.translation.height) < 60
-                        if startedAtLeftEdge && startedAboveBottomBar && mostlyHorizontal {
-                            backDragOffset = max(0, value.translation.width)
-                        } else if abs(value.translation.height) >= 60 {
-                            backDragOffset = 0
-                        }
-                    }
-                    .onEnded { value in
-                        let startedAtLeftEdge = value.startLocation.x < 20
-                        let startedAboveBottomBar = value.startLocation.y < geo.size.height - 180
-                        if startedAtLeftEdge && startedAboveBottomBar && backDragOffset > 120 {
-                            dismiss()
-                        } else {
-                            withAnimation(.easeOut(duration: 0.25)) {
-                                backDragOffset = 0
-                            }
-                        }
-                    }
-            )
+            // Native back gesture (interactive pop) + paging ScrollView:
+            // the paging ScrollView claims the touch, so the navigation
+            // controller's edge pan never fires on its own. The
+            // NativePopGestureHelper below (a UIKit bridge) makes the
+            // scroll view's pan wait for the edge pan, so a rightward
+            // swipe from the left edge pops with the NATIVE gesture
+            // (interactive transition, follows the finger, cancels
+            // mid-swipe) while vertical swipes still page the feed.
+            // The old custom DragGesture (v37/v39) is removed — it
+            // would fight the native gesture for the same drag.
+            .background(NativePopGestureHelper())
         }
         .preferredColorScheme(.dark)
         // Full-screen player: hide the navigation bar (no back
@@ -1106,5 +1070,78 @@ private struct FeedProgressBar: View {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Enables the NATIVE interactive pop gesture (swipe from the left
+/// edge) in the Player, alongside the vertical paging ScrollView.
+///
+/// The problem: the paging ScrollView claims the touch, so the
+/// navigation controller's edge pan (interactive pop) never fires —
+/// the Player had to use a custom DragGesture instead (v37/v39).
+/// The fix (UIKit, the standard pattern for ScrollView + pop):
+/// make the scroll view's pan gesture wait — it only recognizes if
+/// the edge pan fails. A rightward pan starting at the left edge
+/// then pops with the native interactive transition (follows the
+/// finger, cancels mid-swipe); a vertical pan fails the edge pan
+/// immediately, so the feed still pages normally. The pop gesture
+/// is also forced on: it can be disabled while the nav bar is
+/// hidden (the Player hides it for fullscreen).
+///
+/// Wiring is done from the helper UIView's responder chain (finds
+/// the hosting view controller → its navigation controller) and
+/// scoped to that view controller's view, so other tabs' scroll
+/// views are untouched. Applied on every update (and deferred a
+/// run loop, so the ScrollView exists by then) because the scroll
+/// view can be recreated on state changes.
+struct NativePopGestureHelper: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isHidden = true
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // Defer a run loop so the view is in the hierarchy and the
+        // paging ScrollView exists before we search for it.
+        DispatchQueue.main.async {
+            Self.enableNativePop(from: uiView)
+        }
+    }
+
+    private static func enableNativePop(from helper: UIView) {
+        // Owning view controller via the responder chain.
+        var responder: UIResponder? = helper
+        var hostVC: UIViewController?
+        while let current = responder {
+            if let vc = current as? UIViewController {
+                hostVC = vc
+                break
+            }
+            responder = current.next
+        }
+        guard let hostVC,
+              let nav = hostVC.navigationController,
+              let pop = nav.interactivePopGestureRecognizer else { return }
+        // Force the pop gesture on (hidden nav bar can disable it).
+        pop.isEnabled = true
+        // Every scroll view in this Player's view waits for the pop
+        // gesture: the paging feed is vertical, the pop is a
+        // horizontal edge pan, so they do not really conflict — the
+        // scroll view just has to let the edge pan go first.
+        for scrollView in scrollViews(in: hostVC.view) {
+            scrollView.panGestureRecognizer.require(toFail: pop)
+        }
+    }
+
+    private static func scrollViews(in view: UIView) -> [UIScrollView] {
+        var found: [UIScrollView] = []
+        for subview in view.subviews {
+            if let scrollView = subview as? UIScrollView {
+                found.append(scrollView)
+            }
+            found.append(contentsOf: scrollViews(in: subview))
+        }
+        return found
     }
 }
