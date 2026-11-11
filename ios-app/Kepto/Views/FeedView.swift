@@ -1074,62 +1074,82 @@ private struct FeedProgressBar: View {
 }
 
 /// Enables the NATIVE interactive pop gesture (swipe from the left
-/// edge) in the Player, alongside the vertical paging ScrollView.
+/// edge) in the Player and the album details, alongside their
+/// ScrollViews. No custom DragGesture is used anywhere — the back
+/// swipe is the system's own interactive pop.
 ///
-/// The problem: the paging ScrollView claims the touch, so the
-/// navigation controller's edge pan (interactive pop) never fires —
-/// the Player had to use a custom DragGesture instead (v37/v39).
-/// The fix (UIKit, the standard pattern for ScrollView + pop):
-/// make the scroll view's pan gesture wait — it only recognizes if
-/// the edge pan fails. A rightward pan starting at the left edge
-/// then pops with the native interactive transition (follows the
-/// finger, cancels mid-swipe); a vertical pan fails the edge pan
-/// immediately, so the feed still pages normally. The pop gesture
-/// is also forced on: it can be disabled while the nav bar is
-/// hidden (the Player hides it for fullscreen).
+/// Two things block the native pop, and this fixes both:
+/// 1. The ScrollView claims the touch, so the navigation
+///    controller's edge pan never fires. Fix (UIKit, the standard
+///    pattern for ScrollView + pop): make the scroll view's pan
+///    gesture wait — it only recognizes if the edge pan fails.
+///    A rightward pan from the left edge then pops natively; a
+///    vertical pan fails the edge pan immediately, so the feed
+///    still pages (Player) and the grid still scrolls (album).
+///    This also makes the album pop SMOOTHER: the grid's pan no
+///    longer competes with the edge pan, so the pop starts at
+///    once instead of hesitating while the system decides.
+/// 2. The pop gesture's delegate can veto the pop when the nav
+///    bar is hidden (the Player hides it for fullscreen). Fix: a
+///    small delegate that allows the pop whenever there is a view
+///    to pop to (viewControllers.count > 1). It does not touch the
+///    interactive transition itself, only whether the gesture may
+///    begin — so the animation stays the system's.
 ///
-/// Wiring is done from the helper UIView's responder chain (finds
-/// the hosting view controller → its navigation controller) and
-/// scoped to that view controller's view, so other tabs' scroll
-/// views are untouched. Applied on every update (and deferred a
-/// run loop, so the ScrollView exists by then) because the scroll
-/// view can be recreated on state changes.
-struct NativePopGestureHelper: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.isHidden = true
-        return view
+/// This is a UIViewControllerRepresentable so the wiring runs in
+/// `viewDidAppear` — after layout, when the ScrollView definitely
+/// exists. The v45 plain-UIView version wired up in `updateUIView`,
+/// which could run before the ScrollView was created, so the pop
+/// never got enabled (that is why the Player gesture did not work
+/// in v45). It retries once shortly after, in case the ScrollView
+/// is created late (e.g. items loaded async). Wiring is scoped to
+/// the hosting view controller's view, so other tabs' scroll views
+/// are untouched.
+struct NativePopGestureHelper: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        NativePopGestureViewController()
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        // Defer a run loop so the view is in the hierarchy and the
-        // paging ScrollView exists before we search for it.
-        DispatchQueue.main.async {
-            Self.enableNativePop(from: uiView)
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+}
+
+/// A hidden helper view controller whose only job is to wire the
+/// native pop gesture. Its view is empty and invisible.
+private final class NativePopGestureViewController: UIViewController {
+    /// Retained: UIGestureRecognizer.delegate is weak, so the
+    /// delegate object must be held or it deallocates at once.
+    private var popDelegate: PopGestureDelegate?
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        wireUp()
+        // Retry once shortly after, in case the ScrollView was
+        // created after the first pass (e.g. items loaded async).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.wireUp()
         }
     }
 
-    private static func enableNativePop(from helper: UIView) {
-        // Owning view controller via the responder chain.
-        var responder: UIResponder? = helper
-        var hostVC: UIViewController?
-        while let current = responder {
-            if let vc = current as? UIViewController {
-                hostVC = vc
-                break
-            }
-            responder = current.next
-        }
-        guard let hostVC,
-              let nav = hostVC.navigationController,
+    private func wireUp() {
+        guard let nav = navigationController,
               let pop = nav.interactivePopGestureRecognizer else { return }
-        // Force the pop gesture on (hidden nav bar can disable it).
+        // Force the pop gesture on (a hidden nav bar can disable it).
         pop.isEnabled = true
-        // Every scroll view in this Player's view waits for the pop
-        // gesture: the paging feed is vertical, the pop is a
-        // horizontal edge pan, so they do not really conflict — the
-        // scroll view just has to let the edge pan go first.
-        for scrollView in scrollViews(in: hostVC.view) {
+        // Install (once) a delegate that allows the pop whenever
+        // there is a view to pop to, overriding any veto from the
+        // hidden nav bar. The transition animation itself is
+        // untouched — only whether the gesture may begin.
+        if popDelegate == nil {
+            let delegate = PopGestureDelegate()
+            delegate.navigationController = nav
+            pop.delegate = delegate
+            popDelegate = delegate
+        }
+        // The hosting (SwiftUI) view controller's view holds the
+        // ScrollView — the paging feed (Player) or the grid
+        // (album). Make its pan wait for the pop gesture.
+        guard let hostView = parent?.view else { return }
+        for scrollView in Self.scrollViews(in: hostView) {
             scrollView.panGestureRecognizer.require(toFail: pop)
         }
     }
@@ -1143,5 +1163,22 @@ struct NativePopGestureHelper: UIViewRepresentable {
             found.append(contentsOf: scrollViews(in: subview))
         }
         return found
+    }
+}
+
+/// Delegate for the navigation controller's interactive pop gesture.
+/// Allows the pop whenever there is a view to pop to, and lets the
+/// scroll view's pan coexist (require(toFail:) orders them, so the
+/// edge pan wins when it starts at the edge).
+private final class PopGestureDelegate: NSObject, UIGestureRecognizerDelegate {
+    weak var navigationController: UINavigationController?
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let nav = navigationController else { return false }
+        return nav.viewControllers.count > 1
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        return true
     }
 }

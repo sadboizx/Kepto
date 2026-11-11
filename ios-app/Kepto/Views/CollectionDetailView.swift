@@ -85,6 +85,10 @@ struct CollectionDetailView: View {
                 }
             }
         }
+        // Native pop gesture: make this grid's ScrollView defer to
+        // the edge pan, so the swipe-back starts at once instead of
+        // hesitating while the system decides (smoother pop).
+        .background(NativePopGestureHelper())
         .navigationTitle(collection.displayName)
         .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
@@ -440,6 +444,10 @@ struct MyCollectionDetailView: View {
                 .padding(.vertical, 12)
             }
         }
+        // Native pop gesture: make this grid's ScrollView defer to
+        // the edge pan, so the swipe-back starts at once instead of
+        // hesitating while the system decides (smoother pop).
+        .background(NativePopGestureHelper())
         .navigationTitle(collection.name)
         .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
@@ -1193,6 +1201,10 @@ struct AlbumItemsView: View {
                 .padding(.vertical, 12)
             }
         }
+        // Native pop gesture: make this grid's ScrollView defer to
+        // the edge pan, so the swipe-back starts at once instead of
+        // hesitating while the system decides (smoother pop).
+        .background(NativePopGestureHelper())
         .navigationTitle(kind.title)
         .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
