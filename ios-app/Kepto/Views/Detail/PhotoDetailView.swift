@@ -97,17 +97,6 @@ struct PhotoDetailView: View {
     @State private var dragOffset: CGSize = .zero
     @State private var dragScale: CGFloat = 1
     @State private var dismissing = false
-    /// Release-start snapshot for the mask (round-8): the media's
-    /// scale and rendered rect at the moment a dismissing release
-    /// begins, plus the target scale. `maskSize` lerps from this
-    /// rect to the thumbnail on the release progress — starting
-    /// from the release rect (not the page) is what makes the
-    /// visible rect one smooth function. Set (unanimated) in
-    /// `dismissToThumbnail` before the animation starts; only
-    /// read while `dismissing` is true.
-    @State private var dismissStartScale: CGFloat = 1
-    @State private var dismissTargetScale: CGFloat = 1
-    @State private var dismissStartRect: CGSize = .zero
     /// The global frame of the thumbnail the viewer opened from (nil
     /// when opened from Search / For You, or when the cell scrolled
     /// away): on a dismissing release the media shrinks onto it.
@@ -434,6 +423,18 @@ private struct PhotoDetailPage: View {
     @Binding var dragOffset: CGSize
     @Binding var dragScale: CGFloat
     @Binding var dismissing: Bool
+    /// Release-start snapshot for the mask (round-8): the media's
+    /// scale and rendered rect at the moment a dismissing release
+    /// begins, plus the target scale. `maskSize` lerps from this
+    /// rect to the thumbnail on the release progress — starting
+    /// from the release rect (not the page) is what makes the
+    /// visible rect one smooth function. Set (unanimated) in
+    /// `dismissToThumbnail` before the animation starts; only
+    /// read while `dismissing` is true. Lives on the page (not the
+    /// viewer): both the snapshot and the mask run here.
+    @State private var dismissStartScale: CGFloat = 1
+    @State private var dismissTargetScale: CGFloat = 1
+    @State private var dismissStartRect: CGSize = .zero
     /// Background + chrome opacity for this page, from the viewer's
     /// drag progress (1 = opaque at rest, fading as the media is
     /// dragged down, 0 once the release-dismiss starts).
