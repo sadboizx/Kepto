@@ -1782,15 +1782,17 @@ struct ImportAlbumPickerView: View {
                 }
             }
             .alert("New Album", isPresented: $showingNewAlbum) {
-                TextField("Album name", text: $newAlbumName)
+                TextField("Title", text: $newAlbumName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 Button("Cancel", role: .cancel) { newAlbumName = "" }
-                Button("Create") {
+                Button("Save") {
                     let name = newAlbumName
                     newAlbumName = ""
                     Task { await viewModel.createImportAlbum(name: name) }
                 }
+                // Photos greys Save out until a name is typed.
+                .disabled(newAlbumName.trimmingCharacters(in: .whitespaces).isEmpty)
             } message: {
                 Text("Enter a name for this album.")
             }

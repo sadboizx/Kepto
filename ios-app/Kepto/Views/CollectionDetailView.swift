@@ -997,10 +997,10 @@ struct AlbumsView: View {
                 await viewModel.fetchStats()
             }
             .alert("New Album", isPresented: $showingNewCollection) {
-                TextField("Tên collection", text: $newCollectionName)
+                TextField("Title", text: $newCollectionName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Button("Tạo") {
+                Button("Save") {
                     let name = newCollectionName
                     newCollectionName = ""
                     Task {
@@ -1009,7 +1009,11 @@ struct AlbumsView: View {
                         }
                     }
                 }
-                Button("Hủy", role: .cancel) { newCollectionName = "" }
+                // Photos greys Save out until a name is typed.
+                .disabled(newCollectionName.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Cancel", role: .cancel) { newCollectionName = "" }
+            } message: {
+                Text("Enter a name for this album.")
             }
             .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
                 Button("OK") { saveNotice = nil }
@@ -1135,8 +1139,15 @@ struct AlbumsView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showingNewCollection = true
+                    // Photos behavior: tapping "+" opens a menu with
+                    // "New Album" (not the name alert directly) —
+                    // the same menu the See All Edit "+" shows.
+                    Menu {
+                        Button {
+                            showingNewCollection = true
+                        } label: {
+                            Label("New Album", systemImage: "square.stack")
+                        }
                     } label: {
                         // Photos uses a thin "+" here — regular
                         // weight, not semibold (semibold looks too
