@@ -206,7 +206,7 @@ struct AlbumsView: View {
         .onChange(of: popToRootRequest) { _, _ in
             selectedSource = nil
             seeAllSection = nil
-            showingRecentlyDeleted = nil
+            showingRecentlyDeleted = false
             isEditingSeeAll = false
         }
         .tint(.primary)

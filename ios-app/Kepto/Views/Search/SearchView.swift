@@ -150,7 +150,7 @@ struct SearchView: View {
                                         query = person.name
                                     } label: {
                                         VStack(spacing: 6) {
-                                            AssetThumbnail(source: person.cover, cornerRadius: 34)
+                                            AssetThumbnail(source: person.cover, cornerRadius: 34, showFavoriteMark: false)
                                                 .frame(width: 68, height: 68)
                                                 .clipShape(Circle())
                                             Text(person.name).font(.caption).lineLimit(1)

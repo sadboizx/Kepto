@@ -429,7 +429,7 @@ struct LibraryView: View {
     private func monthCard(_ month: MonthSection) -> some View {
         ZStack(alignment: .bottomLeading) {
             if let cover = month.coverID, let source = source(for: cover) {
-                AssetThumbnail(source: source, cornerRadius: 12)
+                AssetThumbnail(source: source, cornerRadius: 12, showFavoriteMark: false)
             } else {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color(uiColor: .secondarySystemFill))
@@ -901,8 +901,8 @@ struct LibraryView: View {
 /// filling the square (centre-cropped, never letterboxed).
 /// Badge bottom-right: the video duration ("0:25", Photos style),
 /// or the view count when the duration is unknown. A spinner while
-/// pending, a red dot when ingest failed, a red heart at the
-/// top-right for a favorited video.
+/// pending, a red dot when ingest failed, a white heart at the
+/// bottom-left for a favorited item.
 ///
 /// Tap is on this cell and the long-press menu is the native
 /// `.contextMenu`, attached by the parent (no Button wrapper in the
@@ -951,10 +951,10 @@ struct PhotosGridCell: View {
             if item.isFavorite {
                 Image(systemName: "heart.fill")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
                     .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }
             if isSelectionMode {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")

@@ -82,6 +82,11 @@ struct AssetThumbnail: View {
     /// Search results grid hides it (round 3 — no time on Search
     /// thumbnails); Library / For You keep it.
     var showBadge = true
+    /// Show the white favorite heart at the bottom-left. Covers
+    /// (month card, person avatar) hide it — the heart belongs on
+    /// item thumbnails, and the month card's title sits at the
+    /// bottom-left where the heart would land.
+    var showFavoriteMark = true
 
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var image: UIImage?
@@ -98,7 +103,7 @@ struct AssetThumbnail: View {
             }
             .overlay { pendingOverlay }
             .overlay(alignment: .bottomLeading) { if showBadge { badgeRow } }
-            .overlay(alignment: .topTrailing) { favoriteMark }
+            .overlay(alignment: .bottomLeading) { favoriteMark }
             .overlay(alignment: .topTrailing) { selectionMark }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -141,10 +146,10 @@ struct AssetThumbnail: View {
 
     @ViewBuilder
     private var favoriteMark: some View {
-        if source.isFavorite && !selecting {
+        if showFavoriteMark && source.isFavorite && !selecting {
             Image(systemName: "heart.fill")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.red)
+                .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
                 .padding(6)
         }
