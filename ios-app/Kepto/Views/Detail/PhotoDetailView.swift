@@ -134,20 +134,7 @@ struct PhotoDetailView: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(items) { item in
-                        PhotoDetailPage(
-                            item: item,
-                            isCurrent: item.id == currentID,
-                            items: $items,
-                            chromeVisible: $chrome,
-                            zoomed: $zoomed,
-                            isScrubbing: $isScrubbing,
-                            onDeleteRequest: { video in
-                                itemPendingDelete = video
-                                showDelete = true
-                            }
-                        )
-                        .id(item.id)
-                        .containerRelativeFrame(.horizontal)
+                        pageView(for: item)
                     }
                 }
                 .scrollTargetLayout()
@@ -164,6 +151,27 @@ struct PhotoDetailView: View {
             .task { fixInitialCurrentItem() }
             .task { await scrollToStartItem(proxy: proxy) }
         }
+    }
+
+    /// One page of the pager: the PhotoDetailPage for one item with
+    /// all its bindings. A separate function so the ScrollViewReader
+    /// closure in `pager` stays small enough for the compiler to
+    /// type-check in reasonable time.
+    private func pageView(for item: Item) -> some View {
+        PhotoDetailPage(
+            item: item,
+            isCurrent: item.id == currentID,
+            items: $items,
+            chromeVisible: $chrome,
+            zoomed: $zoomed,
+            isScrubbing: $isScrubbing,
+            onDeleteRequest: { video in
+                itemPendingDelete = video
+                showDelete = true
+            }
+        )
+        .id(item.id)
+        .containerRelativeFrame(.horizontal)
     }
 
     /// Top bar (Photos): back chevron + title on the left, the

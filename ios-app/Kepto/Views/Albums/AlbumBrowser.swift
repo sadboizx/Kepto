@@ -105,6 +105,200 @@ struct PhotoCollectionScreen: View {
     }
 
     var body: some View {
+        collectionWithNavigation
+            .confirmationDialog(L10n.deleteSavedItemsTitle(1),
+                                isPresented: $showingDeleteConfirmation,
+                                titleVisibility: .visible) {
+                Button(L10n.delete, role: .destructive) {
+                    Task { await deleteGridMenuItem() }
+                }
+                Button(L10n.cancel, role: .cancel) { itemPendingDelete = nil }
+            } message: {
+                Text(itemPendingDelete?.displayTitle ?? "")
+            }
+            .confirmationDialog(L10n.deleteSavedItemsTitle(selectedIDs.count),
+                                isPresented: $showingBulkDeleteConfirmation,
+                                titleVisibility: .visible) {
+                Button(L10n.delete, role: .destructive) {
+                    Task { await deleteSelected() }
+                }
+                Button(L10n.cancel, role: .cancel) {}
+            } message: {
+                Text(L10n.deleteFromCloudMessage)
+            }
+    }
+
+    /// Navigation + sheets over the grid: the feed destination, the
+    /// slideshow cover, and the four sheets (Add to Album picker,
+    /// single share, bulk share, Add to Album sheet). A separate
+    /// property so the compiler type-checks it apart from `body`.
+    private var collectionWithNavigation: some View {
+        collectionWithAlerts
+            .navigationDestination(item: $feedStartItem) { startItem in
+                PhotoDetailView(
+                    items: $items,
+                    startItemId: startItem.id,
+                    onNearEnd: { await loadMore() },
+                    title: title
+                )
+            }
+            .fullScreenCover(isPresented: $showingSlideshow) {
+                SlideshowView(items: slideshowItems)
+            }
+            .sheet(item: $itemForAlbumPicker) { pickerItem in
+                AddToCollectionPickerView(
+                    item: pickerItem,
+                    onAddedToCollection: { _, _ in },
+                    onCancel: { itemForAlbumPicker = nil }
+                )
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Color.black)
+            }
+            .sheet(item: $shareFile) { file in
+                ShareSheet(activityItems: [file.url])
+            }
+            .sheet(isPresented: $showingBulkShare) {
+                ShareSheet(activityItems: shareURLs)
+            }
+            .sheet(isPresented: $showingAddToAlbum) {
+                AddToAlbumSheet(ids: Array(selectedIDs))
+            }
+    }
+
+    /// Alerts + the delete-album dialog over the grid. Kept apart
+    /// from `body` for the same type-checking reason.
+    private var collectionWithAlerts: some View {
+        collectionGridWithToolbar
+            .alert("Kepto", isPresented: .constant(errorMessage != nil)) {
+                Button("OK") { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "")
+            }
+            .alert("Kepto", isPresented: .constant(notice != nil)) {
+                Button("OK") { notice = nil }
+            } message: {
+                Text(notice ?? "")
+            }
+            .alert(L10n.removeFailed, isPresented: .constant(removeError != nil)) {
+                Button("OK") { removeError = nil }
+            } message: {
+                Text(removeError ?? "")
+            }
+            .alert(L10n.renameAlbum, isPresented: $showingRename) {
+                TextField(L10n.albumName, text: $renameText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button(L10n.rename) {
+                    Task { await renameCollection() }
+                }
+                Button(L10n.cancel, role: .cancel) {}
+            } message: {
+                Text(L10n.renameAlbumMessage)
+            }
+            .confirmationDialog(L10n.deleteAlbumTitle(title),
+                                isPresented: $showingDeleteCollection,
+                                titleVisibility: .visible) {
+                Button(L10n.deleteAlbumAndVideos, role: .destructive) {
+                    Task { await deleteCollection(deleteItems: true) }
+                }
+                Button(L10n.deleteAlbumOnly, role: .destructive) {
+                    Task { await deleteCollection(deleteItems: false) }
+                }
+                Button(L10n.cancel, role: .cancel) {}
+            } message: {
+                if case .myCollection(let collection) = source {
+                    Text(L10n.deleteAlbumMessage(collection.count))
+                }
+            }
+    }
+
+    /// The grid with its toolbar and chrome modifiers (nav title,
+    /// Settings sheet, bottom select bar, refresh, loading/empty
+    /// overlay). The toolbar items stay inlined here at the call
+    /// site — never a `toolbarContent` property (Photos lesson:
+    /// the compiler cannot tell it from the `.toolbar` modifier).
+    private var collectionGridWithToolbar: some View {
+        collectionGrid
+            // Native pop gesture: make this grid's ScrollView defer to
+            // the edge pan, so the swipe-back starts at once instead of
+            // hesitating while the system decides (smoother pop).
+            .background(NativePopGestureHelper())
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            // Transparent status bar / nav bar (see AlbumsView).
+            .toolbarBackground(.hidden, for: .navigationBar)
+            // The system back button ("< Albums") is white via
+            // .tint(.primary) on the AlbumsView NavigationStack (the tint
+            // comes from the stack, not the pushed view). It stays the
+            // system button so the swipe-back gesture works.
+            .toolbar {
+                if isSelecting {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(L10n.cancel) { exitSelectionMode() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(selectedIDs.count == items.count ? L10n.deselectAll : L10n.selectAll) {
+                            if selectedIDs.count == items.count {
+                                selectedIDs.removeAll()
+                            } else {
+                                selectedIDs = Set(items.map(\.id))
+                            }
+                        }
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        HStack(spacing: 8) {
+                            // Photos style: "Select" is a dark pill with
+                            // white footnote text, like the Library tab.
+                            Button {
+                                toggleSelecting()
+                            } label: {
+                                Text(L10n.select)
+                                    .font(.footnote)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            trailingMenu
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+            }
+            .safeAreaInset(edge: .bottom) {
+                if isSelecting {
+                    selectBar
+                }
+            }
+            .refreshable {
+                await fetch(reset: true)
+            }
+            .task {
+                await fetch(reset: true)
+            }
+            .overlay {
+                if isLoading && items.isEmpty {
+                    ProgressView(L10n.loading)
+                } else if items.isEmpty && !isLoading {
+                    ContentUnavailableView {
+                        Label(emptyTitle, systemImage: emptySymbol)
+                    } description: {
+                        Text(emptyDescription)
+                    }
+                }
+            }
+    }
+
+    /// The grid itself: square cells (Photos style) + the load-more
+    /// footer. Extracted so the compiler type-checks the ForEach
+    /// (cells + context menu + onAppear) apart from the modifiers.
+    private var collectionGrid: some View {
         ScrollView {
             VStack(spacing: 0) {
                 LazyVGrid(columns: columns, spacing: 2) {
@@ -157,170 +351,6 @@ struct PhotoCollectionScreen: View {
                     .padding(.vertical, 12)
                 }
             }
-        }
-        // Native pop gesture: make this grid's ScrollView defer to
-        // the edge pan, so the swipe-back starts at once instead of
-        // hesitating while the system decides (smoother pop).
-        .background(NativePopGestureHelper())
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        // Transparent status bar / nav bar (see AlbumsView).
-        .toolbarBackground(.hidden, for: .navigationBar)
-        // The system back button ("< Albums") is white via
-        // .tint(.primary) on the AlbumsView NavigationStack (the tint
-        // comes from the stack, not the pushed view). It stays the
-        // system button so the swipe-back gesture works.
-        .toolbar {
-            if isSelecting {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(L10n.cancel) { exitSelection() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(selectedIDs.count == items.count ? L10n.deselectAll : L10n.selectAll) {
-                        if selectedIDs.count == items.count {
-                            selectedIDs.removeAll()
-                        } else {
-                            selectedIDs = Set(items.map(\.id))
-                        }
-                    }
-                }
-            } else {
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 8) {
-                        // Photos style: "Select" is a dark pill with
-                        // white footnote text, like the Library tab.
-                        Button {
-                            toggleSelecting()
-                        } label: {
-                            Text(L10n.select)
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(.ultraThinMaterial, in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        trailingMenu
-                    }
-                }
-            }
-        }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
-        }
-        .safeAreaInset(edge: .bottom) {
-            if isSelecting {
-                selectBar
-            }
-        }
-        .refreshable {
-            await fetch(reset: true)
-        }
-        .task {
-            await fetch(reset: true)
-        }
-        .overlay {
-            if isLoading && items.isEmpty {
-                ProgressView(L10n.loading)
-            } else if items.isEmpty && !isLoading {
-                ContentUnavailableView {
-                    Label(emptyTitle, systemImage: emptySymbol)
-                } description: {
-                    Text(emptyDescription)
-                }
-            }
-        }
-        .alert("Kepto", isPresented: .constant(errorMessage != nil)) {
-            Button("OK") { errorMessage = nil }
-        } message: {
-            Text(errorMessage ?? "")
-        }
-        .alert("Kepto", isPresented: .constant(notice != nil)) {
-            Button("OK") { notice = nil }
-        } message: {
-            Text(notice ?? "")
-        }
-        .alert(L10n.removeFailed, isPresented: .constant(removeError != nil)) {
-            Button("OK") { removeError = nil }
-        } message: {
-            Text(removeError ?? "")
-        }
-        .alert(L10n.renameAlbum, isPresented: $showingRename) {
-            TextField(L10n.albumName, text: $renameText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            Button(L10n.rename) {
-                Task { await renameCollection() }
-            }
-            Button(L10n.cancel, role: .cancel) {}
-        } message: {
-            Text(L10n.renameAlbumMessage)
-        }
-        .confirmationDialog(L10n.deleteAlbumTitle(title),
-                            isPresented: $showingDeleteCollection,
-                            titleVisibility: .visible) {
-            Button(L10n.deleteAlbumAndVideos, role: .destructive) {
-                Task { await deleteCollection(deleteItems: true) }
-            }
-            Button(L10n.deleteAlbumOnly, role: .destructive) {
-                Task { await deleteCollection(deleteItems: false) }
-            }
-            Button(L10n.cancel, role: .cancel) {}
-        } message: {
-            if case .myCollection(let collection) = source {
-                Text(L10n.deleteAlbumMessage(collection.count))
-            }
-        }
-        .navigationDestination(item: $feedStartItem) { startItem in
-            PhotoDetailView(
-                items: $items,
-                startItemId: startItem.id,
-                onNearEnd: { await loadMore() },
-                title: title
-            )
-        }
-        .fullScreenCover(isPresented: $showingSlideshow) {
-            SlideshowView(items: slideshowItems)
-        }
-        .sheet(item: $itemForAlbumPicker) { pickerItem in
-            AddToCollectionPickerView(
-                item: pickerItem,
-                onAddedToCollection: { _, _ in },
-                onCancel: { itemForAlbumPicker = nil }
-            )
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.black)
-        }
-        .sheet(item: $shareFile) { file in
-            ShareSheet(activityItems: [file.url])
-        }
-        .sheet(isPresented: $showingBulkShare) {
-            ShareSheet(activityItems: shareURLs)
-        }
-        .sheet(isPresented: $showingAddToAlbum) {
-            AddToAlbumSheet(ids: Array(selectedIDs))
-        }
-        .confirmationDialog(L10n.deleteSavedItemsTitle(1),
-                            isPresented: $showingDeleteConfirmation,
-                            titleVisibility: .visible) {
-            Button(L10n.delete, role: .destructive) {
-                Task { await deleteGridMenuItem() }
-            }
-            Button(L10n.cancel, role: .cancel) { itemPendingDelete = nil }
-        } message: {
-            Text(itemPendingDelete?.displayTitle ?? "")
-        }
-        .confirmationDialog(L10n.deleteSavedItemsTitle(selectedIDs.count),
-                            isPresented: $showingBulkDeleteConfirmation,
-                            titleVisibility: .visible) {
-            Button(L10n.delete, role: .destructive) {
-                Task { await deleteSelected() }
-            }
-            Button(L10n.cancel, role: .cancel) {}
-        } message: {
-            Text(L10n.deleteFromCloudMessage)
         }
     }
 
