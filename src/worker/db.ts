@@ -555,6 +555,53 @@ export async function deleteMyCollection(db: D1Database, id: string): Promise<vo
     .run();
 }
 
+/** Rename a user collection. Returns the updated row, or null when missing. */
+export async function renameMyCollection(
+  db: D1Database,
+  id: string,
+  name: string,
+): Promise<MyCollection | null> {
+  await db
+    .prepare(`UPDATE my_collections SET name = ?2 WHERE id = ?1`)
+    .bind(id, name)
+    .run();
+  return getMyCollection(db, id);
+}
+
+/**
+ * The items in a collection that live ONLY in this collection (not in
+ * any other user collection), with their R2 keys. Used by "Delete
+ * Album & Videos": those videos are permanently deleted (R2 + D1).
+ * A video that is also in another album is kept — it stays saved in
+ * that album (it is only removed from this one by deleteMyCollection).
+ */
+export async function listMyCollectionExclusiveItems(
+  db: D1Database,
+  collectionId: string,
+): Promise<
+  { id: string; r2_key: string | null; thumb_key: string | null; preview_key: string | null }[]
+> {
+  const { results } = await db
+    .prepare(
+      `SELECT items.id, items.r2_key, items.thumb_key, items.preview_key
+       FROM my_collection_items mci
+       JOIN items ON items.id = mci.item_id
+       WHERE mci.collection_id = ?1
+         AND NOT EXISTS (
+           SELECT 1 FROM my_collection_items m2
+           WHERE m2.item_id = mci.item_id AND m2.collection_id != ?1
+         )`,
+    )
+    .bind(collectionId, collectionId)
+    .all<{
+      id: string;
+      r2_key: string | null;
+      thumb_key: string | null;
+      preview_key: string | null;
+    }>();
+  return results ?? [];
+}
+
 export interface MyCollectionItemRow extends Item {
   added_at: string;
 }

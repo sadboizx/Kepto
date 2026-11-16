@@ -385,6 +385,13 @@ struct MyCollectionDetailView: View {
     @State private var itemPendingDelete: Item?
     @State private var showingDeleteConfirmation = false
     @State private var showingDeleteCollection = false
+    /// Rename flow: the alert's text field + whether it is open.
+    @State private var showingRename = false
+    @State private var renameText = ""
+    /// The name after a rename (nil = still the original). The view
+    /// receives `collection` as an immutable snapshot, so the
+    /// navigation title reads this to update in place after renaming.
+    @State private var renamedName: String?
     @State private var removeError: String?
     /// Multi-select mode for bulk delete (same pattern as the home
     /// grid and the per-creator collection).
@@ -448,7 +455,7 @@ struct MyCollectionDetailView: View {
         // the edge pan, so the swipe-back starts at once instead of
         // hesitating while the system decides (smoother pop).
         .background(NativePopGestureHelper())
-        .navigationTitle(collection.name)
+        .navigationTitle(renamedName ?? collection.name)
         .navigationBarTitleDisplayMode(.inline)
         // Transparent status bar / nav bar (see AlbumsView).
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -474,15 +481,22 @@ struct MyCollectionDetailView: View {
                     }
                     .buttonStyle(.plain)
                     // The trash button is gone — deleting the whole
-                    // collection lives in the "…" menu instead, so it
+                    // album lives in the "…" menu instead, so it
                     // cannot be hit by accident next to Select. Hidden
                     // while selecting videos, like the trash was.
+                    // Photos-style: Rename Album + Delete Album.
                     if !isSelecting {
                         Menu {
+                            Button {
+                                renameText = renamedName ?? collection.name
+                                showingRename = true
+                            } label: {
+                                Label("Rename Album", systemImage: "pencil")
+                            }
                             Button(role: .destructive) {
                                 showingDeleteCollection = true
                             } label: {
-                                Label("Delete collection", systemImage: "trash")
+                                Label("Delete Album", systemImage: "trash")
                             }
                         } label: {
                             // Photos style: a dark circle with a white
@@ -530,15 +544,29 @@ struct MyCollectionDetailView: View {
         } message: {
             Text(removeError ?? "")
         }
-        .confirmationDialog("Delete collection \"\(collection.name)\"?",
-                            isPresented: $showingDeleteCollection,
-                            titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                Task { await deleteCollection() }
+        .alert("Rename Album", isPresented: $showingRename) {
+            TextField("Album name", text: $renameText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Rename") {
+                Task { await renameCollection() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The videos in it stay saved in the library.")
+            Text("Enter a new name for this album.")
+        }
+        .confirmationDialog("Delete Album \"\(renamedName ?? collection.name)\"?",
+                            isPresented: $showingDeleteCollection,
+                            titleVisibility: .visible) {
+            Button("Delete Album & Videos", role: .destructive) {
+                Task { await deleteCollection(deleteItems: true) }
+            }
+            Button("Delete Album Only", role: .destructive) {
+                Task { await deleteCollection(deleteItems: false) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete Album & Videos permanently deletes the album and every video in it (\(collection.count) video\(collection.count == 1 ? "" : "s")). Delete Album Only removes just the album — the videos stay saved in the library.")
         }
         .navigationDestination(item: $feedStartItem) { startItem in
             FeedView(
@@ -745,12 +773,23 @@ struct MyCollectionDetailView: View {
         }
     }
 
-    private func deleteCollection() async {
+    private func deleteCollection(deleteItems: Bool) async {
         do {
-            try await viewModel.deleteMyCollection(id: collection.id)
+            try await viewModel.deleteMyCollection(id: collection.id, deleteItems: deleteItems)
             dismiss()
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Rename this album from the "…" menu's Rename Album. The title
+    /// updates in place (renamedName); the Albums tab picks up the new
+    /// name from the ViewModel's list.
+    private func renameCollection() async {
+        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if let updated = await viewModel.renameMyCollection(collection, name: name) {
+            renamedName = updated.name
         }
     }
 }

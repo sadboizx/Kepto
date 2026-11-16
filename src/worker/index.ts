@@ -89,12 +89,14 @@ import {
   insertItem,
   listCollections,
   listItems,
+  listMyCollectionExclusiveItems,
   listMyCollectionItems,
   listMyCollections,
   markFailed,
   markReady,
   normalizeSaveUrl,
   removeItemFromMyCollection,
+  renameMyCollection,
   resetForRetry,
   setFavorite,
   type IngestResult,
@@ -546,6 +548,24 @@ app.post("/api/my-collections", async (c) => {
   return c.json({ ok: true, collection }, 201);
 });
 
+/** Rename a user collection. PATCH /api/my-collections/:id { name } -> 200 { collection }. */
+app.patch("/api/my-collections/:id", async (c) => {
+  const collection = await getMyCollection(c.env.DB, c.req.param("id"));
+  if (!collection) return c.json({ ok: false, error: "Không tìm thấy collection." }, 404);
+  let body: unknown;
+  try {
+    body = await readJson(c);
+  } catch {
+    return c.json({ ok: false, error: "JSON không hợp lệ." }, 400);
+  }
+  const name = (body as { name?: unknown })?.name;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    return c.json({ ok: false, error: "Tên collection là bắt buộc." }, 422);
+  }
+  const updated = await renameMyCollection(c.env.DB, collection.id, name.trim().slice(0, 100));
+  return c.json({ ok: true, collection: updated });
+});
+
 /** Videos in a collection, newest-added first (keyset cursor, like /api/list). */
 app.get("/api/my-collections/:id/items", async (c) => {
   const collection = await getMyCollection(c.env.DB, c.req.param("id"));
@@ -603,12 +623,31 @@ app.delete("/api/my-collections/:id/items/:itemId", async (c) => {
   return c.json({ ok: true, removed: true });
 });
 
-/** Delete a collection and its memberships (the videos stay saved). */
+/**
+ * Delete a collection and its memberships. By default the videos stay
+ * saved in the library (Photos behavior). With ?delete_items=1, the
+ * videos that live ONLY in this album are permanently deleted too
+ * (R2 media + D1 rows); a video that is also in another album is
+ * kept — it stays saved in that album.
+ */
 app.delete("/api/my-collections/:id", async (c) => {
   const collection = await getMyCollection(c.env.DB, c.req.param("id"));
   if (!collection) return c.json({ ok: false, error: "Không tìm thấy collection." }, 404);
+  let deletedItems = 0;
+  if (c.req.query("delete_items") === "1") {
+    const rows = await listMyCollectionExclusiveItems(c.env.DB, collection.id);
+    const keys: string[] = [];
+    for (const row of rows) {
+      for (const k of [row.r2_key, row.thumb_key, row.preview_key]) {
+        if (k) keys.push(k);
+      }
+      await deleteItem(c.env.DB, row.id);
+    }
+    if (keys.length) await c.env.MEDIA.delete(keys);
+    deletedItems = rows.length;
+  }
   await deleteMyCollection(c.env.DB, collection.id);
-  return c.json({ ok: true, deleted: collection.id });
+  return c.json({ ok: true, deleted: collection.id, deleted_items: deletedItems });
 });
 
 app.get("/api/items/:id", async (c) => {

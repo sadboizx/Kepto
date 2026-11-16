@@ -341,10 +341,22 @@ final class KeptoAPI {
         try checkDeleteResponse(data, response)
     }
 
-    /// DELETE /api/my-collections/:id — delete the collection (the
-    /// videos in it stay saved in the library).
-    func deleteMyCollection(id: String) async throws {
-        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections/\(id)"), method: "DELETE"))
+    /// PATCH /api/my-collections/:id — rename a collection.
+    func renameMyCollection(id: String, name: String) async throws -> MyCollection {
+        let body = try JSONSerialization.data(withJSONObject: ["name": name])
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections/\(id)"), method: "PATCH", jsonBody: body))
+        let decoded = try handle(data, response, as: MyCollectionResponse.self)
+        return decoded.collection
+    }
+
+    /// DELETE /api/my-collections/:id — delete the collection. When
+    /// deleteItems is true, also deletes the videos that live only in
+    /// this album (R2 media + D1 rows); a video that is also in
+    /// another album stays saved.
+    func deleteMyCollection(id: String, deleteItems: Bool = false) async throws {
+        var queryItems: [URLQueryItem] = []
+        if deleteItems { queryItems.append(URLQueryItem(name: "delete_items", value: "1")) }
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/my-collections/\(id)", queryItems: queryItems), method: "DELETE"))
         try checkDeleteResponse(data, response)
     }
 

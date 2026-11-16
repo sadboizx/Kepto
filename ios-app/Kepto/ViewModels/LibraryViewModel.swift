@@ -191,12 +191,41 @@ final class LibraryViewModel: ObservableObject {
         try await api.removeItemFromMyCollection(collectionId: collectionId, itemId: item.id)
     }
 
-    /// Delete a user-created collection (its videos stay saved).
-    /// Throws so the caller can show the failure.
-    func deleteMyCollection(id: String) async throws {
+    /// Delete a user-created collection. When deleteItems is true, the
+    /// videos that live only in this album are deleted too (R2 + D1);
+    /// a video that is also in another album stays saved. Throws so
+    /// the caller can show the failure. After deleting videos, the
+    /// Library refreshes so they disappear at once.
+    func deleteMyCollection(id: String, deleteItems: Bool = false) async throws {
         guard let api else { throw KeptoAPIError.notConfigured }
-        try await api.deleteMyCollection(id: id)
+        try await api.deleteMyCollection(id: id, deleteItems: deleteItems)
         myCollections.removeAll { $0.id == id }
+        if deleteItems {
+            await fetch()
+            await fetchCollections()
+        }
+    }
+
+    /// Rename a user collection. Updates the local list so the Albums
+    /// tab shows the new name at once. Returns the updated collection,
+    /// or nil (and errorMessage) on failure.
+    func renameMyCollection(_ collection: MyCollection, name: String) async -> MyCollection? {
+        guard let api else {
+            errorMessage = KeptoAPIError.notConfigured.errorDescription
+            return nil
+        }
+        do {
+            let updated = try await api.renameMyCollection(id: collection.id, name: name)
+            if let index = myCollections.firstIndex(where: { $0.id == updated.id }) {
+                myCollections[index] = updated
+            }
+            return updated
+        } catch {
+            if error is CancellationError { return nil }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return nil
+        }
     }
 
     /// Download the item's media file and save it to the Photos
