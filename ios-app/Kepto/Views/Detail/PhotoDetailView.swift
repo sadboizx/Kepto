@@ -1470,21 +1470,21 @@ struct TabBarFadeHelper: UIViewControllerRepresentable {
     /// 0 = tab bar fully transparent, 1 = fully visible.
     var alpha: CGFloat
 
-    fileprivate func makeUIViewController(context: Context) -> TabBarFadeController {
+    func makeUIViewController(context: Context) -> TabBarFadeController {
         TabBarFadeController(alpha: alpha)
     }
 
-    fileprivate func updateUIViewController(_ uiViewController: TabBarFadeController, context: Context) {
+    func updateUIViewController(_ uiViewController: TabBarFadeController, context: Context) {
         uiViewController.alpha = alpha
         uiViewController.applyAlpha()
     }
 
-    fileprivate static func dismantleUIViewController(_ uiViewController: TabBarFadeController, coordinator: ()) {
+    static func dismantleUIViewController(_ uiViewController: TabBarFadeController, coordinator: ()) {
         uiViewController.restore()
     }
 }
 
-private final class TabBarFadeController: UIViewController {
+final class TabBarFadeController: UIViewController {
     var alpha: CGFloat
     /// The tab bar, cached weakly on first use (see above).
     private weak var tabBar: UITabBar?
