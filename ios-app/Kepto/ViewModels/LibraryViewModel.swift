@@ -792,7 +792,9 @@ final class LibraryViewModel: ObservableObject {
                 // Mark it before the refresh below, so the Library's
                 // onChange sees it as a fresh import (not a background
                 // arrival) and scrolls to it even from mid-list.
-                if let item { justImportedIDs.insert(item.id) }
+                // (item is non-optional here — uploadFile returns Item,
+                // not Item? — so no `if let`.)
+                justImportedIDs.insert(item.id)
                 await fetch()
                 await fetchCollections()
                 // The library just changed — refresh the full
