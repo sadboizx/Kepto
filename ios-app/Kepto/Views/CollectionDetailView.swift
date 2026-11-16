@@ -1032,22 +1032,25 @@ struct AlbumsView: View {
                 isPresented: $showingDeleteAlbumConfirmation,
                 titleVisibility: .visible
             ) {
+                // NOTE: `if case` / `else if`, NOT a `switch` — the
+                // actions closure is a @ViewBuilder, and a `switch`
+                // (especially one with a `break` for the .kind case)
+                // is a control-flow statement ViewBuilder cannot use.
                 if let card = albumPendingDelete {
-                    switch card {
-                    case .myCollection:
+                    if case .myCollection = card {
                         Button("Delete Album & Videos", role: .destructive) {
                             Task { await deleteAlbumCard(card, deleteItems: true) }
                         }
                         Button("Delete Album Only", role: .destructive) {
                             Task { await deleteAlbumCard(card, deleteItems: false) }
                         }
-                    case .creator:
+                    } else if case .creator = card {
                         Button("Delete Album & Videos", role: .destructive) {
                             Task { await deleteAlbumCard(card, deleteItems: true) }
                         }
-                    case .kind:
-                        break
                     }
+                    // .kind (Recents/Favorites): no delete buttons —
+                    // built-in albums are not deletable.
                 }
                 Button("Cancel", role: .cancel) { albumPendingDelete = nil }
             } message: {
