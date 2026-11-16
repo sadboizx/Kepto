@@ -13,15 +13,25 @@
 		BB1000000000000000000004 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000004 /* KeychainService.swift */; };
 		BB1000000000000000000005 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000005 /* LibraryViewModel.swift */; };
 		BB1000000000000000000006 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000006 /* LibraryView.swift */; };
-		BB1000000000000000000007 /* ItemDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000007 /* ItemDetailView.swift */; };
 		BB1000000000000000000008 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000008 /* SettingsView.swift */; };
-		BB1000000000000000000009 /* SaveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000009 /* SaveView.swift */; };
 		BB1000000000000000000010 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000010 /* Assets.xcassets */; };
 		BB2000000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000001 /* ShareViewController.swift */; };
 		BB2000000000000000000002 /* KeptoShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000003 /* KeptoShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		BB2000000000000000000003 /* CollectionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000006 /* CollectionDetailView.swift */; };
 		BB2000000000000000000004 /* ScrubPreviewPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000005 /* ScrubPreviewPlayer.swift */; };
-		BB2000000000000000000005 /* FeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000007 /* FeedView.swift */; };
+		BB3000000000000000000001 /* AssetThumbnail.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3000000000000000000001 /* AssetThumbnail.swift */; };
+		BB3000000000000000000002 /* PhotoGridComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3000000000000000000002 /* PhotoGridComponents.swift */; };
+		BB3000000000000000000003 /* EmptyStates.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3000000000000000000003 /* EmptyStates.swift */; };
+		BB3000000000000000000004 /* ThumbnailPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3000000000000000000004 /* ThumbnailPipeline.swift */; };
+		BB3100000000000000000001 /* LibraryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3100000000000000000001 /* LibraryModels.swift */; };
+		BB3100000000000000000002 /* Haptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3100000000000000000002 /* Haptics.swift */; };
+		BB3200000000000000000001 /* AlbumsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3200000000000000000001 /* AlbumsView.swift */; };
+		BB3200000000000000000002 /* AlbumBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3200000000000000000002 /* AlbumBrowser.swift */; };
+		BB3300000000000000000001 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3300000000000000000001 /* SearchView.swift */; };
+		BB3400000000000000000001 /* ForYouView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3400000000000000000001 /* ForYouView.swift */; };
+		BB3500000000000000000001 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3500000000000000000001 /* PhotoDetailView.swift */; };
+		BB3500000000000000000002 /* PhotoInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3500000000000000000002 /* PhotoInfoView.swift */; };
+		BB3500000000000000000003 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3500000000000000000003 /* L10n.swift */; };
+		BB3600000000000000000001 /* SlideshowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3600000000000000000001 /* SlideshowView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,9 +41,7 @@
 		AA1000000000000000000004 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		AA1000000000000000000005 /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
 		AA1000000000000000000006 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
-		AA1000000000000000000007 /* ItemDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemDetailView.swift; sourceTree = "<group>"; };
 		AA1000000000000000000008 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		AA1000000000000000000009 /* SaveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveView.swift; sourceTree = "<group>"; };
 		AA1000000000000000000010 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA1000000000000000000011 /* Kepto.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Kepto.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA2000000000000000000001 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -41,8 +49,20 @@
 		AA2000000000000000000003 /* KeptoShare.appex */ = {isa = PBXFileReference; explicitFileType = wrapper.app-extension; includeInIndex = 0; path = KeptoShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA2000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA2000000000000000000005 /* ScrubPreviewPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrubPreviewPlayer.swift; sourceTree = "<group>"; };
-		AA2000000000000000000007 /* FeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedView.swift; sourceTree = "<group>"; };
-		AA2000000000000000000006 /* CollectionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionDetailView.swift; sourceTree = "<group>"; };
+		AA3000000000000000000001 /* AssetThumbnail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetThumbnail.swift; sourceTree = "<group>"; };
+		AA3000000000000000000002 /* PhotoGridComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoGridComponents.swift; sourceTree = "<group>"; };
+		AA3000000000000000000003 /* EmptyStates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyStates.swift; sourceTree = "<group>"; };
+		AA3000000000000000000004 /* ThumbnailPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailPipeline.swift; sourceTree = "<group>"; };
+		AA3100000000000000000001 /* LibraryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryModels.swift; sourceTree = "<group>"; };
+		AA3100000000000000000002 /* Haptics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Haptics.swift; sourceTree = "<group>"; };
+		AA3200000000000000000001 /* AlbumsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumsView.swift; sourceTree = "<group>"; };
+		AA3200000000000000000002 /* AlbumBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumBrowser.swift; sourceTree = "<group>"; };
+		AA3300000000000000000001 /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		AA3400000000000000000001 /* ForYouView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouView.swift; sourceTree = "<group>"; };
+		AA3500000000000000000001 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoDetailView.swift; sourceTree = "<group>"; };
+		AA3500000000000000000002 /* PhotoInfoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoInfoView.swift; sourceTree = "<group>"; };
+		AA3500000000000000000003 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
+		AA3600000000000000000001 /* SlideshowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlideshowView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -103,6 +123,7 @@
 				DD1000000000000000000004 /* Services */,
 				DD1000000000000000000005 /* ViewModels */,
 				DD1000000000000000000006 /* Views */,
+				DD3100000000000000000001 /* Support */,
 				AA1000000000000000000010 /* Assets.xcassets */,
 			);
 			path = Kepto;
@@ -112,6 +133,7 @@
 			isa = PBXGroup;
 			children = (
 				AA1000000000000000000002 /* Item.swift */,
+				AA3100000000000000000001 /* LibraryModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -121,6 +143,7 @@
 			children = (
 				AA1000000000000000000003 /* KeptoAPI.swift */,
 				AA1000000000000000000004 /* KeychainService.swift */,
+				AA3000000000000000000004 /* ThumbnailPipeline.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -137,14 +160,69 @@
 			isa = PBXGroup;
 			children = (
 				AA1000000000000000000006 /* LibraryView.swift */,
-				AA2000000000000000000006 /* CollectionDetailView.swift */,
-				AA1000000000000000000007 /* ItemDetailView.swift */,
 				AA2000000000000000000005 /* ScrubPreviewPlayer.swift */,
-				AA2000000000000000000007 /* FeedView.swift */,
 				AA1000000000000000000008 /* SettingsView.swift */,
-				AA1000000000000000000009 /* SaveView.swift */,
+				DD3000000000000000000001 /* Components */,
+				DD3200000000000000000001 /* Albums */,
+				DD3300000000000000000001 /* Search */,
+				DD3400000000000000000001 /* ForYou */,
+				DD3500000000000000000001 /* Detail */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		DD3000000000000000000001 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				AA3000000000000000000001 /* AssetThumbnail.swift */,
+				AA3000000000000000000002 /* PhotoGridComponents.swift */,
+				AA3000000000000000000003 /* EmptyStates.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		DD3200000000000000000001 /* Albums */ = {
+			isa = PBXGroup;
+			children = (
+				AA3200000000000000000001 /* AlbumsView.swift */,
+				AA3200000000000000000002 /* AlbumBrowser.swift */,
+			);
+			path = Albums;
+			sourceTree = "<group>";
+		};
+		DD3300000000000000000001 /* Search */ = {
+			isa = PBXGroup;
+			children = (
+				AA3300000000000000000001 /* SearchView.swift */,
+			);
+			path = Search;
+			sourceTree = "<group>";
+		};
+		DD3400000000000000000001 /* ForYou */ = {
+			isa = PBXGroup;
+			children = (
+				AA3400000000000000000001 /* ForYouView.swift */,
+			);
+			path = ForYou;
+			sourceTree = "<group>";
+		};
+		DD3500000000000000000001 /* Detail */ = {
+			isa = PBXGroup;
+			children = (
+				AA3500000000000000000001 /* PhotoDetailView.swift */,
+				AA3500000000000000000002 /* PhotoInfoView.swift */,
+				AA3600000000000000000001 /* SlideshowView.swift */,
+			);
+			path = Detail;
+			sourceTree = "<group>";
+		};
+		DD3100000000000000000001 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				AA3100000000000000000002 /* Haptics.swift */,
+				AA3500000000000000000003 /* L10n.swift */,
+			);
+			path = Support;
 			sourceTree = "<group>";
 		};
 		DD1000000000000000000007 /* Products */ = {
@@ -261,12 +339,22 @@
 				BB1000000000000000000004 /* KeychainService.swift in Sources */,
 				BB1000000000000000000005 /* LibraryViewModel.swift in Sources */,
 				BB1000000000000000000006 /* LibraryView.swift in Sources */,
-				BB2000000000000000000003 /* CollectionDetailView.swift in Sources */,
-				BB1000000000000000000007 /* ItemDetailView.swift in Sources */,
 				BB2000000000000000000004 /* ScrubPreviewPlayer.swift in Sources */,
-				BB2000000000000000000005 /* FeedView.swift in Sources */,
 				BB1000000000000000000008 /* SettingsView.swift in Sources */,
-				BB1000000000000000000009 /* SaveView.swift in Sources */,
+				BB3000000000000000000001 /* AssetThumbnail.swift in Sources */,
+				BB3000000000000000000002 /* PhotoGridComponents.swift in Sources */,
+				BB3000000000000000000003 /* EmptyStates.swift in Sources */,
+				BB3000000000000000000004 /* ThumbnailPipeline.swift in Sources */,
+				BB3100000000000000000001 /* LibraryModels.swift in Sources */,
+				BB3100000000000000000002 /* Haptics.swift in Sources */,
+				BB3200000000000000000001 /* AlbumsView.swift in Sources */,
+				BB3200000000000000000002 /* AlbumBrowser.swift in Sources */,
+				BB3300000000000000000001 /* SearchView.swift in Sources */,
+				BB3400000000000000000001 /* ForYouView.swift in Sources */,
+				BB3500000000000000000001 /* PhotoDetailView.swift in Sources */,
+				BB3500000000000000000002 /* PhotoInfoView.swift in Sources */,
+				BB3500000000000000000003 /* L10n.swift in Sources */,
+				BB3600000000000000000001 /* SlideshowView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

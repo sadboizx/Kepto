@@ -210,6 +210,63 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     var postedDate: Date? { postedAt.flatMap { Self.isoFormatter.date(from: $0) } }
 }
 
+/// Light metadata for one item (GET /api/listAll). Everything the
+/// Library groupings, Memories, Featured and local search need — and
+/// nothing more: no R2 keys, no thumbnail URLs, no media bytes. The
+/// full Item is still fetched per id when the UI needs it (play,
+/// share, Save to Photos).
+struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
+    let id: String
+    let platform: Platform
+    let title: String?
+    let caption: String?
+    let author: String?
+    let authorUsername: String?
+    let postedAt: String?
+    let savedAt: String
+    let contentType: String?
+    let duration: Double?
+    let width: Int?
+    let height: Int?
+    let fileSize: Int?
+    /// True when favorited (heart). Defaults to false when the key
+    /// is missing — same rule as Item.isFavorite.
+    let isFavorite: Bool = false
+    /// User-created collections this item is in (ids + names).
+    /// Empty when the item is in no My collection.
+    let myCollectionIds: [String] = []
+    let myCollectionNames: [String] = []
+
+    private static let isoFormatter = ISO8601DateFormatter()
+
+    /// The saved date as a Date (for groupings + Memories). Nil
+    /// when the stored ISO string does not parse.
+    var savedDate: Date? { Self.isoFormatter.date(from: savedAt) }
+
+    /// The posted date as a Date (nil when missing/unparsable).
+    var postedDate: Date? { postedAt.flatMap { Self.isoFormatter.date(from: $0) } }
+
+    var displayAuthor: String {
+        guard let author, !author.isEmpty else { return platform.displayName }
+        return author
+    }
+
+    /// Collection name for this item: @username, else the author
+    /// name, else "Unknown" — same rule as Item.collectionName.
+    var collectionName: String {
+        if let authorUsername, !authorUsername.isEmpty { return "@\(authorUsername)" }
+        if let author, !author.isEmpty { return author }
+        return "Unknown"
+    }
+}
+
+/// GET /api/listAll response envelope.
+struct ListAllResponse: Decodable {
+    let ok: Bool
+    let items: [ItemMetadata]
+    let total: Int?
+}
+
 // MARK: - API response envelopes (backend returns { ok, ... })
 
 struct ListResponse: Decodable {

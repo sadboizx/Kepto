@@ -1,154 +1,135 @@
 import SwiftUI
 import UIKit
 
-/// Library view mode: the Photos-style Years / Months / Days /
-/// All Photos switcher (a pill segmented control above the tab bar,
-/// like Photos iOS 17.4). This is a presentation choice only — the
-/// Library always loads the same flat list of all saved items.
-enum LibraryViewMode: String, CaseIterable {
-    case years, months, days, allPhotos
 
-    var title: String {
-        switch self {
-        case .years: return "Years"
-        case .months: return "Months"
-        case .days: return "Days"
-        case .allPhotos: return "All Photos"
-        }
-    }
-}
-
-/// Library: the Photos-style home tab. A flat grid of all saved
-/// items (square thumbnails, 3 columns, 2pt gaps — like Photos'
-/// All Photos), with a Years / Months / Days / All Photos switcher
-/// and a "N Photos, M Videos" count in a pill above the tab bar.
-/// The top-right has the Photos-style "Select" pill, a "+" save
-/// menu, and a gear for Settings, floating over the grid.
-/// Tapping a video opens it in the full-screen feed viewer; the
-/// feed is only for watching, not the home itself.
-/// Long-pressing a cell opens the native iOS context menu (Save to
-/// Photos / Share / Favorite / Add to Album / Delete) — the cell
-/// lifts as the menu's preview. In multi-select mode a tap toggles
-/// the cell's selection instead, and the context menu is off.
-/// Thumbnails are authenticated (AsyncImage cannot send the
-/// Authorization header), so `AuthenticatedThumbnail` loads them
-/// with URLSession and keeps them in memory only.
-/// Dark mode is forced at the app root (KeptoTabView).
+/// Library: Photos' Library tab, running on Kepto data.
+///
+/// Structure, layout and gestures follow Photos' `LibraryView`
+/// (Photos repo): large "Library" title, Years / Months / Days /
+/// All Photos zoom (segmented bar + pinch to change level), square
+/// grids, multi-select with the Photos-style `SelectBottomBar`,
+/// inline toolbar items (never a `toolbarContent` property — the
+/// Photos build on 1525ed45 proved the property form does not
+/// compile), and a long-press context menu per cell.
+///
+/// Data comes from `LibraryViewModel`'s full-metadata cache
+/// (`allMetadata`, step 1) — sections are complete from the start,
+/// never just the loaded pages. Cells render `ItemMetadata` through
+/// the step-2 `AssetThumbnail` (`GridItemSource`). The paged
+/// `viewModel.items` list is still used where a full `Item` is
+/// needed (feed viewer, share, Save to Photos, favorite, delete,
+/// Add to Album): the item is resolved from the loaded pages, or
+/// fetched by id — and the grid keeps paging ahead as the user
+/// scrolls so the resolution is usually already in memory.
+///
+/// Kepto features kept: the "…" menu (Import from Photos, Paste
+/// Clipboard, Settings), the Save-a-link alert, the setup view
+/// when unconfigured, and the feed viewer for now (step 7 replaces
+/// it with Photos' detail viewer). No `PhotoLibraryService`, no
+/// `PHAsset` anywhere in this file.
 struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @State private var showingSettings = false
-    /// URL-input alert (shown by the empty-state "Save a link"
-    /// button). The Worker auto-detects a Collection link, so there
-    /// is no separate "save collection" option any more.
-    @State private var showingURLInput = false
-    @State private var urlInput = ""
-    @State private var clipboardAlert = false
-    /// One-line notice after a direct save (e.g. "already saved").
-    @State private var saveNotice: String?
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    @State private var zoom: LibraryZoom = .days
+    @State private var selecting = false
+    @State private var selection: Set<String> = []
     /// The video the full-screen feed viewer opens on (nil = closed).
+    /// Step 7 replaces this with Photos' detail viewer.
     @State private var feedStartItem: Item?
+    /// Items resolved for the slideshow (empty = closed).
+    @State private var slideshowItems: [Item] = []
+    @State private var showingSlideshow = false
     /// The video the context menu's "Add to Album" opened the picker
     /// for (nil = picker closed).
     @State private var itemForAlbumPicker: Item?
     /// A downloaded file ready for the iOS share sheet (nil = closed).
     @State private var shareFile: ShareFile?
-    /// The video awaiting delete confirmation from the grid menu.
-    @State private var itemPendingDelete: Item?
-    @State private var showingDeleteConfirmation = false
-    /// Multi-select mode for bulk delete: when true, tapping a cell
-    /// toggles its selection instead of opening the feed, and a
-    /// bottom bar offers Select All / Delete (N).
-    @State private var isSelecting = false
-    @State private var selectedIDs: Set<String> = []
-    @State private var showingBulkDeleteConfirmation = false
-    /// The Photos-style view mode (Years / Months / Days / All Photos).
-    @State private var viewMode: LibraryViewMode = .allPhotos
-
-    /// 3-column square grid (Photos All Photos): 2pt gaps.
-    private let gridColumns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-    ]
-
-    /// 2-column grid for the Years view (one large tile per year).
-    private let yearColumns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-    ]
+    /// Downloaded files for a bulk share (nil = closed).
+    @State private var shareURLs: [URL]?
+    @State private var showingBulkShare = false
+    /// Items resolved for the bulk Add-to-Album sheet.
+    @State private var addToAlbumItems: [Item] = []
+    @State private var showingAddToAlbum = false
+    /// Ids awaiting delete confirmation (one item or the selection).
+    @State private var pendingDelete: [String] = []
+    @State private var showDelete = false
+    @State private var showingSettings = false
+    /// URL-input alert (shown by the empty-state "Save a link" button).
+    @State private var showingURLInput = false
+    @State private var urlInput = ""
+    @State private var clipboardAlert = false
+    /// One-line notice after an action (e.g. "already saved").
+    @State private var saveNotice: String?
 
     var body: some View {
-        // Photos Library style: a NavigationStack so "Select" and
-        // "…" sit in the navigation bar — small, at the very top,
-        // like the real Photos app. The navigation bar background is
-        // HIDDEN (transparent status bar): the grid shows through
-        // under the status bar and the nav bar, no solid band.
-        // The bottom bar (Years / Months / Days / All Photos pill)
-        // is a floating overlay over the grid, not a safe-area inset
-        // — so the gap under the pill is transparent too (the grid
-        // shows through it), and the grid's last row clears the pill
-        // via bottom content margins on each grid ScrollView.
-        // The "+" save button and the gear are gone; their actions
-        // live in the "…" menu (clipboard, Settings).
         NavigationStack {
-            ZStack(alignment: .bottom) {
-                content
-                    .background(Color.black)
-                if viewModel.isConfigured {
-                    if isSelecting {
-                        selectionBar
-                    } else {
-                        bottomBar
-                    }
+            Group {
+                if !viewModel.isConfigured {
+                    setupView
+                } else if viewModel.isLoading && viewModel.items.isEmpty && viewModel.allMetadata.isEmpty {
+                    LoadingLibraryView()
+                } else if viewModel.items.isEmpty && viewModel.allMetadata.isEmpty {
+                    emptyView
+                } else {
+                    scroll
                 }
             }
+            .navigationTitle(selecting ? L10n.selectedCount(selection.count) : L10n.library)
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    if viewModel.isConfigured {
-                        HStack(spacing: 8) {
-                            // Photos style: "Select" is a dark pill
-                            // with white text (not plain blue text),
-                            // floating over the grid. Footnote size,
-                            // like the real Photos app.
-                            Button {
-                                toggleSelecting()
-                            } label: {
-                                Text(isSelecting ? "Cancel" : "Select")
-                                    .font(.footnote)
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 7)
-                                    .background(.ultraThinMaterial, in: Capsule())
+                if selecting {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(L10n.cancel) { exitSelection() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(allSelected ? L10n.deselectAll : L10n.selectAll) {
+                            Haptics.select()
+                            if allSelected {
+                                selection.removeAll()
+                            } else {
+                                selection = Set(allIDs)
                             }
-                            .buttonStyle(.plain)
+                        }
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        HStack(spacing: 16) {
+                            Button(L10n.select) {
+                                Haptics.tap()
+                                selecting = true
+                            }
+                            .disabled(allIDs.isEmpty)
                             Menu {
                                 Button { viewModel.showingPhotoPicker = true } label: {
-                                    Label("Import from Photos", systemImage: "photo.on.rectangle")
+                                    Label(L10n.importFromPhotos, systemImage: "photo.on.rectangle")
                                 }
                                 Button { Task { await saveDirectFromClipboard() } } label: {
-                                    Label("Paste Clipboard", systemImage: "doc.on.clipboard")
+                                    Label(L10n.pasteClipboard, systemImage: "doc.on.clipboard")
                                 }
                                 Button { showingSettings = true } label: {
-                                    Label("Settings", systemImage: "gearshape")
+                                    Label(L10n.settings, systemImage: "gearshape")
                                 }
                             } label: {
-                                // Photos style: a dark circle with a
-                                // white ellipsis (not the blue
-                                // ellipsis.circle symbol).
-                                Image(systemName: "ellipsis")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 32, height: 32)
-                                    .background(.ultraThinMaterial, in: Circle())
-                                    .accessibilityLabel("More options")
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.system(size: 20))
+                                    .accessibilityLabel(L10n.moreOptions)
                             }
                         }
                     }
                 }
             }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar(selecting ? .hidden : .visible, for: .tabBar)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if selecting {
+                    selectBar
+                } else if viewModel.isConfigured {
+                    ZoomSegmentBar(zoom: $zoom)
+                }
+            }
+            .refreshable {
+                await viewModel.fetch()
+            }
             .task {
                 await viewModel.fetch()
                 await viewModel.fetchStats()
@@ -156,20 +137,21 @@ struct LibraryView: View {
                 // thumbnail is ready (no tab switch needed).
                 viewModel.startPendingPoll()
             }
-            .alert("Lưu link", isPresented: $showingURLInput) {
-            TextField(
-                "Dán link TikTok, Instagram…",
-                text: $urlInput
-            )
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            Button("Lưu") {
-                let url = urlInput
-                urlInput = ""
-                Task { await saveDirect(url) }
+            .alert(L10n.saveLinkAlert, isPresented: $showingURLInput) {
+                TextField(
+                    L10n.pasteLinkPlaceholder,
+                    text: $urlInput
+                )
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Button(L10n.save) {
+                    let url = urlInput
+                    urlInput = ""
+                    Task { await saveDirect(url) }
+                }
+                Button(L10n.cancel, role: .cancel) { urlInput = "" }
             }
-            Button("Hủy", role: .cancel) { urlInput = "" }
         }
         .sheet(isPresented: $showingSettings, onDismiss: {
             viewModel.reloadConfig()
@@ -178,17 +160,21 @@ struct LibraryView: View {
             SettingsView()
         }
         .navigationDestination(item: $feedStartItem) { startItem in
-            FeedView(
+            PhotoDetailView(
                 items: Binding(get: { viewModel.items }, set: { _ in }),
                 startItemId: startItem.id,
-                onNearEnd: { await viewModel.loadMore() }
+                onNearEnd: { await viewModel.loadMore() },
+                title: L10n.library
             )
+        }
+        .fullScreenCover(isPresented: $showingSlideshow) {
+            SlideshowView(items: slideshowItems)
         }
         .sheet(item: $itemForAlbumPicker) { pickerItem in
             AddToCollectionPickerView(
                 item: pickerItem,
                 onAddedToCollection: { name, added in
-                    saveNotice = added ? "Đã thêm vào \(name)." : "Đã có trong \(name)."
+                    saveNotice = added ? L10n.addedToCollection(name) : L10n.alreadyInCollection(name)
                 },
                 onCancel: { itemForAlbumPicker = nil }
             )
@@ -196,28 +182,29 @@ struct LibraryView: View {
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.black)
         }
+        .sheet(isPresented: $showingAddToAlbum) {
+            AddToAlbumSheet(
+                ids: addToAlbumItems.map(\.id),
+                onDone: { name, added in
+                    saveNotice = L10n.addedCountToCollection(added, name)
+                    exitSelection()
+                }
+            )
+        }
         .sheet(item: $shareFile) { file in
             ShareSheet(activityItems: [file.url])
         }
-        .confirmationDialog("Delete this saved item?",
-                            isPresented: $showingDeleteConfirmation,
-                            titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                Task { await deleteGridMenuItem() }
-            }
-            Button("Cancel", role: .cancel) { itemPendingDelete = nil }
-        } message: {
-            Text(itemPendingDelete?.displayTitle ?? "")
+        .sheet(isPresented: $showingBulkShare) {
+            ShareSheet(activityItems: shareURLs ?? [])
         }
-        .confirmationDialog("Delete \(selectedIDs.count) videos?",
-                            isPresented: $showingBulkDeleteConfirmation,
-                            titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                Task { await deleteSelected() }
+        .confirmationDialog(deleteDialogTitle, isPresented: $showDelete, titleVisibility: .visible) {
+            Button(L10n.delete, role: .destructive) {
+                let ids = pendingDelete
+                Task { await deleteItems(ids) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(L10n.cancel, role: .cancel) { pendingDelete = [] }
         } message: {
-            Text("This removes the saved copies from the cloud. This cannot be undone.")
+            Text(L10n.deleteFromCloudMessage)
         }
         .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
             Button("OK") { saveNotice = nil }
@@ -232,428 +219,537 @@ struct LibraryView: View {
         .alert("Clipboard", isPresented: $clipboardAlert) {
             Button("OK") {}
         } message: {
-            Text("Clipboard không có link http(s) nào.")
+            Text(L10n.clipboardNoHttpLink)
         }
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if !viewModel.isConfigured {
-            setupView
-        } else {
-            gridContent
+        .onChange(of: zoom) { _, _ in
+            Haptics.select()
         }
     }
 
     private var setupView: some View {
         ContentUnavailableView {
-            Label("Set up Kepto", systemImage: "link.badge.plus")
+            Label(L10n.setupKepto, systemImage: "link.badge.plus")
         } description: {
-            Text("Enter your Worker URL and API key in Settings to start saving.")
+            Text(L10n.setupHint)
         } actions: {
-            Button("Open Settings") { showingSettings = true }
+            Button(L10n.openSettings) { showingSettings = true }
                 .buttonStyle(.borderedProminent)
         }
     }
 
-    /// Bottom bar above the tab bar (Photos Library style): just
-    /// the Years / Months / Days / All Photos pill, floating over
-    /// the grid. No count line (removed), and NO background — the
-    /// bar is transparent, so the grid shows through the gap under
-    /// the pill instead of a solid black band.
-    private var bottomBar: some View {
-        viewModePicker
-            .padding(.bottom, 8)
+    private var emptyView: some View {
+        ContentUnavailableView {
+            Label(L10n.nothingSavedYet, systemImage: "tray")
+        } description: {
+            Text(L10n.emptyLibraryHint)
+        } actions: {
+            Button(L10n.saveLink) { showingURLInput = true }
+                .buttonStyle(.borderedProminent)
+        }
     }
 
-    /// The view-mode pill: a dark capsule with the selected segment
-    /// lighter, like Photos' Years / Months / Days / All Photos
-    /// control at the bottom of the Library.
-    private var viewModePicker: some View {
-        HStack(spacing: 0) {
-            ForEach(LibraryViewMode.allCases, id: \.self) { mode in
-                let selected = viewMode == mode
+    private var dayColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 2), count: sizeClass == .regular ? 5 : 3)
+    }
+
+    private var allColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 2), count: sizeClass == .regular ? 8 : 4)
+    }
+
+    private var scroll: some View {
+        ScrollView {
+            switch zoom {
+            case .years:
+                yearsGrid
+            case .months:
+                monthsGrid
+            case .days:
+                daysGrid
+            case .all:
+                allPhotosGrid
+            }
+        }
+        .background(Color(uiColor: .systemBackground))
+        .simultaneousGesture(pinch)
+        .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
+    }
+
+    private var yearsGrid: some View {
+        LazyVStack(spacing: 16) {
+            ForEach(years) { year in
                 Button {
-                    viewMode = mode
+                    Haptics.tap()
+                    zoom = .months
                 } label: {
-                    Text(mode.title)
-                        .font(.subheadline)
-                        .fontWeight(.bold)
-                        // Photos: selected is white, unselected is a
-                        // medium gray.
-                        .foregroundStyle(selected ? .white : .white.opacity(0.6))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(selected ? Color.white.opacity(0.25) : Color.clear)
-                        .clipShape(Capsule())
+                    yearCard(year)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(4)
-        // Photos-style frosted pill — regularMaterial (darker and
-        // more opaque than ultraThinMaterial, so the pill has a real
-        // visible background over the grid, like the real Photos app).
-        .background(.regularMaterial, in: Capsule())
+        .padding(.vertical, 12)
     }
 
-    /// The grid for the current view mode (loading / empty / grid).
-    /// Tapping a video opens it in the full-screen feed viewer.
-    @ViewBuilder
-    private var gridContent: some View {
-        if viewModel.isLoading && viewModel.items.isEmpty {
-            ProgressView("Loading…")
-                .tint(.white)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if viewModel.items.isEmpty {
-            ContentUnavailableView {
-                Label("Nothing saved yet", systemImage: "tray")
-            } description: {
-                Text("Tap + and paste a link from TikTok, Instagram, Threads, X, Facebook, Douyin, or YouTube.")
-            } actions: {
-                Button("Save a link") { showingURLInput = true }
-                    .buttonStyle(.borderedProminent)
+    private func yearCard(_ year: YearSection) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            mosaic(ids: year.coverIDs)
+            LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .center, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(year.title)
+                    .font(.system(size: 34, weight: .bold, design: .default))
+                Text(itemCountText(year.itemIDs.count))
+                    .font(.subheadline.weight(.medium))
             }
-        } else {
-            switch viewMode {
-            case .allPhotos: allPhotosGrid
-            case .days: daysGrid
-            case .months: monthsGrid
-            case .years: yearsGrid
-            }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+            .padding(16)
         }
+        .frame(height: 210)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 14)
     }
 
-    /// All Photos: the flat 3-column square grid (Photos style).
-    /// The last cell loads the next page when it appears
-    /// (waterfall); pull-to-refresh reloads.
-    private var allPhotosGrid: some View {
-        ScrollView {
-            LazyVGrid(columns: gridColumns, spacing: 2) {
-                ForEach(viewModel.items) { item in
-                    gridCell(for: item)
-                }
-            }
-        }
-        // Bottom margin so the last row scrolls clear of the
-        // floating Years/Months/Days/All Photos pill.
-        .contentMargins(.bottom, 100, for: .scrollContent)
-        .refreshable {
-            await viewModel.fetch()
-        }
-    }
-
-    /// Days: one section per day (newest first), each with a date
-    /// header and a 3-column square grid.
-    private var daysGrid: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(itemsByDay, id: \.key) { group in
-                    Text(Self.dayFormatter.string(from: group.key))
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 12)
-                        .padding(.bottom, 6)
-                    LazyVGrid(columns: gridColumns, spacing: 2) {
-                        ForEach(group.items) { item in
-                            gridCell(for: item)
-                        }
-                    }
-                }
-            }
-        }
-        // Bottom margin so the last row scrolls clear of the
-        // floating Years/Months/Days/All Photos pill.
-        .contentMargins(.bottom, 100, for: .scrollContent)
-        .refreshable {
-            await viewModel.fetch()
-        }
-    }
-
-    /// Months: one section per month (newest first), each with a
-    /// month header and a 3-column square grid.
-    private var monthsGrid: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(itemsByMonth, id: \.key) { group in
-                    Text(Self.monthFormatter.string(from: group.key))
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 12)
-                        .padding(.bottom, 6)
-                    LazyVGrid(columns: gridColumns, spacing: 2) {
-                        ForEach(group.items) { item in
-                            gridCell(for: item)
-                        }
-                    }
-                }
-            }
-        }
-        // Bottom margin so the last row scrolls clear of the
-        // floating Years/Months/Days/All Photos pill.
-        .contentMargins(.bottom, 100, for: .scrollContent)
-        .refreshable {
-            await viewModel.fetch()
-        }
-    }
-
-    /// Years: one large tile per year (2 columns) — the year's
-    /// newest item as the cover, the year, and the item count.
-    /// Tapping a tile opens the feed at that year's newest video.
-    private var yearsGrid: some View {
-        ScrollView {
-            LazyVGrid(columns: yearColumns, spacing: 12) {
-                ForEach(itemsByYear, id: \.key) { group in
-                    if let first = group.items.first {
-                        Button {
-                            feedStartItem = first
-                        } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                AspectThumbnail(itemId: first.id)
-                                Text(Self.yearFormatter.string(from: group.key))
-                                    .font(.headline)
-                                    .foregroundStyle(.white)
-                                Text("\(group.items.count) items")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            if viewModel.hasMore {
-                Button("Load more") {
-                    Task { await viewModel.loadMore() }
-                }
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .padding(.vertical, 16)
-                .frame(maxWidth: .infinity)
-            }
-        }
-        // Bottom margin so the last row scrolls clear of the
-        // floating Years/Months/Days/All Photos pill.
-        .contentMargins(.bottom, 100, for: .scrollContent)
-        .refreshable {
-            await viewModel.fetch()
-        }
-    }
-
-    /// One grid cell with the native iOS context menu (Save to
-    /// Photos / Share / Favorite / Add to Album / Delete) and the
-    /// waterfall load-more on the last item. Shared by the All
-    /// Photos, Days, and Months grids.
-    private func gridCell(for item: Item) -> some View {
-        PhotosGridCell(
-            item: item,
-            isSelectionMode: isSelecting,
-            isSelected: selectedIDs.contains(item.id),
-            onTap: {
-                if isSelecting {
-                    toggleSelection(item)
+    private func mosaic(ids: [String]) -> some View {
+        let cells = Array(ids.prefix(4))
+        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 1), GridItem(.flexible(), spacing: 1)], spacing: 1) {
+            ForEach(0..<4, id: \.self) { index in
+                if index < cells.count, let source = source(for: cells[index]) {
+                    AssetThumbnail(source: source)
                 } else {
-                    feedStartItem = item
+                    Color(uiColor: .secondarySystemFill)
+                        .aspectRatio(1, contentMode: .fit)
                 }
             }
-        )
-        .contextMenu {
-            GridItemContextMenu(
-                item: item,
-                isSelecting: isSelecting,
-                onSaveToPhotos: { saveToPhotos($0) },
-                onShare: { shareItem($0) },
-                onToggleFavorite: { toggleGridFavorite($0) },
-                onAddToAlbum: { itemForAlbumPicker = $0 },
-                onDelete: { requestGridDelete($0) }
-            )
         }
-        .onAppear {
-            if item.id == viewModel.items.last?.id {
-                Task { await viewModel.loadMore() }
+    }
+
+    private var monthsGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+            spacing: 10
+        ) {
+            ForEach(months) { month in
+                Button {
+                    Haptics.tap()
+                    zoom = .days
+                } label: {
+                    monthCard(month)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+    }
+
+    private func monthCard(_ month: MonthSection) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            if let cover = month.coverID, let source = source(for: cover) {
+                AssetThumbnail(source: source, cornerRadius: 12)
+            } else {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemFill))
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.62)], startPoint: .center, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(month.title)
+                    .font(.headline)
+                Text(itemCountText(month.itemIDs.count))
+                    .font(.caption)
+            }
+            .foregroundStyle(.white)
+            .padding(10)
+        }
+        .aspectRatio(1.05, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var daysGrid: some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            ForEach(days) { day in
+                Section {
+                    LazyVGrid(columns: dayColumns, spacing: 2) {
+                        ForEach(day.itemIDs, id: \.self) { id in
+                            gridCell(for: id)
+                        }
+                    }
+                } header: {
+                    DayHeader(title: day.title, subtitle: day.subtitle)
+                }
             }
         }
     }
 
-    // MARK: - View-mode grouping
-
-    /// Loaded items grouped by day (newest day first).
-    private var itemsByDay: [(key: Date, items: [Item])] {
-        groupItems(by: [.year, .month, .day])
+    private var allPhotosGrid: some View {
+        LazyVGrid(columns: allColumns, spacing: 2) {
+            ForEach(allIDs, id: \.self) { id in
+                gridCell(for: id)
+            }
+        }
     }
 
-    /// Loaded items grouped by month (newest month first).
-    private var itemsByMonth: [(key: Date, items: [Item])] {
-        groupItems(by: [.year, .month])
+    private func gridCell(for id: String) -> some View {
+        Group {
+            if let source = source(for: id) {
+                AssetThumbnail(source: source, selecting: selecting, selected: selection.contains(id))
+                    .onTapGesture { handleTap(id) }
+                    .contextMenu { cellMenu(for: source) }
+            } else {
+                Color(uiColor: .secondarySystemFill)
+                    .aspectRatio(1, contentMode: .fit)
+            }
+        }
+        .onAppear { maybeLoadMore(before: id) }
     }
 
-    /// Loaded items grouped by year (newest year first).
-    private var itemsByYear: [(key: Date, items: [Item])] {
-        groupItems(by: [.year])
+    /// Native iOS context menu for a grid cell (long-press), in the
+    /// order the user asked for: Save to Photos, Share, Favorite,
+    /// Add to Album, Delete. Inline here (not `GridItemContextMenu`):
+    /// Library cells are light `ItemMetadata`, and the menu actions
+    /// resolve the full `Item` on demand — the shared menu takes an
+    /// `Item` at construction and belongs to the paged grids
+    /// (PhotoCollectionScreen keeps using it). Empty while
+    /// multi-select is on (a tap toggles selection instead).
+    private func cellMenu(for source: any GridItemSource) -> some View {
+        Group {
+            if !selecting {
+                Button { Task { await saveToPhotos(source.id) } } label: {
+                    Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
+                }
+                Button { Task { await shareItem(source.id) } } label: {
+                    Label(L10n.share, systemImage: "square.and.arrow.up")
+                }
+                Button { Task { await toggleFavorite(source.id) } } label: {
+                    Label(L10n.favorite, systemImage: source.isFavorite ? "heart.fill" : "heart")
+                }
+                Button { Task { await openAddToAlbum(source.id) } } label: {
+                    Label(L10n.addToAlbum, systemImage: "folder.badge.plus")
+                }
+                Button(role: .destructive) {
+                    pendingDelete = [source.id]
+                    showDelete = true
+                } label: {
+                    Label(L10n.delete, systemImage: "trash")
+                }
+            }
+        }
     }
 
-    /// Groups the loaded items by the given calendar components
-    /// (from each item's saved date), newest group first. Items
-    /// whose saved date does not parse are skipped.
-    private func groupItems(by components: Set<Calendar.Component>) -> [(key: Date, items: [Item])] {
+    private var pinch: some Gesture {
+        MagnificationGesture()
+            .onEnded { value in
+                guard !selecting else { return }
+                if value > 1.12 {
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                        zoom = zoom.zoomedIn()
+                    }
+                } else if value < 0.9 {
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+                        zoom = zoom.zoomedOut()
+                    }
+                }
+            }
+    }
+
+    // MARK: - Sections (from the full-metadata cache)
+
+    /// All ids in the Library, newest first. The full metadata cache
+    /// when it is loaded; the loaded pages while listAll is still
+    /// pending or failed (so the Library never goes blank when the
+    /// metadata fetch has not finished yet).
+    private var allIDs: [String] {
+        viewModel.allMetadataLoaded ? viewModel.allMetadata.map(\.id) : viewModel.items.map(\.id)
+    }
+
+    /// The thumbnail source for one id: light metadata first, the
+    /// loaded full `Item` as fallback (while the metadata cache is
+    /// still loading).
+    private func source(for id: String) -> (any GridItemSource)? {
+        if let meta = metadataById[id] { return meta }
+        return viewModel.items.first { $0.id == id }
+    }
+
+    private var metadataById: [String: ItemMetadata] {
+        Dictionary(viewModel.allMetadata.map { ($0.id, $0) }) { _, last in last }
+    }
+
+    /// Grouped ids for one zoom level: the full-metadata groupings
+    /// when loaded, else the loaded pages grouped the same way (the
+    /// old `groupItems` logic — sections stay correct, just partial
+    /// until listAll lands).
+    private func groupedIDs(by components: Set<Calendar.Component>) -> [(key: Date, ids: [String])] {
+        if viewModel.allMetadataLoaded {
+            return viewModel.groupedMetadata(by: components).map { (key: $0.key, ids: $0.items.map(\.id)) }
+        }
         let calendar = Calendar.current
-        var groups: [Date: [Item]] = [:]
+        var groups: [Date: [String]] = [:]
         for item in viewModel.items {
             guard let date = item.savedDate else { continue }
             let comps = calendar.dateComponents(components, from: date)
             guard let key = calendar.date(from: comps) else { continue }
-            groups[key, default: []].append(item)
+            groups[key, default: []].append(item.id)
         }
-        return groups.map { (key: $0.key, items: $0.value) }.sorted { $0.key > $1.key }
+        return groups.map { (key: $0.key, ids: $0.value) }.sorted { $0.key > $1.key }
     }
 
-    private static let dayFormatter: DateFormatter = {
+    private var days: [DaySection] {
+        groupedIDs(by: [.year, .month, .day]).map { group in
+            DaySection(id: Self.dayIDFormatter.string(from: group.key), date: group.key, title: DateLabels.dayTitle(for: group.key), subtitle: nil, itemIDs: group.ids)
+        }
+    }
+
+    private var months: [MonthSection] {
+        groupedIDs(by: [.year, .month]).map { group in
+            MonthSection(id: Self.monthIDFormatter.string(from: group.key), date: group.key, title: DateLabels.monthTitle(for: group.key), itemIDs: group.ids, coverID: group.ids.first)
+        }
+    }
+
+    private var years: [YearSection] {
+        groupedIDs(by: [.year]).map { group in
+            let year = Calendar.current.component(.year, from: group.key)
+            return YearSection(year: year, title: String(year), itemIDs: group.ids, coverIDs: Array(group.ids.prefix(4)))
+        }
+    }
+
+    private static let dayIDFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "d MMM yyyy"
+        f.dateFormat = "yyyy-MM-dd"
         return f
     }()
 
-    private static let monthFormatter: DateFormatter = {
+    private static let monthIDFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "MMMM yyyy"
+        f.dateFormat = "yyyy-MM"
         return f
     }()
 
-    private static let yearFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy"
-        return f
-    }()
+    private func itemCountText(_ count: Int) -> String {
+        L10n.itemsCount(count)
+    }
+
+    // MARK: - Paging ahead
+
+    /// Keep the paged `items` list ahead of what the user can see:
+    /// the grid renders the full metadata cache, but the feed viewer
+    /// and the item actions need full `Item`s, which only arrive
+    /// page by page. When a cell appears near the end of the loaded
+    /// range, load the next page in the background.
+    private func maybeLoadMore(before id: String) {
+        guard viewModel.hasMore, !viewModel.items.isEmpty else { return }
+        guard let index = allIDs.firstIndex(of: id), index >= viewModel.items.count - 10 else { return }
+        Task { await viewModel.loadMore() }
+    }
 
     // MARK: - Multi-select
 
-    /// Bottom bar in multi-select mode: Select All / Deselect All
-    /// and Delete (N). (A separate property so `body` stays small
-    /// enough for the compiler — see FeedView's type-check lesson.)
-    private var selectionBar: some View {
-        SelectionActionBar(
-            selectedCount: selectedIDs.count,
-            totalCount: viewModel.items.count,
-            onSelectAll: { selectAll() },
-            onDelete: { showingBulkDeleteConfirmation = true }
-        )
+    private var allSelected: Bool {
+        !allIDs.isEmpty && selection.count == allIDs.count
     }
 
-    /// Enter/exit multi-select mode. Exiting clears the selection.
-    private func toggleSelecting() {
-        if isSelecting {
-            exitSelectionMode()
-        } else {
-            isSelecting = true
+    private var selectBar: some View {
+        SelectBottomBar(
+            enabled: !selection.isEmpty,
+            onShare: { Task { await shareSelection() } },
+            onFavorite: { Task { await favoriteSelection() } },
+            onAdd: { Task { await presentAddToAlbum() } },
+            onDelete: {
+                pendingDelete = Array(selection)
+                showDelete = true
+            }
+        ) {
+            Menu {
+                Button { Task { await saveSelectionToPhotos() } } label: {
+                    Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
+                }
+                Button { Task { await presentSlideshow() } } label: {
+                    Label(L10n.slideshow, systemImage: "play.rectangle")
+                }
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 20))
+                    Text(L10n.more)
+                        .font(.caption2)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
         }
     }
 
-    private func exitSelectionMode() {
-        isSelecting = false
-        selectedIDs.removeAll()
+    private func exitSelection() {
+        selecting = false
+        selection.removeAll()
     }
 
-    /// Toggle one video's selection.
-    private func toggleSelection(_ item: Item) {
-        if selectedIDs.contains(item.id) {
-            selectedIDs.remove(item.id)
+    private func handleTap(_ id: String) {
+        if selecting {
+            if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+            Haptics.select()
         } else {
-            selectedIDs.insert(item.id)
+            openItem(id)
         }
     }
 
-    /// Select all videos currently loaded in this grid (the grid
-    /// pages, so this is the loaded set, not the whole library).
-    private func selectAll() {
-        if selectedIDs.count == viewModel.items.count {
-            selectedIDs.removeAll()
-        } else {
-            selectedIDs = Set(viewModel.items.map(\.id))
+    /// Open the feed on one item. The feed pages through the loaded
+    /// `items` list, so an item past the loaded pages is pulled in
+    /// first (usually it already is — `maybeLoadMore` pages ahead
+    /// while scrolling). Bounded: stops when a load adds nothing
+    /// (a fetch is already in flight) or the pages run out.
+    private func openItem(_ id: String) {
+        if let item = viewModel.items.first(where: { $0.id == id }) {
+            feedStartItem = item
+            return
+        }
+        Task {
+            var lastCount = viewModel.items.count
+            for _ in 0..<10 {
+                if viewModel.items.first(where: { $0.id == id }) != nil { break }
+                guard viewModel.hasMore else { break }
+                await viewModel.loadMore()
+                let count = viewModel.items.count
+                if count == lastCount { break }
+                lastCount = count
+            }
+            if let item = viewModel.items.first(where: { $0.id == id }) {
+                feedStartItem = item
+            }
         }
     }
 
-    /// Delete every selected video (sequential, reusing the single
-    /// delete), then exit multi-select mode. Failures are counted
-    /// and reported; the rest still delete.
-    private func deleteSelected() async {
-        let targets = viewModel.items.filter { selectedIDs.contains($0.id) }
-        guard !targets.isEmpty else { return }
+    /// The full `Item` for one id: the loaded pages first, else one
+    /// fetch by id. Used by every action that needs more than the
+    /// light metadata (share, Save to Photos, favorite, delete,
+    /// Add to Album).
+    private func resolveItem(id: String) async -> Item? {
+        if let item = viewModel.items.first(where: { $0.id == id }) { return item }
+        return await viewModel.fetchItem(id: id)
+    }
+
+    /// Start the slideshow over the current selection, in grid order
+    /// (Photos: the slideshow runs over the selected items).
+    private func presentSlideshow() async {
+        let ids = allIDs.filter { selection.contains($0) }
+        var resolved: [Item] = []
+        for id in ids {
+            if let item = await resolveItem(id: id) { resolved.append(item) }
+        }
+        guard !resolved.isEmpty else { return }
+        slideshowItems = resolved
+        showingSlideshow = true
+    }
+
+    private var deleteDialogTitle: String {
+        L10n.deleteSavedItemsTitle(pendingDelete.count)
+    }
+
+    private func deleteItems(_ ids: [String]) async {
         var failures = 0
-        for item in targets {
+        for id in ids {
+            guard let item = await resolveItem(id: id) else { failures += 1; continue }
             do {
                 try await viewModel.delete(item: item)
-            } catch {
-                failures += 1
-            }
+            } catch { failures += 1 }
         }
-        let deleted = targets.count - failures
-        selectedIDs.removeAll()
-        isSelecting = false
+        let deleted = ids.count - failures
+        pendingDelete = []
+        exitSelection()
         if failures == 0 {
-            saveNotice = "Đã xóa \(deleted) video."
+            saveNotice = L10n.deletedCount(deleted)
         } else {
-            saveNotice = "Đã xóa \(deleted) video, \(failures) video lỗi."
+            saveNotice = L10n.deletedCountPartial(deleted, failures)
         }
     }
 
-    // MARK: - Context menu actions
+    // MARK: - Bulk actions
 
-    /// Context menu "Save to Photos": download the item and save it
-    /// to the Photos library. The notice reuses the save-notice line.
-    private func saveToPhotos(_ item: Item) {
-        Task {
+    private func shareSelection() async {
+        let ids = Array(selection)
+        var urls: [URL] = []
+        for id in ids {
+            guard let item = await resolveItem(id: id) else { continue }
+            if let url = try? await viewModel.shareFileURL(for: item) { urls.append(url) }
+        }
+        guard !urls.isEmpty else {
+            saveNotice = L10n.shareDownloadFailed
+            return
+        }
+        shareURLs = urls
+        showingBulkShare = true
+    }
+
+    private func favoriteSelection() async {
+        for id in selection {
+            guard let item = await resolveItem(id: id) else { continue }
+            _ = await viewModel.toggleFavorite(item: item)
+        }
+    }
+
+    private func presentAddToAlbum() async {
+        var resolved: [Item] = []
+        for id in selection {
+            if let item = await resolveItem(id: id) { resolved.append(item) }
+        }
+        guard !resolved.isEmpty else {
+            saveNotice = L10n.loadItemsToAddFailed
+            return
+        }
+        addToAlbumItems = resolved
+        showingAddToAlbum = true
+    }
+
+    private func saveSelectionToPhotos() async {
+        var saved = 0
+        var failed = 0
+        for id in selection {
+            guard let item = await resolveItem(id: id) else { failed += 1; continue }
             do {
                 try await viewModel.saveToPhotos(item: item)
-                saveNotice = "Đã lưu vào Photos."
-            } catch {
-                saveNotice = "Không lưu được vào Photos."
-            }
+                saved += 1
+            } catch { failed += 1 }
+        }
+        if failed == 0 {
+            saveNotice = "Đã lưu \(saved) vào Photos."
+        } else {
+            saveNotice = "Đã lưu \(saved) vào Photos, \(failed) lỗi."
         }
     }
 
-    /// Context menu "Share": download the item's file, then open the
-    /// iOS share sheet with it.
-    private func shareItem(_ item: Item) {
-        Task {
-            do {
-                shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
-            } catch {
-                saveNotice = "Không tải được file để chia sẻ."
-            }
+    // MARK: - Single-item actions (context menu)
+
+    private func saveToPhotos(_ id: String) async {
+        guard let item = await resolveItem(id: id) else {
+            saveNotice = "Không tải được mục này."
+            return
         }
-    }
-
-    /// Context menu "Favorite": toggle the heart, with a notice.
-    private func toggleGridFavorite(_ item: Item) {
-        Task {
-            if let updated = await viewModel.toggleFavorite(item: item) {
-                saveNotice = updated.isFavorite ? "Đã thêm vào Favorite." : "Đã bỏ Favorite."
-            }
-        }
-    }
-
-    /// Context menu "Delete": show the delete confirmation for this
-    /// video. (No sheet to dismiss first, unlike the old bottom-sheet
-    /// menu — the confirmation can appear immediately.)
-    private func requestGridDelete(_ item: Item) {
-        itemPendingDelete = item
-        showingDeleteConfirmation = true
-    }
-
-    /// Delete the video pending confirmation from the grid menu.
-    private func deleteGridMenuItem() async {
-        guard let target = itemPendingDelete else { return }
-        itemPendingDelete = nil
         do {
-            try await viewModel.delete(item: target)
+            try await viewModel.saveToPhotos(item: item)
+            saveNotice = "Đã lưu vào Photos."
         } catch {
-            viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            saveNotice = "Không lưu được vào Photos."
         }
+    }
+
+    private func shareItem(_ id: String) async {
+        guard let item = await resolveItem(id: id) else {
+            saveNotice = L10n.shareDownloadFailed
+            return
+        }
+        do {
+            shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
+        } catch {
+            saveNotice = L10n.shareDownloadFailed
+        }
+    }
+
+    private func toggleFavorite(_ id: String) async {
+        guard let item = await resolveItem(id: id) else { return }
+        if let updated = await viewModel.toggleFavorite(item: item) {
+            saveNotice = updated.isFavorite ? "Đã thêm vào Favorite." : "Đã bỏ Favorite."
+        }
+    }
+
+    private func openAddToAlbum(_ id: String) async {
+        guard let item = await resolveItem(id: id) else { return }
+        itemForAlbumPicker = item
     }
 
     // MARK: - Saving
@@ -722,7 +818,7 @@ struct PhotosGridCell: View {
     /// Multi-select: when true the cell shows a selection circle
     /// (top-left) and a tap toggles selection (the parent's onTap
     /// decides). The long-press menu is the native `.contextMenu`,
-    /// attached by the parent (LibraryView / CollectionDetailView) —
+    /// attached by the parent (LibraryView / PhotoCollectionScreen) —
     /// the cell itself has no long-press gesture.
     var isSelectionMode: Bool = false
     var isSelected: Bool = false
@@ -823,53 +919,6 @@ struct PhotosGridCell: View {
     private var badgeText: String? {
         guard item.contentType?.hasPrefix("image/") != true else { return nil }
         return item.formattedDuration ?? item.formattedViewCount
-    }
-}
-
-/// Bottom bar shown in multi-select mode: Select All / Deselect All
-/// and Delete (N). Shared by the Library grid and the collection
-/// grids. `totalCount` is the number of videos currently loaded in
-/// the grid (the grid pages, so Select All covers the loaded set).
-struct SelectionActionBar: View {
-    let selectedCount: Int
-    let totalCount: Int
-    let onSelectAll: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        HStack(spacing: 16) {
-            Button(allSelected ? "Deselect All" : "Select All", action: onSelectAll)
-                .font(.subheadline)
-                .fontWeight(.semibold)
-                .foregroundStyle(.white)
-            Spacer()
-            Text("\(selectedCount) selected")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.75))
-            Spacer()
-            Button(action: onDelete) {
-                Text("Delete (\(selectedCount))")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(selectedCount > 0 ? Color.red : Color.white.opacity(0.15))
-                    .clipShape(Capsule())
-            }
-            .disabled(selectedCount == 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .background(Color(.systemGray6))
-        .overlay(alignment: .top) {
-            Divider()
-        }
-    }
-
-    private var allSelected: Bool {
-        selectedCount > 0 && selectedCount == totalCount
     }
 }
 
@@ -1032,606 +1081,27 @@ struct GridItemContextMenu: View {
         Group {
             if !isSelecting {
                 Button { onSaveToPhotos(item) } label: {
-                    Label("Save to Photos", systemImage: "arrow.down.to.line")
+                    Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
                 }
                 Button { onShare(item) } label: {
-                    Label("Share", systemImage: "square.and.arrow.up")
+                    Label(L10n.share, systemImage: "square.and.arrow.up")
                 }
                 Button { onToggleFavorite(item) } label: {
-                    Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
+                    Label(L10n.favorite, systemImage: item.isFavorite ? "heart.fill" : "heart")
                 }
                 Button { onAddToAlbum(item) } label: {
-                    Label("Add to Album", systemImage: "folder.badge.plus")
+                    Label(L10n.addToAlbum, systemImage: "folder.badge.plus")
                 }
                 if let onRemoveFromCollection {
                     Button { onRemoveFromCollection(item) } label: {
-                        Label("Remove from Album", systemImage: "folder.badge.minus")
+                        Label(L10n.removeFromAlbum, systemImage: "folder.badge.minus")
                     }
                 }
                 Button(role: .destructive) { onDelete(item) } label: {
-                    Label("Delete", systemImage: "trash")
+                    Label(L10n.delete, systemImage: "trash")
                 }
             }
         }
-    }
-}
-
-/// For You: Photos-style suggestions. "Memories" groups the saved
-/// items by month (one large card per month — the month's newest
-/// item as a 16:9 cover, the month, and the item count), and
-/// "Featured Photos" is a horizontal strip of recent items.
-/// Tapping a memory or a featured photo opens the feed at that
-/// video (paging through the whole library). No fake content —
-/// everything here is built from the user's real saved items.
-struct ForYouView: View {
-    @EnvironmentObject private var viewModel: LibraryViewModel
-    @State private var feedStartItem: Item?
-    /// Presents the Settings sheet from the "…" menu.
-    @State private var showingSettings = false
-    /// Notice after a "…" Clipboard save (nil = no notice showing).
-    @State private var clipboardNotice: String?
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                if viewModel.items.isEmpty {
-                    ContentUnavailableView {
-                        Label("Nothing saved yet", systemImage: "heart.text.square")
-                    } description: {
-                        Text("Save some videos and photos — memories and featured picks will show up here.")
-                    }
-                    .padding(.top, 40)
-                } else {
-                    VStack(alignment: .leading, spacing: 28) {
-                        memoriesSection
-                        featuredSection
-                    }
-                    .padding(.vertical, 12)
-                }
-            }
-            .navigationTitle("For You")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    // The "…" menu lives on every tab except the
-                    // Player: Clipboard, then Settings.
-                    Menu {
-                        Button { viewModel.showingPhotoPicker = true } label: {
-                            Label("Import from Photos", systemImage: "photo.on.rectangle")
-                        }
-                        Button {
-                            Task {
-                                if let notice = await viewModel.saveFromClipboard() {
-                                    clipboardNotice = notice
-                                } else {
-                                    clipboardNotice = "Không có link trên clipboard."
-                                }
-                            }
-                        } label: {
-                            Label("Paste Clipboard", systemImage: "doc.on.clipboard")
-                        }
-                        Button { showingSettings = true } label: {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .accessibilityLabel("More options")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingSettings) {
-                SettingsView()
-            }
-            .alert("Kepto", isPresented: .constant(clipboardNotice != nil)) {
-                Button("OK") { clipboardNotice = nil }
-            } message: {
-                Text(clipboardNotice ?? "")
-            }
-            .refreshable {
-                await viewModel.fetch()
-            }
-            .task {
-                if viewModel.items.isEmpty {
-                    await viewModel.fetch()
-                }
-            }
-            .navigationDestination(item: $feedStartItem) { startItem in
-                FeedView(
-                    items: Binding(get: { viewModel.items }, set: { _ in }),
-                    startItemId: startItem.id,
-                    onNearEnd: { await viewModel.loadMore() }
-                )
-            }
-        }
-    }
-
-    /// One large card per saved month (newest first).
-    private var memoriesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Memories")
-                .font(.title2)
-                .fontWeight(.bold)
-                .padding(.horizontal)
-            ForEach(memories, id: \.key) { memory in
-                if let first = memory.items.first {
-                    Button {
-                        feedStartItem = first
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            AspectThumbnail(itemId: first.id, ratio: 16 / 9)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                            Text(Self.monthFormatter.string(from: memory.key))
-                                .font(.headline)
-                                .foregroundStyle(.white)
-                            Text("\(memory.items.count) items")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    /// A horizontal strip of recent items.
-    private var featuredSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Featured Photos")
-                .font(.title2)
-                .fontWeight(.bold)
-                .padding(.horizontal)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(featuredItems) { item in
-                        Button {
-                            feedStartItem = item
-                        } label: {
-                            AuthenticatedThumbnail(item: item)
-                                .frame(width: 140, height: 140)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal)
-            }
-        }
-    }
-
-    /// The 10 most recent items.
-    private var featuredItems: [Item] {
-        Array(viewModel.items.prefix(10))
-    }
-
-    /// Loaded items grouped by saved month (newest month first).
-    private var memories: [(key: Date, items: [Item])] {
-        let calendar = Calendar.current
-        var groups: [Date: [Item]] = [:]
-        for item in viewModel.items {
-            guard let date = item.savedDate else { continue }
-            let comps = calendar.dateComponents([.year, .month], from: date)
-            guard let key = calendar.date(from: comps) else { continue }
-            groups[key, default: []].append(item)
-        }
-        return groups.map { (key: $0.key, items: $0.value) }.sorted { $0.key > $1.key }
-    }
-
-    private static let monthFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMMM yyyy"
-        return f
-    }()
-}
-
-/// Search: a Photos-style search tab. A search bar at the top
-/// (placeholder "Photos, People, Places…", mic icon on the right
-/// like Photos), a Categories section below (platforms, then top
-/// creators — each a square cover + label), and search results as
-/// a square 3-column grid. Tapping a category runs that search;
-/// typing searches by title / caption / author (debounced).
-/// Long-pressing a result opens the same native context menu as
-/// the Library grid; tapping one opens the feed.
-struct SearchView: View {
-    @EnvironmentObject private var viewModel: LibraryViewModel
-    @State private var query = ""
-    @State private var selectedPlatform: Platform?
-    @State private var searchTask: Task<Void, Never>?
-    @State private var feedStartItem: Item?
-    @State private var itemForAlbumPicker: Item?
-    @State private var shareFile: ShareFile?
-    @State private var itemPendingDelete: Item?
-    @State private var showingDeleteConfirmation = false
-    @State private var saveNotice: String?
-    /// Presents the Settings sheet from the "…" menu.
-    @State private var showingSettings = false
-
-    /// 3-column square grid (Photos style): 2pt gaps.
-    private let gridColumns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-    ]
-
-    /// True when a text query or a platform category is active.
-    private var isSearchActive: Bool {
-        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedPlatform != nil
-    }
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                searchBar
-                if isSearchActive {
-                    searchResultsContent
-                } else {
-                    categoriesContent
-                }
-            }
-            .navigationTitle("Search")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    // The "…" menu lives on every tab except the
-                    // Player: Clipboard, then Settings.
-                    Menu {
-                        Button { viewModel.showingPhotoPicker = true } label: {
-                            Label("Import from Photos", systemImage: "photo.on.rectangle")
-                        }
-                        Button {
-                            Task {
-                                if let notice = await viewModel.saveFromClipboard() {
-                                    saveNotice = notice
-                                } else {
-                                    saveNotice = "Không có link trên clipboard."
-                                }
-                            }
-                        } label: {
-                            Label("Paste Clipboard", systemImage: "doc.on.clipboard")
-                        }
-                        Button { showingSettings = true } label: {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .accessibilityLabel("More options")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingSettings) {
-                SettingsView()
-            }
-            .onChange(of: query) { _, _ in
-                scheduleSearch()
-            }
-            .onChange(of: selectedPlatform) { _, _ in
-                Task { await performSearch() }
-            }
-            .navigationDestination(item: $feedStartItem) { startItem in
-                FeedView(
-                    items: Binding(get: { viewModel.searchResults }, set: { _ in }),
-                    startItemId: startItem.id,
-                    onNearEnd: { await viewModel.searchMore() }
-                )
-            }
-            .sheet(item: $itemForAlbumPicker) { pickerItem in
-                AddToCollectionPickerView(
-                    item: pickerItem,
-                    onAddedToCollection: { name, added in
-                        saveNotice = added ? "Đã thêm vào \(name)." : "Đã có trong \(name)."
-                    },
-                    onCancel: { itemForAlbumPicker = nil }
-                )
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Color.black)
-            }
-            .sheet(item: $shareFile) { file in
-                ShareSheet(activityItems: [file.url])
-            }
-            .confirmationDialog("Delete this saved item?",
-                                isPresented: $showingDeleteConfirmation,
-                                titleVisibility: .visible) {
-                Button("Delete", role: .destructive) {
-                    Task { await deleteGridMenuItem() }
-                }
-                Button("Cancel", role: .cancel) { itemPendingDelete = nil }
-            } message: {
-                Text(itemPendingDelete?.displayTitle ?? "")
-            }
-            .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
-                Button("OK") { saveNotice = nil }
-            } message: {
-                Text(saveNotice ?? "")
-            }
-            .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
-                Button("OK") { viewModel.errorMessage = nil }
-            } message: {
-                Text(viewModel.errorMessage ?? "")
-            }
-        }
-    }
-
-    /// The search bar (Photos style): a rounded dark field with a
-    /// magnifier, the "Photos, People, Places…" placeholder, a clear
-    /// button while typing, and a mic icon on the right (decorative —
-    /// voice search is not implemented).
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.white.opacity(0.7))
-            TextField("Photos, People, Places…", text: $query)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .foregroundStyle(.white)
-            if !query.isEmpty {
-                Button {
-                    query = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.white.opacity(0.7))
-                }
-            }
-            Image(systemName: "mic.fill")
-                .foregroundStyle(.white.opacity(0.7))
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.white.opacity(0.1))
-        .clipShape(Capsule())
-        .padding(.horizontal)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
-    }
-
-    /// Categories (shown when no search is active): platforms, then
-    /// the most-saved creators. Each is a square cover + label;
-    /// tapping one runs that search.
-    private var categoriesContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                if !platformCategories.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Categories")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal)
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(platformCategories, id: \.platform) { category in
-                                    SearchCategoryCard(
-                                        title: category.platform.displayName,
-                                        coverItem: category.cover
-                                    ) {
-                                        selectedPlatform = selectedPlatform == category.platform ? nil : category.platform
-                                    }
-                                }
-                            }
-                            .padding(.horizontal)
-                        }
-                    }
-                }
-                if !authorCategories.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("People")
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .padding(.horizontal)
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(authorCategories, id: \.name) { category in
-                                    SearchCategoryCard(title: category.name, coverItem: category.cover) {
-                                        query = category.name
-                                    }
-                                }
-                            }
-                            .padding(.horizontal)
-                        }
-                    }
-                }
-                if platformCategories.isEmpty && authorCategories.isEmpty {
-                    ContentUnavailableView {
-                        Label("Nothing saved yet", systemImage: "magnifyingglass")
-                    } description: {
-                        Text("Save some links and categories will show up here.")
-                    }
-                    .padding(.top, 40)
-                }
-            }
-            .padding(.vertical, 12)
-        }
-    }
-
-    /// Search results as a square 3-column grid (Photos style).
-    private var searchResultsContent: some View {
-        Group {
-            if viewModel.searchResults.isEmpty {
-                ContentUnavailableView {
-                    Label("No matches", systemImage: "magnifyingglass")
-                } description: {
-                    Text("Nothing saved matches this search yet.")
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: gridColumns, spacing: 2) {
-                        ForEach(viewModel.searchResults) { item in
-                            searchCell(for: item)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// One result cell with the native context menu and the
-    /// waterfall load-more on the last result.
-    private func searchCell(for item: Item) -> some View {
-        PhotosGridCell(
-            item: item,
-            onTap: { feedStartItem = item }
-        )
-        .contextMenu {
-            GridItemContextMenu(
-                item: item,
-                isSelecting: false,
-                onSaveToPhotos: { saveToPhotos($0) },
-                onShare: { shareItem($0) },
-                onToggleFavorite: { toggleGridFavorite($0) },
-                onAddToAlbum: { itemForAlbumPicker = $0 },
-                onDelete: { requestGridDelete($0) }
-            )
-        }
-        .onAppear {
-            if item.id == viewModel.searchResults.last?.id {
-                Task { await viewModel.searchMore() }
-            }
-        }
-    }
-
-    // MARK: - Categories
-
-    /// One category per platform that has saved items (cover = the
-    /// platform's newest saved item).
-    private var platformCategories: [(platform: Platform, cover: Item)] {
-        var result: [(Platform, Item)] = []
-        for platform in Platform.allCases {
-            if let first = viewModel.items.first(where: { $0.platform == platform }) {
-                result.append((platform, first))
-            }
-        }
-        return result
-    }
-
-    /// The most-saved creators (up to 8), cover = the creator's
-    /// newest saved item.
-    private var authorCategories: [(name: String, cover: Item)] {
-        var counts: [String: (count: Int, first: Item)] = [:]
-        for item in viewModel.items {
-            let name = item.collectionName
-            if var entry = counts[name] {
-                entry.count += 1
-                counts[name] = entry
-            } else {
-                counts[name] = (count: 1, first: item)
-            }
-        }
-        return counts
-            .map { (name: $0.key, count: $0.value.count, cover: $0.value.first) }
-            .sorted { $0.count > $1.count }
-            .prefix(8)
-            .map { (name: $0.name, cover: $0.cover) }
-    }
-
-    // MARK: - Search
-
-    /// Debounce: wait for the user to stop typing before hitting
-    /// the server with a new query.
-    private func scheduleSearch() {
-        searchTask?.cancel()
-        searchTask = Task {
-            try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled else { return }
-            await performSearch()
-        }
-    }
-
-    /// Runs the current search (text query and/or platform). With
-    /// no query and no platform, clears the results instead.
-    private func performSearch() async {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if q.isEmpty && selectedPlatform == nil {
-            viewModel.clearSearch()
-            return
-        }
-        await viewModel.search(query: q.isEmpty ? nil : q, platform: selectedPlatform)
-    }
-
-    // MARK: - Context menu actions
-
-    private func saveToPhotos(_ item: Item) {
-        Task {
-            do {
-                try await viewModel.saveToPhotos(item: item)
-                saveNotice = "Đã lưu vào Photos."
-            } catch {
-                saveNotice = "Không lưu được vào Photos."
-            }
-        }
-    }
-
-    private func shareItem(_ item: Item) {
-        Task {
-            do {
-                shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
-            } catch {
-                saveNotice = "Không tải được file để chia sẻ."
-            }
-        }
-    }
-
-    private func toggleGridFavorite(_ item: Item) {
-        Task {
-            if let updated = await viewModel.toggleFavorite(item: item) {
-                saveNotice = updated.isFavorite ? "Đã thêm vào Favorite." : "Đã bỏ Favorite."
-            }
-        }
-    }
-
-    private func requestGridDelete(_ item: Item) {
-        itemPendingDelete = item
-        showingDeleteConfirmation = true
-    }
-
-    private func deleteGridMenuItem() async {
-        guard let target = itemPendingDelete else { return }
-        itemPendingDelete = nil
-        do {
-            try await viewModel.delete(item: target)
-        } catch {
-            viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-}
-
-/// One search category card (Photos Search style): a square cover
-/// with the category name below it.
-private struct SearchCategoryCard: View {
-    let title: String
-    let coverItem: Item?
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 6) {
-                Group {
-                    if let coverItem {
-                        AuthenticatedThumbnail(item: coverItem)
-                    } else {
-                        ZStack {
-                            Color(.systemGray5)
-                            Image(systemName: "photo")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .frame(width: 120, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                Text(title)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-            }
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -1661,7 +1131,7 @@ private struct NewAlbumCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text("New Album...")
+            Text(L10n.newAlbum + "...")
                 .font(.body)
                 .foregroundStyle(.white)
                 .lineLimit(1)
@@ -1694,7 +1164,7 @@ private struct PickerAlbumCardView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             Text(collection.name)
                 .font(.body)
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
             Text("\(collection.count)")
                 .font(.subheadline)
@@ -1731,11 +1201,11 @@ struct ImportAlbumPickerView: View {
         let photos = items.filter { $0.contentType?.hasPrefix("image/") == true }.count
         let videos = items.count - photos
         if videos == 0 {
-            return items.count == 1 ? "1 Photo" : "\(items.count) Photos"
+            return L10n.photoCount(items.count)
         } else if photos == 0 {
-            return items.count == 1 ? "1 Video" : "\(items.count) Videos"
+            return L10n.videoCount(items.count)
         } else {
-            return "\(items.count) Items"
+            return L10n.itemsCount(items.count)
         }
     }
 
@@ -1747,7 +1217,7 @@ struct ImportAlbumPickerView: View {
                     // first photo + "1 Photo"). While the upload is
                     // still running the picker shows progress instead.
                     if viewModel.isUploading {
-                        Text("Đang tải lên \(viewModel.uploadDone)/\(viewModel.uploadTotal)…")
+                        Text(L10n.uploadingCount(viewModel.uploadDone, viewModel.uploadTotal))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     } else if let first = viewModel.importPickerItems.first {
@@ -1770,11 +1240,11 @@ struct ImportAlbumPickerView: View {
                         .buttonStyle(.plain)
                     }
                     // "My Albums" section.
-                    Text("My Albums")
+                    Text(L10n.myAlbums)
                         .font(.title2)
                         .bold()
                     if viewModel.myCollections.isEmpty {
-                        Text("Chưa có album nào. Tạo album mới để lưu ảnh/video vừa import.")
+                        Text(L10n.noAlbumsHint)
                             .foregroundStyle(.secondary)
                     }
                     // 2-column album grid with cover thumbnails,
@@ -1813,21 +1283,21 @@ struct ImportAlbumPickerView: View {
                 }
                 .padding()
             }
-            .navigationTitle("Add to Album")
+            .navigationTitle(L10n.addToAlbum)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 // Photos puts Cancel at the top-right; Edit stays
                 // at the top-left (the "+" is gone — the "New
                 // Album..." card is the way to create an album).
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(isEditing ? "Done" : "Edit") {
+                    Button(isEditing ? L10n.done : L10n.edit) {
                         isEditing.toggle()
                     }
                     .fontWeight(isEditing ? .bold : .regular)
                     .foregroundStyle(.blue)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Cancel") {
+                    Button(L10n.cancel) {
                         viewModel.importPickerItems = []
                         viewModel.chosenImportAlbum = nil
                         viewModel.showingImportAlbumPicker = false
@@ -1835,12 +1305,12 @@ struct ImportAlbumPickerView: View {
                     .foregroundStyle(.blue)
                 }
             }
-            .alert("New Album", isPresented: $showingNewAlbum) {
-                TextField("Title", text: $newAlbumName)
+            .alert(L10n.newAlbum, isPresented: $showingNewAlbum) {
+                TextField(L10n.title, text: $newAlbumName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Button("Cancel", role: .cancel) { newAlbumName = "" }
-                Button("Save") {
+                Button(L10n.cancel, role: .cancel) { newAlbumName = "" }
+                Button(L10n.save) {
                     let name = newAlbumName
                     newAlbumName = ""
                     Task { await viewModel.createImportAlbum(name: name) }
@@ -1850,25 +1320,25 @@ struct ImportAlbumPickerView: View {
                 // Save did nothing. The Worker already rejects an
                 // empty name with a clear error.)
             } message: {
-                Text("Enter a name for this album.")
+                Text(L10n.newAlbumMessage)
             }
             .confirmationDialog(
-                "Delete Album \"\(albumPendingDelete?.name ?? "")\"?",
+                L10n.deleteAlbumTitle(albumPendingDelete?.name ?? ""),
                 isPresented: $showingDeleteConfirmation,
                 titleVisibility: .visible
             ) {
                 if let collection = albumPendingDelete {
-                    Button("Delete Album & Videos", role: .destructive) {
+                    Button(L10n.deleteAlbumAndVideos, role: .destructive) {
                         Task { await deleteAlbum(collection, deleteItems: true) }
                     }
-                    Button("Delete Album Only", role: .destructive) {
+                    Button(L10n.deleteAlbumOnly, role: .destructive) {
                         Task { await deleteAlbum(collection, deleteItems: false) }
                     }
                 }
-                Button("Cancel", role: .cancel) { albumPendingDelete = nil }
+                Button(L10n.cancel, role: .cancel) { albumPendingDelete = nil }
             } message: {
                 if let collection = albumPendingDelete {
-                    Text("Delete Album & Videos permanently deletes the album and every video in it (\(collection.count) video\(collection.count == 1 ? "" : "s")). Delete Album Only removes just the album — the videos stay saved in the library.")
+                    Text(L10n.deleteAlbumMessage(collection.count))
                 }
             }
         }

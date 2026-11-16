@@ -166,6 +166,16 @@ final class KeptoAPI {
         return (body.items, body.nextCursor)
     }
 
+    /// GET /api/listAll — light metadata for EVERY item (no
+    /// pagination), for complete Years/Months/Days groupings and
+    /// synchronous local search. No thumbnail URLs or media bytes —
+    /// just the fields the groupings and the Search tab need.
+    func listAll() async throws -> [ItemMetadata] {
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/listAll")))
+        let body = try handle(data, response, as: ListAllResponse.self)
+        return body.items
+    }
+
     /// GET /api/stats — library counts for the Photos-style header
     /// ("N Photos, M Videos") and the Albums tab (Recents = total,
     /// Favorites = favorites). Throws so the caller can fall back to
@@ -373,7 +383,7 @@ final class KeptoAPI {
     // MARK: - Authenticated media URLs
 
     /// URL for GET /api/play/:id. The Bearer token is NOT in the URL —
-    /// see `ItemDetailView`: it is passed via
+    /// see `PhotoDetailView`: it is passed via
     /// `AVURLAssetHTTPHeaderFieldsKey` when building the AVURLAsset.
     /// The Worker has no redirects, so the header survives the whole stream.
     func playURL(for item: Item) -> URL {

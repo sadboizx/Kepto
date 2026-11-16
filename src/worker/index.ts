@@ -24,6 +24,11 @@
  *                             named after the TikTok collection when it
  *                             has a title (best-effort).
  * - GET  /api/list            ?platform=&q=&status=&author_username=&limit=&cursor=
+ * - GET  /api/listAll          light metadata for EVERY item (no
+ *                             pagination): complete Years/Months/Days
+ *                             groupings + synchronous local search
+ *                             in the app. No R2 keys, no thumbnail
+ *                             URLs, no media bytes.
  * - GET  /api/stats           counts for the Library header + Albums tab
  *                             { total, photos, videos, favorites }
  * - GET  /api/collections     one row per author username (the Library's
@@ -87,6 +92,7 @@ import {
   getMyCollection,
   getStats,
   insertItem,
+  listAllItems,
   listCollections,
   listItems,
   listItemsByAuthor,
@@ -507,6 +513,19 @@ app.get("/api/list", async (c) => {
       ? btoa(JSON.stringify({ saved_at: last.saved_at, id: last.id }))
       : null;
   return c.json({ ok: true, items: page, next_cursor: nextCursor });
+});
+
+/** Light metadata for EVERY item (no pagination): id, dates,
+ * caption, author, platform, content type, dimensions, duration,
+ * favorite flag, and My-collection membership. For complete
+ * Years/Months/Days groupings and synchronous local search in the
+ * app. No R2 keys, no thumbnail URLs, no media bytes. One query
+ * (see listAllItems) — no N+1. At the current library size
+ * (~500 items) the response is a few hundred KB; if the library
+ * grows into the thousands, revisit with a paginated variant. */
+app.get("/api/listAll", async (c) => {
+  const items = await listAllItems(c.env.DB, "me");
+  return c.json({ ok: true, items, total: items.length });
 });
 
 /** Library counts for the Photos-style header ("N Photos, M Videos")

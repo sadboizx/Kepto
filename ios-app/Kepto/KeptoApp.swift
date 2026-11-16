@@ -24,7 +24,7 @@ struct KeptoApp: App {
 
     init() {
         // The tab bar (Library / For You / Albums / Search) MUST have
-        // a solid, opaque dark background. SwiftUI's
+        // a solid, opaque background. SwiftUI's
         // `.toolbarBackground(_:for: .tabBar)` did NOT take effect —
         // the bar stayed fully transparent over the grid (IMG_0940,
         // still transparent after both ultraThinMaterial in v37 and
@@ -58,9 +58,8 @@ struct KeptoApp: App {
 }
 
 /// The app's root: a Photos-style bottom tab bar with four tabs
-/// (Library / For You / Albums / Search) and dark mode forced
-/// app-wide (`.preferredColorScheme(.dark)` on the root — the whole
-/// app is dark, like the Photos app in the user's screenshots).
+/// (Library / For You / Albums / Search). It follows the system
+/// appearance like the Photos app (Q11) — no forced dark mode.
 ///
 /// The Share Extension handoff (`kepto://save?url=...`) is handled
 /// HERE, not in the Library tab: the Library is only one tab now,
@@ -77,25 +76,23 @@ struct KeptoTabView: View {
     @State private var shareSaveNotice: String?
 
     var body: some View {
-        // Tab icons are exactly the iOS Photos ones, with the
-        // selected tab showing the FILLED variant and the others the
-        // outline variant (Photos renders the selected tab filled).
-        // Search has no fill variant — magnifyingglass in both states.
+        // Tab icons are exactly the iOS Photos ones (Q12): one icon
+        // per tab, no filled variant (photo.on.rectangle.angled,
+        // heart.rectangle, rectangle.stack, magnifyingglass).
         TabView(selection: $selectedTab) {
             LibraryView()
-                .tabItem { Label("Library", systemImage: selectedTab == 0 ? "photo.on.rectangle.fill" : "photo.on.rectangle") }
+                .tabItem { Label(L10n.library, systemImage: "photo.on.rectangle.angled") }
                 .tag(0)
             ForYouView()
-                .tabItem { Label("For You", systemImage: selectedTab == 1 ? "heart.text.square.fill" : "heart.text.square") }
+                .tabItem { Label(L10n.forYou, systemImage: "heart.rectangle") }
                 .tag(1)
             AlbumsView()
-                .tabItem { Label("Albums", systemImage: selectedTab == 2 ? "rectangle.stack.fill" : "rectangle.stack") }
+                .tabItem { Label(L10n.albums, systemImage: "rectangle.stack") }
                 .tag(2)
             SearchView()
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
+                .tabItem { Label(L10n.search, systemImage: "magnifyingglass") }
                 .tag(3)
         }
-        .preferredColorScheme(.dark)
         // NOTE: no SwiftUI .toolbarBackground here — it did not take
         // effect (bar stayed transparent, IMG_0940). The tab bar
         // background is set at the UIKit level in KeptoApp.init()

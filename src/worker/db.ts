@@ -257,6 +257,121 @@ export async function listItems(
   return results ?? [];
 }
 
+export interface ItemMetadataRow {
+  id: string;
+  platform: Platform;
+  title: string | null;
+  caption: string | null;
+  author: string | null;
+  author_username: string | null;
+  posted_at: string | null;
+  saved_at: string;
+  content_type: string | null;
+  duration: number | null;
+  width: number | null;
+  height: number | null;
+  file_size: number | null;
+  /** 1 = favorited (migration 0005), 0/null = not. */
+  is_favorite: number | null;
+  /** User-created collections this item is in (ids + names), or [] when none. */
+  my_collection_ids: string[];
+  my_collection_names: string[];
+}
+
+/**
+ * Light metadata for EVERY item (GET /api/listAll): one query, no
+ * pagination, no N+1. Enough for complete Years/Months/Days
+ * groupings, Memories/Featured, and synchronous local search in the
+ * app — and nothing more: no R2 keys, no thumbnail URLs, no media
+ * bytes. My-collection membership comes from one LEFT JOIN +
+ * GROUP_CONCAT (separator U+001F, a byte that cannot appear in a
+ * collection name). When the my_collections tables do not exist yet
+ * (migration 0004 not applied), falls back to the plain items query
+ * so the endpoint still works — the membership lists are just empty.
+ * (Assumes migration 0005 for is_favorite, like the rest of the
+ * favorites feature; both migrations are applied in production.)
+ */
+export async function listAllItems(
+  db: D1Database,
+  userId: string,
+): Promise<ItemMetadataRow[]> {
+  const split = (v: string | null): string[] =>
+    v ? v.split("\u001f").filter((s) => s.length > 0) : [];
+  try {
+    const { results } = await db
+      .prepare(
+        `SELECT i.id, i.platform, i.title, i.caption, i.author,
+                i.author_username, i.posted_at, i.saved_at,
+                i.content_type, i.duration, i.width, i.height,
+                i.file_size, i.is_favorite,
+                GROUP_CONCAT(mc.id, char(31)) AS my_collection_ids,
+                GROUP_CONCAT(mc.name, char(31)) AS my_collection_names
+           FROM items i
+           LEFT JOIN my_collection_items mci ON mci.item_id = i.id
+           LEFT JOIN my_collections mc ON mc.id = mci.collection_id
+          WHERE i.user_id = ?1
+          GROUP BY i.id
+          ORDER BY i.saved_at DESC, i.id DESC`,
+      )
+      .bind(userId)
+      .all<{
+        id: string;
+        platform: Platform;
+        title: string | null;
+        caption: string | null;
+        author: string | null;
+        author_username: string | null;
+        posted_at: string | null;
+        saved_at: string;
+        content_type: string | null;
+        duration: number | null;
+        width: number | null;
+        height: number | null;
+        file_size: number | null;
+        is_favorite: number | null;
+        my_collection_ids: string | null;
+        my_collection_names: string | null;
+      }>();
+    return (results ?? []).map((r) => ({
+      ...r,
+      my_collection_ids: split(r.my_collection_ids),
+      my_collection_names: split(r.my_collection_names),
+    }));
+  } catch {
+    // my_collections tables missing (migration 0004 not applied) —
+    // return the items without membership info instead of failing.
+    const { results } = await db
+      .prepare(
+        `SELECT id, platform, title, caption, author, author_username,
+                posted_at, saved_at, content_type, duration, width,
+                height, file_size, is_favorite
+           FROM items WHERE user_id = ?1 ORDER BY saved_at DESC, id DESC`,
+      )
+      .bind(userId)
+      .all<{
+        id: string;
+        platform: Platform;
+        title: string | null;
+        caption: string | null;
+        author: string | null;
+        author_username: string | null;
+        posted_at: string | null;
+        saved_at: string;
+        content_type: string | null;
+        duration: number | null;
+        width: number | null;
+        height: number | null;
+        file_size: number | null;
+        is_favorite: number | null;
+      }>();
+    return (results ?? []).map((r) => ({
+      ...r,
+      my_collection_ids: [],
+      my_collection_names: [],
+    }));
+  }
+}
+
 export interface LibraryStats {
   total: number;
   photos: number;

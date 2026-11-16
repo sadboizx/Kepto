@@ -24,6 +24,16 @@ final class LibraryViewModel: ObservableObject {
     /// M Videos") and the Albums tab. Nil until fetched (the
     /// /api/stats endpoint may be unavailable on an older Worker).
     @Published private(set) var libraryStats: LibraryStats?
+    /// Light metadata for EVERY saved item (GET /api/listAll,
+    /// fetched once after config load). Groupings
+    /// (Years/Months/Days), Memories, Featured and synchronous
+    /// local search all read this cache — never the paged `items`
+    /// list — so they stay complete even before the user has
+    /// scrolled through every page.
+    @Published private(set) var allMetadata: [ItemMetadata] = []
+    /// True once the full-metadata fetch has succeeded. Local
+    /// search falls back to the server only while this is false.
+    @Published private(set) var allMetadataLoaded = false
     /// Collections for the Albums tab (one per creator username).
     @Published private(set) var collections: [CollectionInfo] = []
     /// User-created collections ("My collections").
@@ -81,13 +91,18 @@ final class LibraryViewModel: ObservableObject {
     private var searchQuery: String?
     private var searchPlatform: Platform?
     private var isFetching = false
+    private var isFetchingAllMetadata = false
+    /// True when the current search results came from the local
+    /// metadata cache (no more pages — all matches are already there).
+    private var searchIsLocal = false
+    /// Full Items resolved from light metadata matches (search),
+    /// keyed by id. Seeded from every loaded page so repeat
+    /// searches do not re-fetch items the Library already holds.
+    private var resolvedItemsById: [String: Item] = [:]
 
     var isConfigured: Bool { api != nil }
 
     var hasMore: Bool { nextCursor != nil }
-
-    /// True while a search (text or platform) has a next page.
-    var hasMoreSearchResults: Bool { searchCursor != nil }
 
     init() {
         reloadConfig()
@@ -107,6 +122,112 @@ final class LibraryViewModel: ObservableObject {
         if let stats = try? await api.stats() {
             libraryStats = stats
         }
+    }
+
+    // MARK: - Full library metadata (GET /api/listAll)
+
+    /// Fetch the full library metadata once (GET /api/listAll).
+    /// Runs at most once per config (guard flag) unless `force` is
+    /// set — save/upload pass force: true because the library just
+    /// changed. Quiet on failure: the Library grid, groupings and
+    /// search keep working from the paged list / server search, and
+    /// the next fetch() retries (allMetadataLoaded stays false).
+    func fetchAllMetadata(force: Bool = false) async {
+        guard let api else { return }
+        guard force || !allMetadataLoaded else { return }
+        guard !isFetchingAllMetadata else { return }
+        isFetchingAllMetadata = true
+        defer { isFetchingAllMetadata = false }
+        do {
+            allMetadata = try await api.listAll()
+            allMetadataLoaded = true
+        } catch {
+            if error is CancellationError { return }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return }
+            // Quiet — see above.
+        }
+    }
+
+    /// The full metadata cache grouped by the given calendar
+    /// components (from each row's saved date), newest group first.
+    /// Same shape as the Library view's groupItems(by:) — but over
+    /// the FULL library, so the sections are complete even before
+    /// the user has scrolled through every page. Rows whose saved
+    /// date does not parse are skipped.
+    func groupedMetadata(by components: Set<Calendar.Component>) -> [(key: Date, items: [ItemMetadata])] {
+        let calendar = Calendar.current
+        var groups: [Date: [ItemMetadata]] = [:]
+        for meta in allMetadata {
+            guard let date = meta.savedDate else { continue }
+            let comps = calendar.dateComponents(components, from: date)
+            guard let key = calendar.date(from: comps) else { continue }
+            groups[key, default: []].append(meta)
+        }
+        return groups.map { (key: $0.key, items: $0.value) }.sorted { $0.key > $1.key }
+    }
+
+    /// Full-library groupings: days / months / years, newest first.
+    var metadataByDay: [(key: Date, items: [ItemMetadata])] { groupedMetadata(by: [.year, .month, .day]) }
+    var metadataByMonth: [(key: Date, items: [ItemMetadata])] { groupedMetadata(by: [.year, .month]) }
+    var metadataByYear: [(key: Date, items: [ItemMetadata])] { groupedMetadata(by: [.year]) }
+
+    /// Memories (For You, Photos rule Q7): one per month with >= 8
+    /// items, max 8, newest first. Title is the month only
+    /// ("MMMM yyyy") — Kepto items have no location, so there is
+    /// no place part.
+    var memories: [(key: Date, items: [ItemMetadata])] {
+        Array(metadataByMonth.filter { $0.items.count >= 8 }.prefix(8))
+    }
+
+    /// Featured Photos (Photos rule): favorites first, up to 24;
+    /// when there are no favorites, the 16 newest items. Newest
+    /// first either way (the cache arrives saved_at DESC).
+    var featuredMetadata: [ItemMetadata] {
+        let favorites = allMetadata.filter { $0.isFavorite }
+        if favorites.isEmpty { return Array(allMetadata.prefix(16)) }
+        return Array(favorites.prefix(24))
+    }
+
+    /// Synchronous local search over the full metadata cache
+    /// (Photos-style): matches the query against title, caption,
+    /// author, author username, platform display name, and the
+    /// My-collection names of each item. Case- and
+    /// diacritic-insensitive substring match (same scope as the
+    /// server search, plus platform + collection names). An empty
+    /// query with a platform set lists that whole platform; an
+    /// empty query with no platform matches nothing.
+    func searchLocal(query: String?, platform: Platform?) -> [ItemMetadata] {
+        let trimmed = query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let needle = trimmed.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        if needle.isEmpty && platform == nil { return [] }
+        return allMetadata.filter { meta in
+            if let platform, meta.platform != platform { return false }
+            guard !needle.isEmpty else { return true }
+            let fields = [meta.title, meta.caption, meta.author, meta.authorUsername,
+                          meta.platform.displayName, meta.collectionName].compactMap { $0 }
+                + meta.myCollectionNames
+            return fields.contains {
+                $0.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).contains(needle)
+            }
+        }
+    }
+
+    /// Update one metadata row from a fresh full Item (e.g. after
+    /// ingest finished and filled in caption/author). Keeps the
+    /// listAll cache current without a full re-fetch. The
+    /// My-collection membership comes from the cached row (a full
+    /// Item carries no membership info).
+    private func upsertMetadata(for item: Item) {
+        guard let index = allMetadata.firstIndex(where: { $0.id == item.id }) else { return }
+        let old = allMetadata[index]
+        allMetadata[index] = ItemMetadata(
+            id: item.id, platform: item.platform, title: item.title, caption: item.caption,
+            author: item.author, authorUsername: item.authorUsername, postedAt: item.postedAt,
+            savedAt: item.savedAt, contentType: item.contentType, duration: item.duration,
+            width: item.width, height: item.height, fileSize: item.fileSize,
+            isFavorite: item.isFavorite,
+            myCollectionIds: old.myCollectionIds, myCollectionNames: old.myCollectionNames
+        )
     }
 
     /// Collections for the home screen. Called on appear and on
@@ -194,7 +315,7 @@ final class LibraryViewModel: ObservableObject {
     }
 
     /// One page of a user-created collection's items (used by
-    /// MyCollectionDetailView). Throws so the detail view can show it.
+    /// PhotoCollectionScreen). Throws so the detail view can show it.
     func listMyCollectionItems(collectionId: String,
                                limit: Int = 50,
                                cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
@@ -347,6 +468,12 @@ final class LibraryViewModel: ObservableObject {
             let (page, cursor) = try await api.list(limit: 50)
             items = page
             nextCursor = cursor
+            for item in page { resolvedItemsById[item.id] = item }
+            // Kick off the one-time full-metadata fetch (listAll) in
+            // the background — groupings, Memories and local search
+            // read it. fetch() itself returns as soon as the first
+            // page is in.
+            Task { await fetchAllMetadata() }
         } catch {
             // Cancellation is not an error — the task was superseded
             // (view gone, refresh re-triggered). Never show it as an
@@ -370,6 +497,7 @@ final class LibraryViewModel: ObservableObject {
             let (page, next) = try await api.list(limit: 50, cursor: cursor)
             items.append(contentsOf: page)
             nextCursor = next
+            for item in page { resolvedItemsById[item.id] = item }
         } catch {
             // Cancellation is not an error (scroll task superseded) —
             // never show it as an alert ("cancelled").
@@ -379,60 +507,46 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
-    /// Search (Search tab): first page of items matching a text query
-    /// and/or a platform. Either filter may be nil, but at least one
-    /// must be set — the view only calls this with a real query.
-    /// Replaces the previous results (the view debounces typing).
-    func search(query: String? = nil, platform: Platform? = nil) async {
-        guard let api else {
-            errorMessage = KeptoAPIError.notConfigured.errorDescription
-            return
+    /// Materialize light metadata matches to full Items. Prefers the
+    /// in-memory paged `items` + the resolved cache; fetches the
+    /// rest by id, concurrently. Order follows the matches
+    /// (newest first). Used by `resolveItems` (Search/For You feeds).
+    private func resolveSearchItems(_ matches: [ItemMetadata]) async -> [Item] {
+        guard let api else { return [] }
+        let byId = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var found: [Item?] = Array(repeating: nil, count: matches.count)
+        var missing: [(index: Int, id: String)] = []
+        for (index, meta) in matches.enumerated() {
+            if let item = byId[meta.id] ?? resolvedItemsById[meta.id] {
+                found[index] = item
+            } else {
+                missing.append((index, meta.id))
+            }
         }
-        searchQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines)
-        searchPlatform = platform
-        do {
-            let (page, cursor) = try await api.list(
-                platform: platform,
-                query: searchQuery,
-                limit: 50
-            )
-            searchResults = page
-            searchCursor = cursor
-        } catch {
-            if error is CancellationError { return }
-            if let urlError = error as? URLError, urlError.code == .cancelled { return }
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        if !missing.isEmpty {
+            let fetched = await withTaskGroup(of: (Int, Item?).self) { group in
+                for (index, id) in missing {
+                    group.addTask { (index, try? await api.getItem(id: id)) }
+                }
+                var out: [(Int, Item?)] = []
+                for await result in group { out.append(result) }
+                return out
+            }
+            for (index, item) in fetched {
+                if let item {
+                    found[index] = item
+                    resolvedItemsById[item.id] = item
+                }
+            }
         }
+        return found.compactMap { $0 }
     }
 
-    /// Next page of the current search (same query / platform).
-    func searchMore() async {
-        guard let api, let cursor = searchCursor, !isFetching else { return }
-        isFetching = true
-        defer { isFetching = false }
-        do {
-            let (page, next) = try await api.list(
-                platform: searchPlatform,
-                query: searchQuery,
-                limit: 50,
-                cursor: cursor
-            )
-            searchResults.append(contentsOf: page)
-            searchCursor = next
-        } catch {
-            if error is CancellationError { return }
-            if let urlError = error as? URLError, urlError.code == .cancelled { return }
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
-    /// Clear the search results and filters (Search tab, when the
-    /// query is emptied and no category is selected).
-    func clearSearch() {
-        searchResults = []
-        searchCursor = nil
-        searchQuery = nil
-        searchPlatform = nil
+    /// Materialize light metadata matches to full Items (for the
+    /// ported SearchView's feed: tap a result, page through the
+    /// matches). Same resolver the Search/For You feeds use.
+    func resolveItems(_ matches: [ItemMetadata]) async -> [Item] {
+        await resolveSearchItems(matches)
     }
 
     /// One page of all saved items (used by the Albums tab's Recents
@@ -451,7 +565,19 @@ final class LibraryViewModel: ObservableObject {
         return try await api.list(favorite: true, limit: limit, cursor: cursor)
     }
 
-    /// One page of a collection's items (used by CollectionDetailView).
+    /// One page of videos or photos only (used by the Albums tab's
+    /// Media Types rows). `media` is "video" or "image" — the API's
+    /// spelling. Throws so the detail view can show it.
+    /// (Step 4: added for the media-filtered browser; this copy
+    /// supersedes the step-3 staged LibraryViewModel.swift.)
+    func listMedia(_ media: String,
+                   limit: Int = 50,
+                   cursor: String? = nil) async throws -> (items: [Item], nextCursor: String?) {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        return try await api.list(media: media, limit: limit, cursor: cursor)
+    }
+
+    /// One page of a collection's items (used by PhotoCollectionScreen).
     /// `username` is the collection id (or "__unknown__" for the Unknown
     /// collection). Throws so the detail view can show the failure.
     func listCollection(authorUsername: String,
@@ -480,6 +606,10 @@ final class LibraryViewModel: ObservableObject {
             let result = try await api.save(url: url)
             await fetch()
             await fetchCollections()
+            // The library just changed — refresh the full metadata
+            // cache too, so groupings and local search include the
+            // new item(s) at once.
+            await fetchAllMetadata(force: true)
             // The new item(s) are pending (ingesting) — start the poll
             // so their thumbnails appear when the ingest finishes.
             startPendingPoll()
@@ -511,6 +641,9 @@ final class LibraryViewModel: ObservableObject {
             if !duplicate {
                 await fetch()
                 await fetchCollections()
+                // The library just changed — refresh the full
+                // metadata cache too (see save(url:)).
+                await fetchAllMetadata(force: true)
                 // The new item is pending (ingesting) — start the poll
                 // so its thumbnail appears when the ingest finishes.
                 startPendingPoll()
@@ -841,6 +974,8 @@ final class LibraryViewModel: ObservableObject {
         try await api.delete(id: item.id)
         items.removeAll { $0.id == item.id }
         searchResults.removeAll { $0.id == item.id }
+        allMetadata.removeAll { $0.id == item.id }
+        resolvedItemsById.removeValue(forKey: item.id)
     }
 
     /// Heart / unheart an item. Updates the item in place (so the grid
@@ -860,6 +995,12 @@ final class LibraryViewModel: ObservableObject {
             if let index = searchResults.firstIndex(where: { $0.id == item.id }) {
                 searchResults[index] = updated
             }
+            resolvedItemsById[updated.id] = updated
+            // Keep the full-metadata cache in sync too — the Library
+            // grid reads its favorite hearts from there (step 3), so
+            // without this the heart would not flip until the next
+            // listAll refetch.
+            upsertMetadata(for: updated)
             return updated
         } catch {
             if error is CancellationError { return nil }
@@ -877,6 +1018,8 @@ final class LibraryViewModel: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index] = updated
         }
+        resolvedItemsById[updated.id] = updated
+        upsertMetadata(for: updated)
     }
 
     /// Fetch one item fresh from the server (used by the detail view so

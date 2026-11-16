@@ -11,7 +11,7 @@ import UIKit
 /// failed sprite step) still show the time bubble while scrubbing.
 ///
 /// Playback streams from R2 via GET /api/play/:id with the Authorization
-/// header attached to the AVURLAsset (see ItemDetailView's earlier note:
+/// header attached to the AVURLAsset (see PhotoDetailView's earlier note:
 /// there is no public Swift constant for AVURLAssetHTTPHeaderFieldsKey,
 /// so it is passed as the documented literal string).
 struct ScrubPreviewPlayer: View {
