@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import Photos
@@ -681,11 +682,12 @@ final class LibraryViewModel: ObservableObject {
     /// uploaded is sent along, so the Worker can skip a file that is
     /// already saved (same content hash) instead of uploading it again.
     private func uploadOnePickedPhoto(_ item: PhotosPickerItem) async -> UploadOneResult {
-        // Video: get the file via loadFileRepresentation (the reliable
-        // way — loadTransferable(type: URL.self) fails for videos
-        // that live in iCloud or need transcoding, surfacing as
-        // "Không đọc được video đã chọn"). The URL is only valid
-        // inside the callback, so copy it to our own temp file first.
+        // Video: get the file via PhotoKit (loadVideoFile fetches
+        // the PHAsset by the picker's itemIdentifier and requests
+        // the AVAsset — network access on, so iCloud videos
+        // download). loadTransferable(type: URL.self) fails for
+        // videos that live in iCloud or need transcoding, surfacing
+        // as "Không đọc được video đã chọn".
         let types = item.supportedContentTypes
         let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
         if isVideo {
@@ -730,26 +732,34 @@ final class LibraryViewModel: ObservableObject {
 
     /// Load a picked video as a file we own. Returns the temp file
     /// URL + the original filename (for the upload's ?filename=).
-    /// loadFileRepresentation lives on NSItemProvider (not on
-    /// PhotosPickerItem itself) — it downloads iCloud videos and
-    /// hands back a file URL; the URL dies when the callback
-    /// returns, so the file is copied to our own temp location.
-    /// Returns nil when the video cannot be read at all.
+    /// PhotosPickerItem has no file API of its own — neither
+    /// loadFileRepresentation nor itemProvider exists on it (both
+    /// attempts failed to compile in v58/v59.1). The video is
+    /// fetched through PhotoKit instead: the picker's
+    /// itemIdentifier is the PHAsset local identifier, and
+    /// requestAVAsset (network access on, so iCloud videos
+    /// download) hands back the file URL. The file is copied to
+    /// our own temp location. Returns nil when the video cannot
+    /// be read at all.
     private func loadVideoFile(_ item: PhotosPickerItem) async -> (URL, String)? {
-        let typeId = item.supportedContentTypes.first { $0.conforms(to: .movie) }?.identifier
-            ?? item.supportedContentTypes.first { $0.conforms(to: .video) }?.identifier
-            ?? UTType.movie.identifier
+        guard let identifier = item.itemIdentifier else { return nil }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        guard let asset = assets.firstObject, asset.mediaType == .video else { return nil }
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
         return await withCheckedContinuation { continuation in
-            item.itemProvider.loadFileRepresentation(forTypeIdentifier: typeId) { url, error in
-                guard let url, error == nil else {
+            PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+                guard let urlAsset = avAsset as? AVURLAsset else {
                     continuation.resume(returning: nil)
                     return
                 }
+                let srcURL = urlAsset.url
                 let dest = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("kepto-video-\(UUID().uuidString).\(url.pathExtension)")
+                    .appendingPathComponent("kepto-video-\(UUID().uuidString).\(srcURL.pathExtension)")
                 do {
-                    try FileManager.default.copyItem(at: url, to: dest)
-                    continuation.resume(returning: (dest, url.lastPathComponent))
+                    try FileManager.default.copyItem(at: srcURL, to: dest)
+                    continuation.resume(returning: (dest, srcURL.lastPathComponent))
                 } catch {
                     continuation.resume(returning: nil)
                 }
