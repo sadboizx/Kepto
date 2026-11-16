@@ -283,9 +283,6 @@ struct LibraryView: View {
                 },
                 onCancel: { itemForAlbumPicker = nil }
             )
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.black)
         }
         .sheet(isPresented: $showingAddToAlbum) {
             AddToAlbumSheet(
@@ -595,10 +592,13 @@ struct LibraryView: View {
     /// is still pending or failed (so the Library never goes blank when
     /// the metadata fetch has not finished yet).
     private var allIDs: [String] {
-        let sorted = viewModel.allMetadataLoaded
-            ? viewModel.allMetadata.sortedChronologically()
-            : viewModel.items.sortedChronologically()
-        return sorted.map(\.id)
+        // NOTE: no ternary here — the two branches are different types
+        // ([ItemMetadata] vs [Item]), and the compiler cannot infer
+        // a single type for the ternary. Map each branch separately.
+        if viewModel.allMetadataLoaded {
+            return viewModel.allMetadata.sortedChronologically().map(\.id)
+        }
+        return viewModel.items.sortedChronologically().map(\.id)
     }
 
     /// The thumbnail source for one id: light metadata first, the
@@ -863,9 +863,9 @@ struct LibraryView: View {
         let deleted = ids.count - failures
         pendingDelete = []
         exitSelection()
-        if failures == 0 {
-            saveNotice = L10n.deletedCount(deleted)
-        } else {
+        // No notice on success. A partial failure is still reported,
+        // like the Albums tab's errorMessage for the same case.
+        if failures > 0 {
             saveNotice = L10n.deletedCountPartial(deleted, failures)
         }
     }
@@ -953,9 +953,8 @@ struct LibraryView: View {
 
     private func toggleFavorite(_ id: String) async {
         guard let item = await resolveItem(id: id) else { return }
-        if let updated = await viewModel.toggleFavorite(item: item) {
-            saveNotice = updated.isFavorite ? "Đã thêm vào Favorite." : "Đã bỏ Favorite."
-        }
+        // No notice — the heart updates in place.
+        _ = await viewModel.toggleFavorite(item: item)
     }
 
     private func openAddToAlbum(_ id: String) async {
@@ -1336,68 +1335,6 @@ struct GridItemContextMenu: View {
 ///   Delete Album Only).
 /// - Cancel: the picker closes and the items stay in the Library,
 ///   in no album (they are still saved).
-/// The "New Album..." card at the top of the Add to Album sheet
-/// (Photos): a gray placeholder with the Add-to-Album icon
-/// (rectangle.stack.badge.plus, same as the "Add to Album" action)
-/// and the "New Album..." label below, same size as an album card.
-/// Tapping it opens the New Album name alert.
-private struct NewAlbumCardView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Color(.systemGray5)
-                .aspectRatio(1, contentMode: .fit)
-                .overlay {
-                    Image(systemName: "rectangle.stack.badge.plus")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text(L10n.newAlbum + "...")
-                .font(.body)
-                .foregroundStyle(.white)
-                .lineLimit(1)
-        }
-        .contentShape(Rectangle())
-    }
-}
-
-/// One album card in the import picker: cover thumbnail + name +
-/// count, laid out like the Photos See All grid (square cover,
-/// name + count underneath, regular weight — not bold).
-private struct PickerAlbumCardView: View {
-    let collection: MyCollection
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Group {
-                if let coverItemId = collection.coverItemId {
-                    AspectThumbnail(itemId: coverItemId)
-                } else {
-                    Color(.systemGray5)
-                        .aspectRatio(1, contentMode: .fit)
-                        .overlay {
-                            Image(systemName: "photo.stack")
-                                .font(.system(size: 28))
-                                .foregroundStyle(.secondary)
-                        }
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text(collection.name)
-                .font(.body)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-            Text("\(collection.count)")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        // The tappable region is exactly this card's bounds: a tap
-        // on the bottom edge must pick this album, not the one
-        // below it.
-        .contentShape(Rectangle())
-    }
-}
-
 struct ImportAlbumPickerView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss

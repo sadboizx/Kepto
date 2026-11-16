@@ -186,3 +186,69 @@ struct DocumentPickerView: UIViewControllerRepresentable {
         }
     }
 }
+
+/// The "New Album..." card at the top of an Add to Album sheet
+/// (Photos): a gray placeholder with the Add-to-Album icon
+/// (rectangle.stack.badge.plus, same as the "Add to Album" action)
+/// and the "New Album..." label below, same size as an album card.
+/// Tapping it opens the New Album name alert. Shared by the
+/// import picker (ImportAlbumPickerView) and the long-press
+/// picker (AddToCollectionPickerView).
+struct NewAlbumCardView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Color(.systemGray5)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    Image(systemName: "rectangle.stack.badge.plus")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(L10n.newAlbum + "...")
+                .font(.body)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+/// One album card in an Add to Album sheet: cover thumbnail + name +
+/// count, laid out like the Photos See All grid (square cover,
+/// name + count underneath, regular weight — not bold). Shared by
+/// the import picker (ImportAlbumPickerView) and the long-press
+/// picker (AddToCollectionPickerView).
+struct PickerAlbumCardView: View {
+    let collection: MyCollection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Group {
+                if let coverItemId = collection.coverItemId {
+                    AspectThumbnail(itemId: coverItemId)
+                } else {
+                    Color(.systemGray5)
+                        .aspectRatio(1, contentMode: .fit)
+                        .overlay {
+                            Image(systemName: "photo.stack")
+                                .font(.system(size: 28))
+                                .foregroundStyle(.secondary)
+                        }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(collection.name)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Text("\(collection.count)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        // The tappable region is exactly this card's bounds: a tap
+        // on the bottom edge must pick this album, not the one
+        // below it.
+        .contentShape(Rectangle())
+    }
+}

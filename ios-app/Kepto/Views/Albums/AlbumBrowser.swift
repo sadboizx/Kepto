@@ -194,9 +194,6 @@ struct PhotoCollectionScreen: View {
                     onAddedToCollection: { _, _ in },
                     onCancel: { itemForAlbumPicker = nil }
                 )
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(Color.black)
             }
             .sheet(item: $shareFile) { file in
                 ShareSheet(activityItems: [file.url])
