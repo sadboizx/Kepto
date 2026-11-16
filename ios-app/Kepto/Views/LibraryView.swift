@@ -47,11 +47,23 @@ struct LibraryView: View {
     @State private var clipboardAlert = false
     /// One-line notice after a direct save (e.g. "already saved").
     @State private var saveNotice: String?
-    /// PhotosPicker for uploading a photo/video from the device Albums.
+    /// PhotosPicker for uploading photos/videos from the device Albums.
+    /// Multi-select: the user can pick up to 10 items at once and they
+    /// upload one by one (the picker returns an array).
     @State private var showingPhotoPicker = false
-    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var selectedPhotos: [PhotosPickerItem] = []
     /// True while an Albums upload is in flight (shows a spinner pill).
     @State private var isUploading = false
+    /// Batch-upload progress (shown in the spinner pill as "2/5").
+    @State private var uploadDone = 0
+    @State private var uploadTotal = 0
+    /// Items from the last batch upload, offered for a new album.
+    @State private var uploadedItemsForAlbum: [Item] = []
+    /// How many items in the last batch failed to upload.
+    @State private var uploadFailedCount = 0
+    /// Suggested album name (pre-filled, editable) for the upload batch.
+    @State private var suggestedAlbumName = ""
+    @State private var showingAlbumSuggestion = false
     /// The video the full-screen feed viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
     /// The video the context menu's "Add to Album" opened the picker
@@ -109,10 +121,11 @@ struct LibraryView: View {
                     }
                 }
                 // Spinner pill while an Albums upload is in flight.
+                // A batch shows its progress ("Đang tải lên 2/5…").
                 if isUploading {
                     HStack(spacing: 10) {
                         ProgressView().tint(.white)
-                        Text("Đang tải lên…")
+                        Text(uploadTotal > 1 ? "Đang tải lên \(uploadDone)/\(uploadTotal)…" : "Đang tải lên…")
                             .font(.subheadline)
                             .foregroundStyle(.white)
                     }
@@ -173,11 +186,12 @@ struct LibraryView: View {
                 await viewModel.fetch()
                 await viewModel.fetchStats()
             }
-            .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .any(of: [.images, .videos]))
-            .onChange(of: selectedPhoto) { _, newValue in
-                guard let newValue else { return }
-                selectedPhoto = nil
-                Task { await uploadPickedPhoto(newValue) }
+            .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhotos, maxSelectionCount: 10, matching: .any(of: [.images, .videos]))
+            .onChange(of: selectedPhotos) { _, newValue in
+                guard !newValue.isEmpty else { return }
+                let items = newValue
+                selectedPhotos = []
+                Task { await uploadPickedPhotos(items) }
             }
             .alert("Lưu link", isPresented: $showingURLInput) {
             TextField(
@@ -256,6 +270,33 @@ struct LibraryView: View {
             Button("OK") {}
         } message: {
             Text("Clipboard không có link http(s) nào.")
+        }
+        // After an Albums upload batch, offer to group the new items
+        // into a fresh album. The name is suggested (dated) and
+        // editable — the user confirms or skips, and the upload
+        // summary notice is shown only after they pick, so it never
+        // fights this alert.
+        .alert("Tạo album?", isPresented: $showingAlbumSuggestion) {
+            TextField("Tên album", text: $suggestedAlbumName)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Tạo album") {
+                let name = suggestedAlbumName
+                let items = uploadedItemsForAlbum
+                uploadedItemsForAlbum = []
+                Task { await createAlbumForUploads(name: name, items: items) }
+            }
+            Button("Để sau", role: .cancel) {
+                let count = uploadedItemsForAlbum.count
+                uploadedItemsForAlbum = []
+                var notice = "Đã tải lên \(count) ảnh/video."
+                if uploadFailedCount > 0 {
+                    notice += " (\(uploadFailedCount) mục tải lên lỗi.)"
+                }
+                saveNotice = notice
+            }
+        } message: {
+            Text("Đã tải lên \(uploadedItemsForAlbum.count) ảnh/video. Đặt tên album để gom chúng lại.")
         }
         }
     }
@@ -723,29 +764,59 @@ struct LibraryView: View {
         }
     }
 
-    /// Upload the photo/video the user just picked in the PhotosPicker.
-    /// Photos are converted to JPEG first (iPhone photos are HEIC and
-    /// the ingest cannot convert HEIC); videos are uploaded as-is.
-    /// While uploading, a spinner pill shows; on success the Library
-    /// refreshes (via viewModel.upload) and a notice appears; on
-    /// failure the view model's error alert shows the reason.
-    private func uploadPickedPhoto(_ item: PhotosPickerItem) async {
+    /// Upload the photos/videos the user just picked in the PhotosPicker
+    /// (up to 10 at once), one by one so a slow connection does not
+    /// pile up parallel uploads. The spinner pill shows the progress
+    /// ("Đang tải lên 2/5…"). When at least one item uploaded, the app
+    /// offers to group them into a new album with a suggested name.
+    private func uploadPickedPhotos(_ items: [PhotosPickerItem]) async {
         isUploading = true
-        defer { isUploading = false }
+        uploadTotal = items.count
+        uploadDone = 0
+        defer {
+            isUploading = false
+            uploadTotal = 0
+            uploadDone = 0
+        }
+        var uploaded: [Item] = []
+        var failed = 0
+        for item in items {
+            if let created = await uploadOnePickedPhoto(item) {
+                uploaded.append(created)
+            } else {
+                failed += 1
+            }
+            uploadDone += 1
+        }
+        uploadFailedCount = failed
+        if uploaded.isEmpty {
+            saveNotice = "Không tải lên được. Thử lại nhé."
+            return
+        }
+        // Offer to group the batch into a new album (suggested name
+        // pre-filled, editable). The notice is shown after the user
+        // picks "Tạo album" or "Để sau", so it never fights the alert.
+        uploadedItemsForAlbum = uploaded
+        suggestedAlbumName = suggestedAlbumNameForUpload()
+        showingAlbumSuggestion = true
+    }
+
+    /// Upload one picked photo/video. Photos are converted to JPEG first
+    /// (iPhone photos are HEIC and the ingest cannot convert HEIC);
+    /// videos are uploaded as-is. Returns the finished item, or nil
+    /// (and the view model's error alert) on failure.
+    private func uploadOnePickedPhoto(_ item: PhotosPickerItem) async -> Item? {
         // Video: the picker hands back a file URL (a temp copy).
         let types = item.supportedContentTypes
         let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
         if isVideo {
             guard let fileURL = try? await item.loadTransferable(type: URL.self) else {
                 viewModel.errorMessage = "Không đọc được video đã chọn."
-                return
+                return nil
             }
             let filename = fileURL.lastPathComponent
             let mimeType = mimeType(for: fileURL.pathExtension)
-            if await viewModel.upload(fileURL: fileURL, filename: filename, mimeType: mimeType) != nil {
-                saveNotice = "Đã tải lên."
-            }
-            return
+            return await viewModel.upload(fileURL: fileURL, filename: filename, mimeType: mimeType)
         }
         // Photo: load the raw bytes (Data conforms to Transferable;
         // UIImage does not), decode them, and re-encode as JPEG
@@ -754,7 +825,7 @@ struct LibraryView: View {
               let image = UIImage(data: rawData),
               let data = image.jpegData(compressionQuality: 0.9) else {
             viewModel.errorMessage = "Không đọc được ảnh đã chọn."
-            return
+            return nil
         }
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kepto-upload-\(UUID().uuidString).jpg")
@@ -762,12 +833,39 @@ struct LibraryView: View {
             try data.write(to: tempURL)
         } catch {
             viewModel.errorMessage = "Không chuẩn bị được ảnh để tải lên."
-            return
+            return nil
         }
         defer { try? FileManager.default.removeItem(at: tempURL) }
-        if await viewModel.upload(fileURL: tempURL, filename: "photo.jpg", mimeType: "image/jpeg") != nil {
-            saveNotice = "Đã tải lên."
+        return await viewModel.upload(fileURL: tempURL, filename: "photo.jpg", mimeType: "image/jpeg")
+    }
+
+    /// Suggested name for the album holding an Albums upload batch:
+    /// dated, so each day's uploads get their own album and the name
+    /// is unique enough to tell batches apart. The user can edit it
+    /// in the prompt before confirming.
+    private func suggestedAlbumNameForUpload() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd/MM/yyyy"
+        return "Albums \(formatter.string(from: Date()))"
+    }
+
+    /// Create a My collection with the (possibly edited) suggested name
+    /// and add every just-uploaded item to it, then report the result.
+    private func createAlbumForUploads(name: String, items: [Item]) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmed.isEmpty ? suggestedAlbumNameForUpload() : trimmed
+        guard let collection = await viewModel.createMyCollection(name: finalName) else { return }
+        var added = 0
+        for item in items {
+            if await viewModel.addItemToMyCollection(collectionId: collection.id, item: item) == true {
+                added += 1
+            }
         }
+        var notice = "Đã tạo album “\(finalName)” với \(added) ảnh/video."
+        if uploadFailedCount > 0 {
+            notice += " (\(uploadFailedCount) mục tải lên lỗi.)"
+        }
+        saveNotice = notice
     }
 
     /// MIME type for a video file extension (used for the upload body).
@@ -898,9 +996,11 @@ struct PhotosGridCell: View {
     }
 
     /// Duration first (Photos style); view count when the duration
-    /// is unknown (e.g. an image post, or metadata that never came).
+    /// is unknown (e.g. metadata that never came). Images show no
+    /// badge at all — a still photo has no duration to display.
     private var badgeText: String? {
-        item.formattedDuration ?? item.formattedViewCount
+        guard item.contentType?.hasPrefix("image/") != true else { return nil }
+        return item.formattedDuration ?? item.formattedViewCount
     }
 }
 
