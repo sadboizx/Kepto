@@ -986,6 +986,7 @@ struct AlbumsView: View {
             }
             .navigationDestination(item: $seeAllSection) { section in
                 seeAllView(for: section)
+            }
             .task {
                 await viewModel.fetchCollections()
                 await viewModel.fetchStats()
@@ -1266,7 +1267,6 @@ struct AlbumsView: View {
                         .foregroundStyle(.blue)
                     }
                 }
-            }
     }
 
     /// "My Albums" cards: Recents, Favorites, then the user's own
