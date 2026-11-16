@@ -2,13 +2,15 @@ import SwiftUI
 import UIKit
 
 /// Merged info sheet: Photos' `PhotoInfoView` List structure + Kepto's
-/// content (v59–v60 `ItemInfoSheet`). The title is the TikTok display
-/// name + relative posted time, then the caption, then the absolute
-/// posted date; the Details section has the media type, the "No camera
-/// information" / "No lens information" rows, dimensions, file size and
-/// duration; the Saved-from row opens the original post in Safari
-/// (album imports show "Imported from Photos"); Save to Photos and
-/// Add to Album live here too.
+/// content (v59–v60 `ItemInfoSheet`). The title (TikTok display name +
+/// relative posted time, then the caption) sits OUTSIDE the card, large
+/// like TikTok's post header; the Details section has the media type,
+/// the "No camera information" / "No lens information" rows, dimensions,
+/// file size, duration and the upload date (under Duration); the
+/// Saved-from row sits OUTSIDE the card below the list and opens the
+/// original post in Safari (album imports show "Imported from Photos").
+/// No Save to Photos / Add to Album here (user request — those live on
+/// the grid context menu and the viewer toolbar).
 ///
 /// No Map/location section (Item has no location data), no EXIF
 /// camera/lens/aperture/shutter/ISO/filename rows (Item has none).
@@ -16,17 +18,16 @@ import UIKit
 /// black background.
 struct PhotoInfoView: View {
     let item: Item
-    var onSaveToPhotos: () -> Void = {}
-    var onAddToAlbum: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            List {
-                // Title: TikTok display name + relative posted time,
-                // large like the TikTok header; then the caption;
-                // then the absolute posted date, like Photos.
-                Section {
+            VStack(alignment: .leading, spacing: 0) {
+                // Title OUTSIDE the card (TikTok style): display name
+                // + relative posted time on one line, large like
+                // TikTok's post header, then the caption below. No
+                // card, no date here — the date lives in Details.
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Text(authorName)
                             .font(.title2)
@@ -42,89 +43,87 @@ struct PhotoInfoView: View {
                         Text(caption)
                             .font(.title3)
                     }
-                    if let dateString = infoDateString {
-                        Text(dateString)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
 
-                Section(L10n.details) {
-                    LabeledContent(L10n.media, value: mediaLabel)
-                    LabeledContent(L10n.camera, value: L10n.noCameraInfo)
-                    LabeledContent(L10n.lens, value: L10n.noLensInfo)
-                    if let dims = item.formattedDimensions {
-                        LabeledContent(L10n.dimensions, value: dims)
-                    }
-                    if let size = item.formattedFileSize {
-                        LabeledContent(L10n.fileSize, value: size)
-                    }
-                    if let duration = item.formattedDuration {
-                        LabeledContent(L10n.duration, value: duration)
-                    }
-                    if item.isFavorite {
-                        LabeledContent(L10n.favorite, value: "♥")
-                    }
-                }
-
-                // "Saved from <platform>" (tappable — opens the
-                // original post in Safari) or "Imported from Photos".
-                Section {
-                    if let originalURL = URL(string: item.originalUrl),
-                       let scheme = originalURL.scheme, scheme.hasPrefix("http") {
-                        Button {
-                            dismiss()
-                            UIApplication.shared.open(originalURL)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "link")
-                                    .font(.system(size: 18))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 36, height: 36)
-                                    .background(Color(.systemGray4), in: RoundedRectangle(cornerRadius: 8))
-                                Text(L10n.savedFrom(item.platform.displayName))
-                                    .font(.subheadline)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                List {
+                    Section(L10n.details) {
+                        LabeledContent(L10n.media, value: mediaLabel)
+                        LabeledContent(L10n.camera, value: L10n.noCameraInfo)
+                        LabeledContent(L10n.lens, value: L10n.noLensInfo)
+                        if let dims = item.formattedDimensions {
+                            LabeledContent(L10n.dimensions, value: dims)
                         }
-                        .buttonStyle(.plain)
-                    } else {
-                        HStack(spacing: 12) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 18))
-                                .foregroundStyle(.white)
-                                .frame(width: 36, height: 36)
-                                .background(Color(.systemGray4), in: RoundedRectangle(cornerRadius: 8))
-                            Text(L10n.importedFromPhotos)
-                                .font(.subheadline)
-                            Spacer()
+                        if let size = item.formattedFileSize {
+                            LabeledContent(L10n.fileSize, value: size)
+                        }
+                        if let duration = item.formattedDuration {
+                            LabeledContent(L10n.duration, value: duration)
+                        }
+                        // Upload date, under Duration.
+                        if let dateString = infoDateString {
+                            LabeledContent(L10n.uploaded, value: dateString)
+                        }
+                        if item.isFavorite {
+                            LabeledContent(L10n.favorite, value: "♥")
                         }
                     }
                 }
 
-                Section {
-                    Button {
-                        dismiss()
-                        onSaveToPhotos()
-                    } label: {
-                        Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
-                    }
-                    Button {
-                        dismiss()
-                        onAddToAlbum()
-                    } label: {
-                        Label(L10n.addToAlbum, systemImage: "folder.badge.plus")
-                    }
-                }
+                // "Saved from <platform>" OUTSIDE the card, below the
+                // list.
+                Divider()
+                savedFromRow
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
             }
             .navigationTitle(L10n.info)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(L10n.done) { dismiss() }
+                }
+            }
+        }
+    }
+
+    /// "Saved from <platform>" (tappable — opens the original post in
+    /// Safari) or "Imported from Photos".
+    private var savedFromRow: some View {
+        Group {
+            if let originalURL = URL(string: item.originalUrl),
+               let scheme = originalURL.scheme, scheme.hasPrefix("http") {
+                Button {
+                    dismiss()
+                    UIApplication.shared.open(originalURL)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "link")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color(.systemGray4), in: RoundedRectangle(cornerRadius: 8))
+                        Text(L10n.savedFrom(item.platform.displayName))
+                            .font(.subheadline)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.systemGray4), in: RoundedRectangle(cornerRadius: 8))
+                    Text(L10n.importedFromPhotos)
+                        .font(.subheadline)
+                    Spacer()
                 }
             }
         }

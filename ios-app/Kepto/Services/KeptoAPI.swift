@@ -102,7 +102,46 @@ final class KeptoAPI {
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(type, from: data)
+        // D1 returns is_favorite as a NUMBER (0/1/null), but Item /
+        // ItemMetadata decode it as Bool — JSONDecoder does not decode
+        // Bool from numbers, so one 0/1 value fails the whole array
+        // (listAll silently emptied For You + Search). Normalize any
+        // is_favorite number to a real boolean before decoding, at
+        // any depth; if the JSON cannot be walked, decode as-is.
+        let normalized = Self.normalizedFavoriteFlags(in: data) ?? data
+        return try decoder.decode(type, from: normalized)
+    }
+
+    /// Recursively converts `is_favorite` NSNumber values (0/1 from
+    /// D1) to real booleans, at any depth. Returns nil when the data
+    /// is not a JSON object/array (decode then runs on the raw data).
+    /// Real JSON booleans pass through unchanged (NSNumber true/false
+    /// round-trips to the same Bool); null stays null (decodes as the
+    /// property default).
+    private static func normalizedFavoriteFlags(in data: Data) -> Data? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        let converted = normalizeFavoriteFlags(json)
+        guard JSONSerialization.isValidJSONObject(converted) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: converted)
+    }
+
+    private static func normalizeFavoriteFlags(_ value: Any) -> Any {
+        if let dict = value as? [String: Any] {
+            var out: [String: Any] = [:]
+            out.reserveCapacity(dict.count)
+            for (key, val) in dict {
+                if key == "is_favorite", let number = val as? NSNumber {
+                    out[key] = number.boolValue
+                } else {
+                    out[key] = normalizeFavoriteFlags(val)
+                }
+            }
+            return out
+        }
+        if let array = value as? [Any] {
+            return array.map(normalizeFavoriteFlags)
+        }
+        return value
     }
 
     /// Maps an HTTP response to either decoded data or a typed error.

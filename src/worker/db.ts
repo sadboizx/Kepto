@@ -271,8 +271,10 @@ export interface ItemMetadataRow {
   width: number | null;
   height: number | null;
   file_size: number | null;
-  /** 1 = favorited (migration 0005), 0/null = not. */
-  is_favorite: number | null;
+  /** True when favorited (migration 0005). D1 stores 0/1/null —
+      the app decodes this as Bool, so listAllItems converts it
+      here (and the app also tolerates numbers, see KeptoAPI). */
+  is_favorite: boolean;
   /** User-created collections this item is in (ids + names), or [] when none. */
   my_collection_ids: string[];
   my_collection_names: string[];
@@ -334,6 +336,10 @@ export async function listAllItems(
       }>();
     return (results ?? []).map((r) => ({
       ...r,
+      // D1 returns is_favorite as a number (0/1/null); the app
+      // decodes it as Bool, so convert here — a raw number fails
+      // the whole listAll decode and empties For You + Search.
+      is_favorite: r.is_favorite === 1,
       my_collection_ids: split(r.my_collection_ids),
       my_collection_names: split(r.my_collection_names),
     }));
@@ -366,6 +372,8 @@ export async function listAllItems(
       }>();
     return (results ?? []).map((r) => ({
       ...r,
+      // D1 returns is_favorite as a number (0/1/null); see above.
+      is_favorite: r.is_favorite === 1,
       my_collection_ids: [],
       my_collection_names: [],
     }));

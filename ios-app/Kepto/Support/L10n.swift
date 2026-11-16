@@ -166,6 +166,7 @@ enum L10n {
     /// Kepto additions (not in Photos): keys the ported viewer/info
     /// sheet needs for Kepto-only actions.
     static var duration: String { isVI ? "Thời lượng" : "Duration" }
+    static var uploaded: String { isVI ? "Ngày tải lên" : "Uploaded" }
     static var saveToPhotos: String { isVI ? "Lưu vào Photos" : "Save to Photos" }
     static var undo: String { isVI ? "Hoàn tác nét" : "Undo" }
     static var clear: String { isVI ? "Xoá nét" : "Clear" }

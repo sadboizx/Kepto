@@ -78,21 +78,41 @@ struct SelectBottomBar<More: View>: View {
     }
 }
 
-/// Segmented Years / Months / Days / All Photos picker above the
-/// Library grid. Photos' `ZoomSegmentBar`, unchanged.
+/// Years / Months / Days / All Photos pill floating over the bottom
+/// of the Library grid (v60 style, restored): a dark frosted capsule
+/// with the selected segment lighter, like Photos' control at the
+/// bottom of the Library. NOT a segmented Picker in a safe-area inset
+/// (that rendered as a wide bar, not a floating pill). The Library
+/// places it in an `.overlay(alignment: .bottom)`; the grid's last row
+/// clears it via a bottom content margin on the scroll view.
 struct ZoomSegmentBar: View {
     @Binding var zoom: LibraryZoom
 
     var body: some View {
-        Picker(L10n.library, selection: $zoom) {
+        HStack(spacing: 0) {
             ForEach(LibraryZoom.allCases) { mode in
-                Text(mode.title).tag(mode)
+                let selected = zoom == mode
+                Button {
+                    zoom = mode
+                } label: {
+                    Text(mode.title)
+                        .font(.subheadline)
+                        .fontWeight(.bold)
+                        // Photos: selected is white, unselected is a
+                        // medium gray.
+                        .foregroundStyle(selected ? .white : .white.opacity(0.6))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(selected ? Color.white.opacity(0.25) : Color.clear)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
             }
         }
-        .pickerStyle(.segmented)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
+        .padding(4)
+        // Photos-style frosted pill — regularMaterial (darker and
+        // more opaque than ultraThinMaterial, so the pill has a real
+        // visible background over the grid, like the real Photos app).
+        .background(.regularMaterial, in: Capsule())
     }
 }

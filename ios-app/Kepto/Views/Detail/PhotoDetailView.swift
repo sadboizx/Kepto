@@ -52,6 +52,9 @@ struct PhotoDetailView: View {
     /// and turn into a page swipe. Lifted here from the page because
     /// the ScrollView lives in this view.
     @State private var isScrubbing = false
+    /// Drag-down-to-dismiss offset (Photos viewer): how far the user
+    /// has dragged the viewer down with their finger. 0 at rest.
+    @State private var dismissDragOffset: CGFloat = 0
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil, title: String = L10n.library) {
@@ -94,6 +97,15 @@ struct PhotoDetailView: View {
             // (interactive transition, follows the finger, cancels
             // mid-swipe) while horizontal swipes still page the viewer.
             .background(NativePopGestureHelper())
+            // Drag down to dismiss (Photos viewer): the whole viewer
+            // follows the finger down; past the threshold it pops,
+            // otherwise it springs back. The native edge pop above is
+            // untouched — this is an addition alongside it, not a
+            // replacement. (User request: the viewer dismisses with a
+            // top-to-bottom swipe, like the iOS Photos app.)
+            .offset(y: dismissDragOffset)
+            .scaleEffect(1 - min(dismissDragOffset / 2000, 0.05))
+            .simultaneousGesture(dragDown)
         }
         // Full-screen viewer: hide the navigation bar (no back
         // button/title — the custom topBar provides them) and the tab
@@ -172,6 +184,37 @@ struct PhotoDetailView: View {
         )
         .id(item.id)
         .containerRelativeFrame(.horizontal)
+    }
+
+    /// Drag down to dismiss (Photos viewer): a predominantly
+    /// vertical downward drag moves the viewer with the finger;
+    /// past ~120pt it pops, otherwise it springs back. Gated off
+    /// while scrubbing or zoomed (those drags belong to the progress
+    /// bar / the photo). Upward drags are not claimed here — the
+    /// page's swipe-up opens the info sheet.
+    private var dragDown: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard !isScrubbing, !zoomed else { return }
+                if value.translation.height > 0,
+                   abs(value.translation.height) > abs(value.translation.width) {
+                    dismissDragOffset = value.translation.height
+                }
+            }
+            .onEnded { value in
+                guard !isScrubbing, !zoomed else {
+                    dismissDragOffset = 0
+                    return
+                }
+                if value.translation.height > 120,
+                   abs(value.translation.height) > abs(value.translation.width) {
+                    dismiss()
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        dismissDragOffset = 0
+                    }
+                }
+            }
     }
 
     /// Top bar (Photos): back chevron + title on the left, the
@@ -277,7 +320,7 @@ struct PhotoDetailView: View {
 }
 
 /// One full-screen page in the viewer: the photo (pinch zoom 1–5x,
-/// double-tap 1 <-> 2.6x) or the video (aspect-fit, tap the centre
+/// double-tap 1 <-> 2.6x) or the video (full-bleed, tap the centre
 /// play button or the toolbar Play button — videos do NOT auto-play,
 /// Photos behaviour), the progress bar with scrub + sprite preview,
 /// and the Photos-style bottom toolbar. Adapted from FeedView's
@@ -314,8 +357,6 @@ private struct PhotoDetailPage: View {
     @State private var sprite: UIImage?
     @StateObject private var frameCache = ScrubPreviewPlayer.SpriteFrameCache()
     @State private var timeObserver: Any?
-    @State private var tapIcon: String?
-    @State private var tapIconTask: Task<Void, Never>?
     @State private var fullImage: UIImage?
     /// Playback speed from the running-person button (1.0 = normal).
     @State private var playbackRate: Float = 1.0
@@ -326,17 +367,12 @@ private struct PhotoDetailPage: View {
     @State private var isMuted = false
     /// The Photos-style info sheet (the (i) button in the toolbar).
     @State private var showingInfo = false
-    /// The "Add to Album" picker (nil = closed).
-    @State private var showingAlbumPicker = false
     /// A downloaded file ready for the iOS share sheet (nil = closed).
     @State private var shareFile: ShareFile?
-    /// Facebook Reels-style progress bar visibility: the bar shows
-    /// while the user interacts, then fades out after 2.5s idle.
+    /// Progress bar visibility (Photos): the bar stays visible
+    /// whenever the chrome is shown — it never fades out on its own.
     /// Starts visible when the page becomes current.
     @State private var controlsVisible: Bool = true
-    /// The auto-hide timer for the progress bar (cancelled and
-    /// restarted on every interaction).
-    @State private var hideControlsTask: Task<Void, Never>?
     /// Short notice above the progress bar (e.g. "Đã lưu vào Photos").
     @State private var notice: String?
     @State private var noticeTask: Task<Void, Never>?
@@ -352,9 +388,11 @@ private struct PhotoDetailPage: View {
                 Color.black
                 if item.status == .ready, !isImage {
                     if let player {
-                        // Aspect-fit (Photos): the whole frame, never
-                        // cropped. (The feed used .resizeAspectFill.)
-                        PlayerView(player: player)
+                        // Full-bleed (Photos): the video fills the
+                        // frame edge to edge, under the status bar and
+                        // to the bottom edge — the sides crop slightly
+                        // instead of letterboxing.
+                        PlayerView(player: player, videoGravity: .resizeAspectFill)
                     } else {
                         ProgressView().tint(.white)
                     }
@@ -388,7 +426,9 @@ private struct PhotoDetailPage: View {
                             .padding(.horizontal, 32)
                     }
                 }
-                // Centre play button for paused videos (Photos).
+                // Centre play button for paused videos (Photos) —
+                // the ONLY centre pause/play indicator. (The old
+                // tap-flash icon that showed a second one is gone.)
                 if item.status == .ready, !isImage, !isPlaying, player != nil {
                     Button {
                         togglePlay()
@@ -400,11 +440,6 @@ private struct PhotoDetailPage: View {
                             .background(.ultraThinMaterial, in: Circle())
                     }
                     .accessibilityLabel(L10n.play)
-                }
-                if let tapIcon {
-                    Image(systemName: tapIcon)
-                        .font(.system(size: 72))
-                        .foregroundStyle(.white.opacity(0.85))
                 }
                 // Bottom gradient so the toolbar icons stay legible
                 // over the media (Photos-style).
@@ -487,7 +522,7 @@ private struct PhotoDetailPage: View {
                                         .font(.system(size: 22))
                                         .foregroundStyle(.blue)
                                         .frame(maxWidth: .infinity)
-                                        .frame(height: 44)
+                                        .frame(height: 50)
                                         .accessibilityLabel(L10n.playbackSpeed)
                                 }
                             }
@@ -502,7 +537,10 @@ private struct PhotoDetailPage: View {
                         // the Photos toolbar (no horizontal inset —
                         // it spans edge to edge, and the blur extends
                         // to the bottom edge under the Home Indicator).
+                        // Taller than the old 44pt bar, like Photos:
+                        // 50pt buttons + 8pt vertical padding.
                         .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
                         .padding(.bottom, geo.safeAreaInsets.bottom)
                         .background(.ultraThinMaterial)
                     }
@@ -535,25 +573,11 @@ private struct PhotoDetailPage: View {
             .simultaneousGesture(swipeUp)
         }
         .background(Color.black)
-        .sheet(isPresented: $showingAlbumPicker) {
-            AddToCollectionPickerView(
-                item: item,
-                onAddedToCollection: { name, added in
-                    showNotice(added ? "Đã thêm vào \(name)" : "Đã có trong \(name)")
-                },
-                onCancel: { showingAlbumPicker = false }
-            )
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(Color.black)
-        }
         // Photos-style info sheet (the (i) button in the toolbar).
+        // No Save to Photos / Add to Album here any more (user
+        // request) — the sheet is info only.
         .sheet(isPresented: $showingInfo) {
-            PhotoInfoView(
-                item: item,
-                onSaveToPhotos: { Task { await downloadVideo() } },
-                onAddToAlbum: { showingAlbumPicker = true }
-            )
+            PhotoInfoView(item: item)
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
@@ -580,18 +604,14 @@ private struct PhotoDetailPage: View {
             // It is released when SwiftUI destroys this page.
             player?.pause()
             isPlaying = false
-            tapIconTask?.cancel()
-            tapIcon = nil
-            hideControlsTask?.cancel()
             // A zoomed photo resets when the page scrolls away.
             scale = 1
             if zoomed { zoomed = false }
         }
         .onChange(of: isCurrent) { _, current in
             if current {
-                // Swipe landed on this page: show the progress bar
-                // briefly, then fade it out. (No auto-play — Photos
-                // behaviour; the user taps play.)
+                // Swipe landed on this page: show the progress bar.
+                // (No auto-play — Photos behaviour; the user taps play.)
                 showControlsTemporarily()
             } else {
                 player?.pause()
@@ -602,13 +622,11 @@ private struct PhotoDetailPage: View {
             if scrubbing {
                 wasPlayingBeforeScrub = isPlaying
                 player?.pause()
-                // Scrubbing keeps the bar visible; the hide timer
-                // must not fire mid-drag.
-                hideControlsTask?.cancel()
+                // Scrubbing keeps the bar visible.
                 controlsVisible = true
             } else if isCurrent {
                 // Scrub ended: resume only if it was playing before
-                // the scrub; the bar stays a moment, then fades.
+                // the scrub; the bar stays visible (Photos).
                 if wasPlayingBeforeScrub { playCurrent() }
                 showControlsTemporarily()
             }
@@ -704,17 +722,6 @@ private struct PhotoDetailPage: View {
         }
     }
 
-    /// "Save to Photos" (from the info sheet): download the video (or
-    /// image) and save it to the Photos library, like TikTok's Download.
-    private func downloadVideo() async {
-        do {
-            try await viewModel.saveToPhotos(item: item)
-            showNotice("Đã lưu vào Photos")
-        } catch {
-            showNotice("Không lưu được")
-        }
-    }
-
     /// "Share" (toolbar): download the video (or image) file, then
     /// open the iOS share sheet with it.
     private func shareItem() {
@@ -757,10 +764,8 @@ private struct PhotoDetailPage: View {
         if isPlaying {
             player.pause()
             isPlaying = false
-            flashIcon("pause.fill")
         } else {
             playCurrent()
-            flashIcon("play.fill")
         }
     }
 
@@ -772,27 +777,17 @@ private struct PhotoDetailPage: View {
 
     /// One icon button in the Photos-style bottom toolbar: a blue
     /// 22pt icon, evenly spread (each button takes an equal share
-    /// of the width).
+    /// of the width). 50pt tall, like the Photos toolbar.
     private func playerTabButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 22))
                 .foregroundStyle(.blue)
                 .frame(maxWidth: .infinity)
-                .frame(height: 44)
+                .frame(height: 50)
                 .accessibilityLabel(label)
         }
         .buttonStyle(.plain)
-    }
-
-    private func flashIcon(_ name: String) {
-        tapIconTask?.cancel()
-        tapIcon = name
-        tapIconTask = Task {
-            try? await Task.sleep(for: .milliseconds(700))
-            guard !Task.isCancelled else { return }
-            tapIcon = nil
-        }
     }
 
     private func seek(to seconds: Double) {
@@ -803,24 +798,12 @@ private struct PhotoDetailPage: View {
         }
     }
 
-    /// Facebook Reels-style progress bar auto-hide: shows the bar
-    /// and fades it out after 2.5s with no interaction. Called on
-    /// every interaction (tap, page appearing, scrub ending) — each
-    /// call cancels the previous timer and starts a fresh one. Never
-    /// hides while the user is scrubbing (the timer checks
-    /// isScrubbing before hiding, and scrubbing cancels it).
+    /// Progress bar visibility (Photos): the bar stays visible
+    /// whenever the chrome is shown — no auto-hide timer. Called on
+    /// every interaction (tap, page appearing, scrub ending) so the
+    /// bar is visible again after any chrome toggle.
     private func showControlsTemporarily() {
         controlsVisible = true
-        hideControlsTask?.cancel()
-        hideControlsTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2.5))
-            guard !Task.isCancelled else { return }
-            if !isScrubbing {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    controlsVisible = false
-                }
-            }
-        }
     }
 
     /// Seek from a progress-bar scrub. Clears isScrubbing only in the
@@ -855,7 +838,7 @@ private struct PhotoDetailPage: View {
 
 /// "Add to collection" picker: the user's collections plus a row to
 /// create a new one. The list refreshes when it opens. Shared by the
-/// viewer and grid context menus ("Add to Album") — presented as its own
+/// grid context menus ("Add to Album") — presented as its own
 /// sheet from the menu. `onCancel` dismisses the sheet.
 struct AddToCollectionPickerView: View {
     let item: Item
@@ -1004,10 +987,9 @@ struct AddToCollectionPickerView: View {
 /// taller than the visible line so it is easy to grab.
 /// Facebook Reels-style progress bar for the full-screen viewer.
 ///
-/// - Auto-hide: the bar is only visible while the user interacts.
-///   It fades in on tap / page-appear / scrub and fades out after
-///   2.5s idle (the timer lives in PhotoDetailPage; this view only
-///   reads `controlsVisible`). While scrubbing it is always visible.
+/// - Visibility (Photos): the bar is visible whenever the chrome is
+///   shown — it never fades out on its own (this view only reads
+///   `controlsVisible`). While scrubbing it is always visible.
 /// - Enlarge on drag: the bar grows from a 2pt line to a 9pt pill
 ///   while the finger is down, and shrinks back on release.
 /// - Seek preview: while scrubbing, a rounded thumbnail of the frame
@@ -1020,8 +1002,8 @@ private struct FeedProgressBar: View {
     let currentTime: Double
     let duration: Double
     @Binding var isScrubbing: Bool
-    /// False after 2.5s idle (FeedVideoPage's timer). The bar fades
-    /// out, but the 64pt touch area stays live so the user can still
+    /// False when the chrome is hidden. The bar fades out with the
+    /// chrome, but the 64pt touch area stays live so the user can still
     /// grab it to scrub — and any tap on the video shows it again.
     let controlsVisible: Bool
     let item: Item
@@ -1037,9 +1019,9 @@ private struct FeedProgressBar: View {
         return min(max(currentTime / duration, 0), 1)
     }
 
-    /// True while the bar should be on screen (interacting, or
-    /// scrubbing — which forces it visible even after the idle
-    /// timer fired).
+    /// True while the bar should be on screen (chrome shown, or
+    /// scrubbing — which forces it visible even when the chrome is
+    /// hidden).
     private var barVisible: Bool { controlsVisible || isScrubbing }
 
     var body: some View {
@@ -1053,8 +1035,8 @@ private struct FeedProgressBar: View {
                         .frame(width: geo.size.width * (isScrubbing ? scrubFraction : progress))
                 }
                 // Thin 2pt line at rest; grows to a 9pt pill while
-                // scrubbing (Facebook Reels). Fades out after 2.5s
-                // idle (barVisible), fades back in on interaction.
+                // scrubbing (Facebook Reels). Fades out with the
+                // chrome (barVisible), fades back in when it shows.
                 .frame(height: isScrubbing ? 9 : 2)
                 .animation(.easeInOut(duration: 0.2), value: isScrubbing)
                 .opacity(barVisible ? 1 : 0)

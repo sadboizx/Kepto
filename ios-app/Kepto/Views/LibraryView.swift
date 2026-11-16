@@ -5,12 +5,13 @@ import UIKit
 /// Library: Photos' Library tab, running on Kepto data.
 ///
 /// Structure, layout and gestures follow Photos' `LibraryView`
-/// (Photos repo): large "Library" title, Years / Months / Days /
-/// All Photos zoom (segmented bar + pinch to change level), square
-/// grids, multi-select with the Photos-style `SelectBottomBar`,
-/// inline toolbar items (never a `toolbarContent` property — the
-/// Photos build on 1525ed45 proved the property form does not
-/// compile), and a long-press context menu per cell.
+/// (Photos repo): no title (the bar shows only Select / "…"),
+/// Years / Months / Days / All Photos zoom (floating pill + pinch
+/// to change level), square grids, multi-select with the
+/// Photos-style `SelectBottomBar`, inline toolbar items (never a
+/// `toolbarContent` property — the Photos build on 1525ed45 proved
+/// the property form does not compile), and a long-press context
+/// menu per cell.
 ///
 /// Data comes from `LibraryViewModel`'s full-metadata cache
 /// (`allMetadata`, step 1) — sections are complete from the start,
@@ -34,8 +35,7 @@ struct LibraryView: View {
     @State private var zoom: LibraryZoom = .days
     @State private var selecting = false
     @State private var selection: Set<String> = []
-    /// The video the full-screen feed viewer opens on (nil = closed).
-    /// Step 7 replaces this with Photos' detail viewer.
+    /// The item the Photos detail viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
@@ -75,8 +75,11 @@ struct LibraryView: View {
                     scroll
                 }
             }
-            .navigationTitle(selecting ? L10n.selectedCount(selection.count) : L10n.library)
-            .navigationBarTitleDisplayMode(.large)
+            // No "Library" title (user request): the bar shows only
+            // the trailing Select / "…" buttons. In select mode the
+            // count ("N Selected") still shows, centred inline.
+            .navigationTitle(selecting ? L10n.selectedCount(selection.count) : "")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .cancellationAction) {
@@ -120,11 +123,22 @@ struct LibraryView: View {
                 }
             }
             .toolbar(selecting ? .hidden : .visible, for: .tabBar)
+            // The Years / Months / Days / All Photos pill is a
+            // floating overlay (below), not a safe-area inset — only
+            // the select bar reserves bottom space, in select mode.
+            // (v60 did the same: the pill floated over the grid, and
+            // the grids' last row cleared it via a bottom content
+            // margin on the scroll view.)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if selecting {
                     selectBar
-                } else if viewModel.isConfigured {
+                }
+            }
+            // Floating view-mode pill above the tab bar (v60 style).
+            .overlay(alignment: .bottom) {
+                if !selecting, viewModel.isConfigured {
                     ZoomSegmentBar(zoom: $zoom)
+                        .padding(.bottom, 8)
                 }
             }
             .refreshable {
@@ -152,20 +166,24 @@ struct LibraryView: View {
                 }
                 Button(L10n.cancel, role: .cancel) { urlInput = "" }
             }
+            // Inside the NavigationStack (not on the outer view): a
+            // navigationDestination attached outside the stack never
+            // presents — that was why tapping a cell did not open the
+            // Player.
+            .navigationDestination(item: $feedStartItem) { startItem in
+                PhotoDetailView(
+                    items: Binding(get: { viewModel.items }, set: { _ in }),
+                    startItemId: startItem.id,
+                    onNearEnd: { await viewModel.loadMore() },
+                    title: L10n.library
+                )
+            }
         }
         .sheet(isPresented: $showingSettings, onDismiss: {
             viewModel.reloadConfig()
             Task { await viewModel.fetch() }
         }) {
             SettingsView()
-        }
-        .navigationDestination(item: $feedStartItem) { startItem in
-            PhotoDetailView(
-                items: Binding(get: { viewModel.items }, set: { _ in }),
-                startItemId: startItem.id,
-                onNearEnd: { await viewModel.loadMore() },
-                title: L10n.library
-            )
         }
         .fullScreenCover(isPresented: $showingSlideshow) {
             SlideshowView(items: slideshowItems)
@@ -269,6 +287,9 @@ struct LibraryView: View {
                 allPhotosGrid
             }
         }
+        // Bottom margin so the last row scrolls clear of the
+        // floating Years/Months/Days/All Photos pill.
+        .contentMargins(.bottom, 64, for: .scrollContent)
         .background(Color(uiColor: .systemBackground))
         .simultaneousGesture(pinch)
         .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
@@ -401,7 +422,7 @@ struct LibraryView: View {
     }
 
     /// Native iOS context menu for a grid cell (long-press), in the
-    /// order the user asked for: Save to Photos, Share, Favorite,
+    /// order the user asked for: Share, Save to Photos, Favorite,
     /// Add to Album, Delete. Inline here (not `GridItemContextMenu`):
     /// Library cells are light `ItemMetadata`, and the menu actions
     /// resolve the full `Item` on demand — the shared menu takes an
@@ -411,17 +432,17 @@ struct LibraryView: View {
     private func cellMenu(for source: any GridItemSource) -> some View {
         Group {
             if !selecting {
-                Button { Task { await saveToPhotos(source.id) } } label: {
-                    Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
-                }
                 Button { Task { await shareItem(source.id) } } label: {
                     Label(L10n.share, systemImage: "square.and.arrow.up")
+                }
+                Button { Task { await saveToPhotos(source.id) } } label: {
+                    Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
                 }
                 Button { Task { await toggleFavorite(source.id) } } label: {
                     Label(L10n.favorite, systemImage: source.isFavorite ? "heart.fill" : "heart")
                 }
                 Button { Task { await openAddToAlbum(source.id) } } label: {
-                    Label(L10n.addToAlbum, systemImage: "folder.badge.plus")
+                    Label(L10n.addToAlbum, systemImage: "rectangle.stack.badge.plus")
                 }
                 Button(role: .destructive) {
                     pendingDelete = [source.id]
@@ -1054,7 +1075,7 @@ struct ShareSheet: UIViewControllerRepresentable {
 }
 
 /// Native iOS context menu for a grid thumbnail (long-press), in the
-/// order the user asked for: Save to Photos, Share, Favorite, Add to
+/// order the user asked for: Share, Save to Photos, Favorite, Add to
 /// Album, Delete. This is the system menu — dark, large corner radius,
 /// icons on the right of each row, Delete in red, smooth native
 /// animation — and the pressed cell lifts as the menu's preview
@@ -1080,17 +1101,17 @@ struct GridItemContextMenu: View {
     var body: some View {
         Group {
             if !isSelecting {
-                Button { onSaveToPhotos(item) } label: {
-                    Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
-                }
                 Button { onShare(item) } label: {
                     Label(L10n.share, systemImage: "square.and.arrow.up")
+                }
+                Button { onSaveToPhotos(item) } label: {
+                    Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
                 }
                 Button { onToggleFavorite(item) } label: {
                     Label(L10n.favorite, systemImage: item.isFavorite ? "heart.fill" : "heart")
                 }
                 Button { onAddToAlbum(item) } label: {
-                    Label(L10n.addToAlbum, systemImage: "folder.badge.plus")
+                    Label(L10n.addToAlbum, systemImage: "rectangle.stack.badge.plus")
                 }
                 if let onRemoveFromCollection {
                     Button { onRemoveFromCollection(item) } label: {
