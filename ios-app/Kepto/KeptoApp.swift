@@ -108,7 +108,7 @@ struct KeptoTabView: View {
                 .tabItem { Label("For You", systemImage: selectedTab == 1 ? "heart.text.square.fill" : "heart.text.square") }
                 .tag(1)
             AlbumsView()
-                .tabItem { Label("Albums", systemImage: selectedTab == 2 ? "square.stack.fill" : "square.stack") }
+                .tabItem { Label("Albums", systemImage: selectedTab == 2 ? "rectangle.stack.fill" : "rectangle.stack") }
                 .tag(2)
             SearchView()
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }

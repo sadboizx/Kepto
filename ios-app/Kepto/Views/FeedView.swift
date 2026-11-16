@@ -473,7 +473,12 @@ private struct FeedVideoPage: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(.trailing, 12)
-                    .padding(.top, geo.safeAreaInsets.top + 8)
+                    // The Player video is full-bleed (ignores safe
+                    // area), so geo.safeAreaInsets.top is 0 here and
+                    // "+ 8" put the button on the status bar. Floor
+                    // the top inset at 44 (notched status bar) and
+                    // add 12pt of clearance below it.
+                    .padding(.top, max(geo.safeAreaInsets.top, 44) + 12)
                 }
                 // Transient notice (Copy link / Download result).
                 // Sits above the progress bar (which is now above the

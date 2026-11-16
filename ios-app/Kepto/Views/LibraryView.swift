@@ -1646,6 +1646,42 @@ private struct SearchCategoryCard: View {
 ///   Delete Album Only).
 /// - Cancel: the picker closes and the items stay in the Library,
 ///   in no album (they are still saved).
+/// One album card in the import picker: cover thumbnail + name +
+/// count, laid out like the Photos See All grid (square cover,
+/// name + count underneath, regular weight — not bold).
+private struct PickerAlbumCardView: View {
+    let collection: MyCollection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Group {
+                if let coverItemId = collection.coverItemId {
+                    AspectThumbnail(itemId: coverItemId)
+                } else {
+                    Color(.systemGray5)
+                        .aspectRatio(1, contentMode: .fit)
+                        .overlay {
+                            Image(systemName: "photo")
+                                .foregroundStyle(.secondary)
+                        }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(collection.name)
+                .font(.body)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Text("\(collection.count)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        // The tappable region is exactly this card's bounds: a tap
+        // on the bottom edge must pick this album, not the one
+        // below it.
+        .contentShape(Rectangle())
+    }
+}
+
 struct ImportAlbumPickerView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss
@@ -1657,43 +1693,67 @@ struct ImportAlbumPickerView: View {
     /// The album awaiting delete confirmation (nil = none).
     @State private var albumPendingDelete: MyCollection?
     @State private var showingDeleteConfirmation = false
+    /// 2-column album grid (Photos See All style): 12pt gaps.
+    private let pickerColumns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
 
     var body: some View {
         NavigationStack {
-            List {
-                if viewModel.myCollections.isEmpty {
-                    Text("Chưa có album nào. Tạo album mới để lưu ảnh/video vừa import.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(viewModel.myCollections) { collection in
-                    HStack(spacing: 12) {
-                        // Red minus badge (Photos Edit mode).
-                        if isEditing {
-                            Button {
-                                albumPendingDelete = collection
-                                showingDeleteConfirmation = true
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .font(.system(size: 22))
-                                    .foregroundStyle(.red)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Upload status: the picker opens the moment the
+                    // user picks photos (v57), so the upload is
+                    // usually still running when this first appears.
+                    if viewModel.isUploading {
+                        Text("Đang tải lên \(viewModel.uploadDone)/\(viewModel.uploadTotal)…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else if !viewModel.importPickerItems.isEmpty {
+                        Text("\(viewModel.importPickerItems.count) mục sẽ được thêm vào album đã chọn.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    if viewModel.myCollections.isEmpty {
+                        Text("Chưa có album nào. Tạo album mới để lưu ảnh/video vừa import.")
+                            .foregroundStyle(.secondary)
+                    }
+                    // 2-column album grid with cover thumbnails,
+                    // laid out like the Photos See All page (v57).
+                    LazyVGrid(columns: pickerColumns, spacing: 16) {
+                        ForEach(viewModel.myCollections) { collection in
+                            // The minus badge is a SIBLING of the card
+                            // button (not inside it): the card button
+                            // is disabled in Edit mode, which would
+                            // also disable a badge nested inside it.
+                            ZStack(alignment: .topLeading) {
+                                Button {
+                                    Task { await viewModel.addImportItemsToAlbum(collection) }
+                                } label: {
+                                    PickerAlbumCardView(collection: collection)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isEditing)
+                                // Red minus badge (Photos Edit mode).
+                                if isEditing {
+                                    Button {
+                                        albumPendingDelete = collection
+                                        showingDeleteConfirmation = true
+                                    } label: {
+                                        Image(systemName: "minus.circle.fill")
+                                            .font(.system(size: 22))
+                                            .foregroundStyle(.red)
+                                            .background(Color.white, in: Circle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .offset(x: -8, y: -8)
+                                }
                             }
-                            .buttonStyle(.plain)
                         }
-                        Button {
-                            Task { await viewModel.addImportItemsToAlbum(collection) }
-                        } label: {
-                            HStack {
-                                Text(collection.name)
-                                    .foregroundStyle(.white)
-                                Spacer()
-                                Text("\(collection.count)")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isEditing)
                     }
                 }
+                .padding()
             }
             .navigationTitle("Add to Album")
             .navigationBarTitleDisplayMode(.inline)
@@ -1701,6 +1761,7 @@ struct ImportAlbumPickerView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") {
                         viewModel.importPickerItems = []
+                        viewModel.chosenImportAlbum = nil
                         viewModel.showingImportAlbumPicker = false
                     }
                     .foregroundStyle(.blue)

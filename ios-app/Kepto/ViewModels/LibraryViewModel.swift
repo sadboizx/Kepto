@@ -54,14 +54,22 @@ final class LibraryViewModel: ObservableObject {
     /// One-line notice after an import (shown by the root).
     @Published var uploadNotice: String?
 
-    /// Album picker after a Photos import: the just-uploaded items
-    /// wait here until the user chooses an album for them (or taps
-    /// Cancel — the items stay in the Library, in no album). This
-    /// REPLACES the old auto-"Imports" behavior (v50): nothing is
-    /// auto-added to any album any more.
+    /// Album picker after a Photos import: it opens the moment the
+    /// user picks photos (v57) — the user chooses the album while
+    /// the files upload in the background. The items wait in
+    /// importPickerItems until the choice is made (or Cancel — the
+    /// items stay in the Library, in no album). This REPLACES the
+    /// old auto-"Imports" behavior (v50): nothing is auto-added to
+    /// any album any more.
     @Published var showingImportAlbumPicker = false
     /// The just-uploaded items awaiting an album choice.
     @Published var importPickerItems: [Item] = []
+    /// The album the user picked in the import picker (nil = not
+    /// chosen yet). Set the moment the user taps an album — even
+    /// while the upload is still running. When the upload finishes,
+    /// the items are added to this album automatically; if the user
+    /// picks after the upload finished, they are added at once.
+    @Published var chosenImportAlbum: MyCollection?
 
     /// Albums tab re-tap (Photos behavior): incremented by the app
     /// root (KeptoTabView) when the user taps the Albums tab while
@@ -544,6 +552,16 @@ final class LibraryViewModel: ObservableObject {
         isUploading = true
         uploadTotal = items.count
         uploadDone = 0
+        // Show the Add to Album picker RIGHT AWAY (v57): the user
+        // picks the album while the files upload in the background,
+        // instead of waiting for the whole batch to finish. The
+        // choice is stored in chosenImportAlbum; the items are added
+        // to it when the upload finishes (or at once, if the user
+        // picks after the upload finished).
+        importPickerItems = []
+        chosenImportAlbum = nil
+        await fetchMyCollections()
+        showingImportAlbumPicker = true
         defer {
             isUploading = false
             uploadTotal = 0
@@ -556,6 +574,7 @@ final class LibraryViewModel: ObservableObject {
             switch await uploadOnePickedPhoto(item) {
             case .uploaded(let created):
                 uploaded.append(created)
+                importPickerItems.append(created)
             case .duplicate:
                 duplicates += 1
             case .failed:
@@ -566,6 +585,11 @@ final class LibraryViewModel: ObservableObject {
         uploadDuplicateCount = duplicates
         uploadFailedCount = failed
         if uploaded.isEmpty {
+            // Nothing to add — close the picker (the user may have
+            // already picked an album, but there are no items for it).
+            showingImportAlbumPicker = false
+            importPickerItems = []
+            chosenImportAlbum = nil
             if duplicates > 0 && failed == 0 {
                 uploadNotice = "Tất cả đã có trước đó (\(duplicates) trùng, đã bỏ qua)."
             } else if duplicates > 0 {
@@ -575,19 +599,43 @@ final class LibraryViewModel: ObservableObject {
             }
             return
         }
-        // Do NOT auto-add to "Imports" any more (v56). Show the album
-        // picker so the user chooses where these items go.
-        importPickerItems = uploaded
-        await fetchMyCollections()
-        showingImportAlbumPicker = true
+        // Upload done. Turn isUploading off BEFORE the add check:
+        // addImportItemsToAlbum (called from the picker) decides by
+        // this flag whether to add now or defer to here, and the user
+        // may tap an album in the same moment this finishes.
+        isUploading = false
+        if chosenImportAlbum != nil {
+            await addItemsToChosenAlbum()
+        } else if !showingImportAlbumPicker {
+            // The user cancelled while uploading — the items stay in
+            // the Library, in no album. Clear the staging list.
+            importPickerItems = []
+        }
+        // Otherwise the picker is still open: the user picks an
+        // album and addImportItemsToAlbum adds these items at once.
     }
 
-    /// Add the just-imported items (importPickerItems) to the chosen
-    /// album, then close the picker and report the result. The
-    /// notice also says how many were skipped as duplicates/failed.
+    /// The user picked an album for the just-imported items. Record
+    /// the choice and close the picker. If the upload already
+    /// finished, add the items to the album at once; if it is still
+    /// running, uploadPickedPhotos adds them when it completes.
     func addImportItemsToAlbum(_ collection: MyCollection) async {
+        chosenImportAlbum = collection
+        showingImportAlbumPicker = false
+        guard !isUploading, !importPickerItems.isEmpty else { return }
+        await addItemsToChosenAlbum()
+    }
+
+    /// Add the staged items (importPickerItems) to the album the user
+    /// chose (chosenImportAlbum), then report the result. The notice
+    /// also says how many were skipped as duplicates/failed. Called
+    /// when the upload finishes (if the user already picked) or when
+    /// the user picks an album after the upload finished.
+    private func addItemsToChosenAlbum() async {
+        guard let collection = chosenImportAlbum else { return }
         let items = importPickerItems
         importPickerItems = []
+        chosenImportAlbum = nil
         showingImportAlbumPicker = false
         var added = 0
         for item in items {

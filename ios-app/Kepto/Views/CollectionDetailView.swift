@@ -935,18 +935,16 @@ private struct ScrollTopOffsetKey: PreferenceKey {
 /// (KeptoTabView).
 struct AlbumsView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
-    /// "New collection" name alert (from the "+" button).
+    /// "New Album" name alert (from the "+" button).
     @State private var showingNewCollection = false
     @State private var newCollectionName = ""
     @State private var saveNotice: String?
     /// Presents the Settings sheet from the "…" menu.
     @State private var showingSettings = false
-    /// Photos-style Edit mode (like the My Albums See All screen):
-    /// album cards show a red minus badge; tapping it deletes the
-    /// album. The "+" button still creates a new album.
-    @State private var isEditingAlbums = false
-    /// Edit mode for the See All page (separate from the Albums tab
-    /// itself, like Photos: each screen has its own Edit state).
+    /// Edit mode lives ONLY on the See All page (Photos behavior):
+    /// the Albums tab itself has no Edit button — tapping a card
+    /// there always navigates. On See All, Edit shows red minus
+    /// badges to delete albums.
     @State private var isEditingSeeAll = false
     /// The album card awaiting delete confirmation from its red
     /// minus badge (nil = no confirmation open).
@@ -998,7 +996,7 @@ struct AlbumsView: View {
                 await viewModel.fetchCollections()
                 await viewModel.fetchStats()
             }
-            .alert("New collection", isPresented: $showingNewCollection) {
+            .alert("New Album", isPresented: $showingNewCollection) {
                 TextField("Tên collection", text: $newCollectionName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -1149,42 +1147,34 @@ struct AlbumsView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 12) {
-                        // Photos-style Edit mode: album cards show a
-                        // red minus badge to delete them.
-                        Button(isEditingAlbums ? "Done" : "Edit") {
-                            isEditingAlbums.toggle()
+                    // The "…" menu lives on every tab except the
+                    // Player: Clipboard, then Settings. (No Edit
+                    // button here — Edit lives only on See All.)
+                    Menu {
+                        Button { viewModel.showingPhotoPicker = true } label: {
+                            Label("Import from Photos", systemImage: "photo.on.rectangle")
                         }
-                        .font(.subheadline)
-                        .foregroundStyle(.blue)
-                        // The "…" menu lives on every tab except the
-                        // Player: Clipboard, then Settings.
-                        Menu {
-                            Button { viewModel.showingPhotoPicker = true } label: {
-                                Label("Import from Photos", systemImage: "photo.on.rectangle")
-                            }
-                            Button {
-                                Task {
-                                    if let notice = await viewModel.saveFromClipboard() {
-                                        saveNotice = notice
-                                    } else {
-                                        saveNotice = "Không có link trên clipboard."
-                                    }
+                        Button {
+                            Task {
+                                if let notice = await viewModel.saveFromClipboard() {
+                                    saveNotice = notice
+                                } else {
+                                    saveNotice = "Không có link trên clipboard."
                                 }
-                            } label: {
-                                Label("Paste Clipboard", systemImage: "doc.on.clipboard")
-                            }
-                            Button { showingSettings = true } label: {
-                                Label("Settings", systemImage: "gearshape")
                             }
                         } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 32, height: 32)
-                                .background(.ultraThinMaterial, in: Circle())
-                                .accessibilityLabel("More options")
+                            Label("Paste Clipboard", systemImage: "doc.on.clipboard")
                         }
+                        Button { showingSettings = true } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .accessibilityLabel("More options")
                     }
                 }
             }
@@ -1258,9 +1248,38 @@ struct AlbumsView: View {
                         }
                     }
                 }
+                // Native interactive pop gesture (swipe back): the
+                // grid ScrollView would otherwise swallow the left
+                // edge pan, like the Player before v46. This also
+                // keeps swipe-back working while the back button is
+                // hidden in Edit mode (below) — the bridge re-enables
+                // the gesture and permits it whenever there is a
+                // view to pop to.
+                .background(NativePopGestureHelper())
                 }
                 .navigationTitle(section == .myAlbums ? "My Albums" : "Creators")
+                // Photos: in Edit mode the "< Albums" back button
+                // becomes a "+" that opens the New Album menu. The
+                // button is hidden only while editing.
+                .navigationBarBackButtonHidden(isEditingSeeAll)
                 .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        // Only in Edit mode — otherwise the system
+                        // back button ("< Albums") shows.
+                        if isEditingSeeAll {
+                            Menu {
+                                Button {
+                                    showingNewCollection = true
+                                } label: {
+                                    Label("New Album", systemImage: "square.stack")
+                                }
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 20, weight: .regular))
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         // Photos-style Edit mode for this See All page.
                         Button(isEditingSeeAll ? "Done" : "Edit") {
@@ -1298,11 +1317,9 @@ struct AlbumsView: View {
 
     /// One section (My Albums / Creators): a header with a "See All"
     /// button on the right, then a sideways-scrolling 2-row grid of
-    /// album cards. Swipe sideways to see more albums. In Edit mode
-    /// each deletable card (user albums + creators; NOT Recents /
-    /// Favorites) shows a red minus badge at its top-left corner —
-    /// tapping it deletes the album. Tapping the card itself does
-    /// nothing while editing (it navigates only outside edit mode).
+    /// album cards. Swipe sideways to see more albums. Tapping a
+    /// card navigates to it — there is no Edit mode on this screen
+    /// (Photos: Edit lives only on the See All page).
     private func albumSection(title: String, cards: [AlbumCard], onSeeAll: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -1319,33 +1336,14 @@ struct AlbumsView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHGrid(rows: albumRows, spacing: 12) {
                     ForEach(cards, id: \.self) { card in
-                        // The minus badge is a SIBLING of the card
-                        // button (not inside it): the card button is
-                        // disabled in Edit mode, which would also
-                        // disable a badge nested inside its label.
-                        ZStack(alignment: .topLeading) {
-                            Button { select(card) } label: {
-                                cardView(for: card)
-                                    .frame(width: albumCardWidth)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isEditingAlbums)
-                            // Red minus badge (Photos Edit mode).
-                            // Only on deletable albums.
-                            if isEditingAlbums, isDeletable(card) {
-                                Button {
-                                    albumPendingDelete = card
-                                    showingDeleteAlbumConfirmation = true
-                                } label: {
-                                    Image(systemName: "minus.circle.fill")
-                                        .font(.system(size: 22))
-                                        .foregroundStyle(.red)
-                                        .background(Color.white, in: Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .offset(x: -8, y: -8)
-                            }
+                        // No Edit mode on the Albums tab itself
+                        // (Photos: Edit lives only on the See All
+                        // page) — a tap always navigates.
+                        Button { select(card) } label: {
+                            cardView(for: card)
+                                .frame(width: albumCardWidth)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal)
