@@ -164,11 +164,11 @@ struct PhotoDetailView: View {
             items: $items,
             chromeVisible: $chrome,
             zoomed: $zoomed,
-            isScrubbing: $isScrubbing,
             onDeleteRequest: { video in
                 itemPendingDelete = video
                 showDelete = true
-            }
+            },
+            isScrubbing: $isScrubbing
         )
         .id(item.id)
         .containerRelativeFrame(.horizontal)
