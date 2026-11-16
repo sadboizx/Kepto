@@ -204,6 +204,10 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     /// grouping and the For You memories). Nil when the stored
     /// ISO string does not parse.
     var savedDate: Date? { Self.isoFormatter.date(from: savedAt) }
+
+    /// The posted date as a Date (nil when postedAt is missing or
+    /// unparsable). Used by the Player info sheet.
+    var postedDate: Date? { postedAt.flatMap { Self.isoFormatter.date(from: $0) } }
 }
 
 // MARK: - API response envelopes (backend returns { ok, ... })

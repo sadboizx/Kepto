@@ -1112,6 +1112,15 @@ struct AlbumsView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(isEditingSeeAll)
+                                // Long-press menu (Photos) — hidden in
+                                // Edit mode (the minus badge is the
+                                // delete path there) and on
+                                // Recents/Favorites (not deletable).
+                                .contextMenu {
+                                    if !isEditingSeeAll, isDeletable(card) {
+                                        albumContextMenu(for: card)
+                                    }
+                                }
                                 // Red minus badge (Photos Edit mode).
                                 // Only on deletable albums.
                                 if isEditingSeeAll, isDeletable(card) {
@@ -1224,12 +1233,23 @@ struct AlbumsView: View {
                     ForEach(cards, id: \.self) { card in
                         // No Edit mode on the Albums tab itself
                         // (Photos: Edit lives only on the See All
-                        // page) — a tap always navigates.
+                        // page) — a tap always navigates. Long-press
+                        // shows the Photos album menu (Add Photos /
+                        // Rename / Delete) on user + creator albums;
+                        // Recents/Favorites have no menu. The menu is
+                        // on the Button itself (not the card label) —
+                        // a contextMenu on a Button's label does not
+                        // fire reliably.
                         Button { select(card) } label: {
                             cardView(for: card)
                                 .frame(width: albumCardWidth)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            if isDeletable(card) {
+                                albumContextMenu(for: card)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal)
@@ -1274,37 +1294,24 @@ struct AlbumsView: View {
     }
 
     /// The card view for one album (square cover + name + count
-    /// below), with the Photos long-press menu (Add Photos /
-    /// Rename Album / Delete Album) on user albums. The menu is
-    /// hidden in See All Edit mode (the red minus badge is the
-    /// delete path there) and on the built-in Recents/Favorites.
-    @ViewBuilder
-    private func cardView(for card: AlbumCard) -> some View {
-        let base: AlbumCardView = {
-            switch card {
-            case .kind(.recents):
-                return AlbumCardView(name: "Recents", count: recentsCount, coverItemId: viewModel.items.first?.id)
-            case .kind(.favorites):
-                return AlbumCardView(name: "Favorites", count: favoritesCount, coverItemId: viewModel.items.first(where: { $0.isFavorite })?.id, showsHeart: true)
-            case .myCollection(let collection):
-                // User albums show in lowercase; Recents / Favorites
-                // (the .kind cases above) keep their Title Case. The
-                // app's own "Imports" album is the exception — it keeps
-                // its professional capital I instead of "imports".
-                let displayName = collection.name.localizedCaseInsensitiveCompare("Imports") == .orderedSame
-                    ? "Imports"
-                    : collection.name.lowercased()
-                return AlbumCardView(name: displayName, count: collection.count, coverItemId: collection.coverItemId)
-            case .creator(let collection):
-                return AlbumCardView(name: collection.displayName.lowercased(), count: collection.count, coverItemId: collection.coverItemId)
-            }
-        }()
-        if isEditingSeeAll {
-            base
-        } else if case .kind = card {
-            base
-        } else {
-            base.contextMenu { albumContextMenu(for: card) }
+    /// below).
+    private func cardView(for card: AlbumCard) -> AlbumCardView {
+        switch card {
+        case .kind(.recents):
+            return AlbumCardView(name: "Recents", count: recentsCount, coverItemId: viewModel.items.first?.id)
+        case .kind(.favorites):
+            return AlbumCardView(name: "Favorites", count: favoritesCount, coverItemId: viewModel.items.first(where: { $0.isFavorite })?.id, showsHeart: true)
+        case .myCollection(let collection):
+            // User albums show in lowercase; Recents / Favorites
+            // (the .kind cases above) keep their Title Case. The
+            // app's own "Imports" album is the exception — it keeps
+            // its professional capital I instead of "imports".
+            let displayName = collection.name.localizedCaseInsensitiveCompare("Imports") == .orderedSame
+                ? "Imports"
+                : collection.name.lowercased()
+            return AlbumCardView(name: displayName, count: collection.count, coverItemId: collection.coverItemId)
+        case .creator(let collection):
+            return AlbumCardView(name: collection.displayName.lowercased(), count: collection.count, coverItemId: collection.coverItemId)
         }
     }
 

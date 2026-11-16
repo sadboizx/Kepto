@@ -276,6 +276,11 @@ private struct FeedVideoPage: View {
     @State private var playbackRate: Float = 1.0
     /// Speeds offered by the running-person button's menu.
     private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    /// Mute state for this page's player (speaker icon in the
+    /// toolbar). Per-page — a new video starts with sound.
+    @State private var isMuted = false
+    /// The Photos-style info sheet (the (i) button in the toolbar).
+    @State private var showingInfo = false
     /// The "…" menu's "Add to Album" picker (nil = closed).
     @State private var showingAlbumPicker = false
     /// A downloaded file ready for the iOS share sheet (nil = closed).
@@ -346,8 +351,8 @@ private struct FeedVideoPage: View {
                         .font(.system(size: 72))
                         .foregroundStyle(.white.opacity(0.85))
                 }
-                // Bottom gradient so the username/caption stay legible
-                // over the video (TikTok-style).
+                // Bottom gradient so the toolbar icons stay legible
+                // over the video (Photos-style).
                 if item.status == .ready {
                     VStack {
                         Spacer()
@@ -368,6 +373,11 @@ private struct FeedVideoPage: View {
                 // very bottom): the username is at the bottom edge,
                 // just above the Home Indicator, and the progress bar
                 // is right above it.
+                // Progress bar + Photos-style bottom toolbar. The
+                // username/caption overlay is gone (Photos shows
+                // media clean). The toolbar sits at the very bottom,
+                // just above the Home Indicator, and the progress bar
+                // is right above it.
                 VStack(spacing: 0) {
                     Spacer()
                     if item.status == .ready, !isImage {
@@ -381,30 +391,35 @@ private struct FeedVideoPage: View {
                             frameCache: frameCache,
                             onSeek: { seconds in seekFromScrub(to: seconds) }
                         )
-                        // 10pt above the username.
+                        // 10pt above the toolbar.
                         .padding(.bottom, 10)
                     }
                     if item.status == .ready {
-                        HStack(alignment: .bottom, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.collectionName)
-                                    .font(.headline)
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                                if let caption = item.caption,
-                                   !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    Text(caption)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.white.opacity(0.85))
-                                        .lineLimit(2)
+                        // Photos toolbar: Share, Favorite, then (video
+                        // only) Play/Pause, Mute, Speed, then Info,
+                        // Delete. Photo: Share, Favorite, Info,
+                        // Delete. Blue icons, evenly spread.
+                        HStack(spacing: 0) {
+                            playerTabButton(systemName: "square.and.arrow.up", label: "Share") {
+                                shareItem()
+                            }
+                            playerTabButton(systemName: item.isFavorite ? "heart.fill" : "heart", label: "Favorite") {
+                                Task {
+                                    if let updated = await viewModel.toggleFavorite(item: item) {
+                                        showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
+                                    }
                                 }
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            // Playback speed button (running-person
-                            // icon) at the bottom-right corner, next
-                            // to the username. The "…" button moved
-                            // to the top-right corner (Facebook-style).
                             if !isImage {
+                                playerTabButton(systemName: isPlaying ? "pause.fill" : "play.fill", label: isPlaying ? "Pause" : "Play") {
+                                    togglePlay()
+                                }
+                                playerTabButton(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", label: isMuted ? "Unmute" : "Mute") {
+                                    toggleMute()
+                                }
+                                // Playback speed (running-person icon)
+                                // lives in the toolbar now, not at the
+                                // bottom-right corner.
                                 Menu {
                                     ForEach(speeds, id: \.self) { rate in
                                         Button {
@@ -419,67 +434,31 @@ private struct FeedVideoPage: View {
                                     }
                                 } label: {
                                     Image(systemName: "figure.run")
-                                        .font(.system(size: 18, weight: .semibold))
-                                        .foregroundStyle(.white)
-                                        .frame(width: 44, height: 44)
-                                        .background(.ultraThinMaterial, in: Circle())
+                                        .font(.system(size: 22))
+                                        .foregroundStyle(.blue)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 44)
                                         .accessibilityLabel("Playback speed")
                                 }
                             }
+                            playerTabButton(systemName: showingInfo ? "info.circle.fill" : "info.circle", label: "Info") {
+                                showingInfo = true
+                            }
+                            playerTabButton(systemName: "trash", label: "Delete") {
+                                onDeleteRequest?(item)
+                            }
                         }
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, 8)
                         // At the very bottom, just above the Home
                         // Indicator (a small gap, not touching it).
                         .padding(.bottom, geo.safeAreaInsets.bottom + 8)
                     }
                 }
-                // "…" button at the TOP-RIGHT corner (Facebook-style
-                // header position), over the video. Opens the menu
-                // (Save to Photos, Share, Favorite, Add to Album,
-                // Delete — no Playback speed in it). Shown for videos
-                // and photos alike.
-                if item.status == .ready {
-                    Menu {
-                        Button { Task { await downloadVideo() } } label: {
-                            Label("Save to Photos", systemImage: "arrow.down.to.line")
-                        }
-                        Button { shareItem() } label: {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                        }
-                        Button {
-                            Task {
-                                if let updated = await viewModel.toggleFavorite(item: item) {
-                                    showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
-                                }
-                            }
-                        } label: {
-                            Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
-                        }
-                        Button { showingAlbumPicker = true } label: {
-                            Label("Add to Album", systemImage: "folder.badge.plus")
-                        }
-                        Button(role: .destructive) {
-                            onDeleteRequest?(item)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .accessibilityLabel("More options")
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.trailing, 12)
-                    // The Player video is full-bleed (ignores safe
-                    // area), so geo.safeAreaInsets.top is 0 here and
-                    // "+ 8" put the button on the status bar. Floor
-                    // the top inset at 44 (notched status bar) and
-                    // add 12pt of clearance below it.
-                    .padding(.top, max(geo.safeAreaInsets.top, 44) + 12)
-                }
+                // (No top-right "…" menu any more — its actions live
+                // in the bottom toolbar now: Share, Favorite,
+                // Delete. Save to Photos and Add to Album moved to
+                // the info sheet, so they are still reachable from
+                // the Player.)
                 // Transient notice (Copy link / Download result).
                 // Sits above the progress bar (which is now above the
                 // username), so it never covers either.
@@ -523,6 +502,16 @@ private struct FeedVideoPage: View {
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
             .presentationBackground(Color.black)
+        }
+        // Photos-style info sheet (the (i) button in the toolbar).
+        .sheet(isPresented: $showingInfo) {
+            ItemInfoSheet(
+                item: item,
+                onSaveToPhotos: { Task { await downloadVideo() } },
+                onAddToAlbum: { showingAlbumPicker = true }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
         .sheet(item: $shareFile) { file in
             ShareSheet(activityItems: [file.url])
@@ -606,6 +595,7 @@ private struct FeedVideoPage: View {
         let playerItem = AVPlayerItem(asset: asset)
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.actionAtItemEnd = .none
+        newPlayer.isMuted = isMuted
         player = newPlayer
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         timeObserver = newPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
@@ -734,6 +724,27 @@ private struct FeedVideoPage: View {
         }
     }
 
+    /// Mute/unmute this page's player (speaker icon in the toolbar).
+    private func toggleMute() {
+        isMuted.toggle()
+        player?.isMuted = isMuted
+    }
+
+    /// One icon button in the Photos-style bottom toolbar: a blue
+    /// 22pt icon, evenly spread (each button takes an equal share
+    /// of the width).
+    private func playerTabButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 22))
+                .foregroundStyle(.blue)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .accessibilityLabel(label)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func flashIcon(_ name: String) {
         tapIconTask?.cancel()
         tapIcon = name
@@ -800,6 +811,147 @@ private struct FeedVideoPage: View {
     }
 }
 
+
+/// Photos-style info sheet for one item (the (i) button in the
+/// Player toolbar): the media, caption, posted date, quality info,
+/// and "Saved from <platform>" (tappable — opens the original post
+/// in Safari). Save to Photos and Add to Album live here too, so
+/// they are still reachable from the Player now that the top-right
+/// "…" menu is gone.
+private struct ItemInfoSheet: View {
+    let item: Item
+    var onSaveToPhotos: () -> Void = {}
+    var onAddToAlbum: () -> Void = {}
+    @EnvironmentObject private var viewModel: LibraryViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var thumb: UIImage?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let thumb {
+                        Image(uiImage: thumb)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    if let caption = item.caption,
+                       !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(caption)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                    }
+                    // Date posted (or saved date when the post date
+                    // is unknown): "Tuesday · 13 Oct 2026 · 18:13".
+                    if let dateString = infoDateString {
+                        Text(dateString)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    // Quality info: "720p · 1280 × 720 · 2.4 MB"
+                    // plus the duration for videos.
+                    if let quality = qualityString {
+                        Text(quality)
+                            .font(.subheadline)
+                    }
+                    if let duration = item.formattedDuration {
+                        Text(duration)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    // "Saved from <platform>" — tappable, opens the
+                    // original post in Safari. Imported photos have
+                    // no original post (album:// URL), so they show
+                    // "Imported from Photos" instead.
+                    if let originalURL = URL(string: item.originalUrl),
+                       let scheme = originalURL.scheme, scheme.hasPrefix("http") {
+                        Button {
+                            dismiss()
+                            UIApplication.shared.open(originalURL)
+                        } label: {
+                            HStack {
+                                Text("Saved from \(item.platform.displayName)")
+                                    .font(.subheadline)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .foregroundStyle(.blue)
+                    } else {
+                        Text("Imported from Photos")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    Button {
+                        dismiss()
+                        onSaveToPhotos()
+                    } label: {
+                        Label("Save to Photos", systemImage: "arrow.down.to.line")
+                    }
+                    Button {
+                        dismiss()
+                        onAddToAlbum()
+                    } label: {
+                        Label("Add to Album", systemImage: "folder.badge.plus")
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Info")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                guard thumb == nil, let api = viewModel.api else { return }
+                thumb = try? await api.fetchThumbnail(id: item.id)
+            }
+        }
+    }
+
+    /// "Tuesday · 13 Oct 2026 · 18:13" — the posted date, or the
+    /// saved date when the post date is unknown.
+    private var infoDateString: String? {
+        let date = item.postedDate ?? item.savedDate
+        guard let date else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE · d MMM yyyy · HH:mm"
+        return formatter.string(from: date)
+    }
+
+    /// "720p · 1280 × 720 · 2.4 MB" (video) or "1280 × 720 · 2.4 MB"
+    /// (photo). The "720p" label comes from the smaller side, so a
+    /// vertical 720×1280 video reads "720p" too.
+    private var qualityString: String? {
+        var parts: [String] = []
+        if let width = item.width, let height = item.height {
+            parts.append(qualityLabel(for: min(width, height)))
+            parts.append("\(width) × \(height)")
+        }
+        if let size = item.formattedFileSize {
+            parts.append(size)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private func qualityLabel(for pixels: Int) -> String {
+        switch pixels {
+        case 2160...: return "2160p"
+        case 1440..<2160: return "1440p"
+        case 1080..<1440: return "1080p"
+        case 720..<1080: return "720p"
+        case 480..<720: return "480p"
+        default: return "\(pixels)p"
+        }
+    }
+}
 
 /// "Add to collection" picker: the user's collections plus a row to
 /// create a new one. The list refreshes when it opens. Shared by the
