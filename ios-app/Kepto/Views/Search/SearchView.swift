@@ -103,6 +103,13 @@ struct SearchView: View {
                     }
                 }
             }
+            // Round 7: hide the status bar + navigation bar while
+            // the viewer overlay is open — the viewer's own
+            // .statusBarHidden does not work in the overlay context.
+            // Both are state-driven, so they return instantly when
+            // the viewer closes (feedStartItem = nil).
+            .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
+            .statusBarHidden(feedStartItem != nil)
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
@@ -150,7 +157,7 @@ struct SearchView: View {
                                         query = person.name
                                     } label: {
                                         VStack(spacing: 6) {
-                                            AssetThumbnail(source: person.cover, cornerRadius: 34, showFavoriteMark: false)
+                                            AssetThumbnail(source: person.cover, cornerRadius: 34, showBadge: false, showFavoriteMark: false)
                                                 .frame(width: 68, height: 68)
                                                 .clipShape(Circle())
                                             Text(person.name).font(.caption).lineLimit(1)
@@ -232,11 +239,10 @@ struct SearchView: View {
                                 Button {
                                     openResult(meta)
                                 } label: {
-                                    // Round 3: no time badge on Search
-                                    // thumbnails (duration / view count
-                                    // hidden — the shared cell keeps it
-                                    // for Library / For You).
-                                    AssetThumbnail(source: meta, showBadge: false)
+                                    // Round 7: duration badge back on
+                                    // Search results (round 3 hid it;
+                                    // Categories / People hide it now).
+                                    AssetThumbnail(source: meta)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -329,7 +335,7 @@ private struct SearchCategoryCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Group {
                     if let cover {
-                        AssetThumbnail(source: cover, cornerRadius: 12)
+                        AssetThumbnail(source: cover, cornerRadius: 12, showBadge: false)
                     } else {
                         Color(.systemGray5)
                             .aspectRatio(1, contentMode: .fit)

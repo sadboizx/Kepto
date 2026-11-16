@@ -566,9 +566,11 @@ struct AlbumsView: View {
     /// centre-cropped, slightly rounded corners) with the name and
     /// the item count BELOW the card — not overlaid on it. The
     /// Favorites cover is the newest favorite's media thumbnail,
-    /// like any other album (round 5 — the white heart badge is
-    /// gone). Without a cover, the card shows the album symbol in
-    /// its tint color (the heart is the Favorites empty state).
+    /// like any other album (round 5), with a white heart badge
+    /// at the bottom-left (round 7 — same treatment as the
+    /// favorite item-cell hearts). Without a cover, the card shows
+    /// the album symbol in its tint color (the heart is the
+    /// Favorites empty state — no second heart is added there).
     private func albumTile(_ album: AlbumItem) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack {
@@ -577,6 +579,21 @@ struct AlbumsView: View {
                 if let cover = album.coverID {
                     AspectThumbnail(itemId: cover)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        // Favorites only (round 7): a white heart
+                        // badge at the bottom-left of the media
+                        // cover — the same 13pt semibold heart as
+                        // the favorite item cells. Only when a real
+                        // media cover exists; the empty state below
+                        // (red heart symbol) gets no second heart.
+                        .overlay(alignment: .bottomLeading) {
+                            if album.kind == .favorites {
+                                Image(systemName: "heart.fill")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
+                                    .padding(6)
+                            }
+                        }
                 } else {
                     Image(systemName: album.symbol)
                         .font(.title2)
@@ -766,27 +783,40 @@ struct AlbumsView: View {
 }
 
 /// Recently Deleted, note-only (Option A): Kepto has no trash —
-/// deletes are permanent, so there is nothing to list. The screen
-/// says so plainly and points at the system Photos Recently Deleted
-/// album for photos saved to the device. No grid, no Worker/D1
-/// changes, no change to the delete flow. The note is vertically
-/// centred (round 5); swipe-back works via NativePopGestureHelper
-/// (same fix as the See All grid — the ScrollView would otherwise
-/// swallow the left edge pan).
+/// deletes are permanent, so there is nothing to list. Restored
+/// to the PhotosClone layout (round 7): a centred trash icon,
+/// the title, and the note text, all vertically centred — the
+/// same wording PhotosClone shows (L10n.deletedNote). No grid,
+/// no Worker/D1 changes, no change to the delete flow. The note
+/// is vertically centred (round 5); swipe-back works via
+/// NativePopGestureHelper (same fix as the See All grid — the
+/// ScrollView would otherwise swallow the left edge pan).
+/// Measured from the PhotosClone screenshot (IMG_1090, @3x):
+/// icon 64pt font (~52pt glyph), title 20pt semibold, body
+/// 17pt secondary, 32pt side padding, icon→title gap ~24pt,
+/// title→body gap ~20pt.
 private struct RecentlyDeletedNoteView: View {
     var body: some View {
         GeometryReader { geo in
             ScrollView {
-                Text(L10n.recentlyDeletedNote)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    // minHeight + default centre alignment: a short
-                    // note sits in the middle of the screen; a long
-                    // note grows past minHeight and scrolls from
-                    // the top like a normal ScrollView.
-                    .frame(minHeight: geo.size.height)
+                VStack(spacing: 20) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 64))
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 4)
+                    Text(L10n.recentlyDeleted)
+                        .font(.system(size: 20, weight: .semibold))
+                    Text(L10n.deletedNote)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 32)
+                // minHeight + default centre alignment: a short
+                // note sits in the middle of the screen; a long
+                // note grows past minHeight and scrolls from
+                // the top like a normal ScrollView.
+                .frame(minHeight: geo.size.height)
             }
             .background(NativePopGestureHelper())
         }

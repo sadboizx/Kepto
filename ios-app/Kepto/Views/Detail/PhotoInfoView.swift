@@ -145,13 +145,14 @@ struct PhotoInfoView: View {
         return L10n.relativeAgo(seconds: Int(Date().timeIntervalSince(date)))
     }
 
-    /// "Saturday · 17 Jan 2026 · 09:47" — the posted date, or the
-    /// saved date when the post date is unknown.
+    /// Date only ("17 Jan 2026") — no weekday, no time (user
+    /// request, round 7). The posted date, or the saved date when
+    /// the post date is unknown.
     private var infoDateString: String? {
         let date = item.postedDate ?? item.savedDate
         guard let date else { return nil }
         let formatter = DateFormatter()
-        formatter.dateFormat = "EEEE · d MMM yyyy · HH:mm"
+        formatter.dateFormat = "d MMM yyyy"
         return formatter.string(from: date)
     }
 

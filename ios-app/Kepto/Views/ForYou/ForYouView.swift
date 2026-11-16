@@ -50,6 +50,14 @@ struct ForYouView: View {
             }
             .navigationTitle(L10n.forYou)
             .navigationBarTitleDisplayMode(.large)
+            // While the viewer overlay is open, hide the navigation
+            // bar and the status bar: the viewer's own
+            // .statusBarHidden does not take effect inside an
+            // overlay in a NavigationStack, so it has to be set
+            // here, on the opener. Both return the moment the
+            // viewer closes (feedStartItem = nil).
+            .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
+            .statusBarHidden(feedStartItem != nil)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     // The "…" menu lives on every tab except the

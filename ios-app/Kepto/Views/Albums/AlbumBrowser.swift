@@ -253,6 +253,16 @@ struct PhotoCollectionScreen: View {
             .navigationBarBackButtonHidden(isSelecting)
             // Transparent status bar / nav bar (see AlbumsView).
             .toolbarBackground(.hidden, for: .navigationBar)
+            // While the viewer overlay is open, hide the navigation
+            // bar and the status bar: the viewer's own
+            // .statusBarHidden does not take effect inside an
+            // overlay in a NavigationStack, so it has to be set
+            // here, on the opener. Both return the moment the
+            // viewer closes (feedStartItem = nil). The grid already
+            // extends under the bar, so hiding it does not move the
+            // cells — the viewer's thumbnail target stays valid.
+            .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
+            .statusBarHidden(feedStartItem != nil)
             // The system back button ("< Albums") is white via
             // .tint(.primary) on the AlbumsView NavigationStack (the tint
             // comes from the stack, not the pushed view). It shows

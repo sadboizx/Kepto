@@ -79,8 +79,9 @@ struct AssetThumbnail: View {
     var selected = false
     var cornerRadius: CGFloat = 0
     /// Show the duration / view-count badge (bottom-leading). The
-    /// Search results grid hides it (round 3 — no time on Search
-    /// thumbnails); Library / For You keep it.
+    /// Search Categories / People covers hide it (round 7 — no time
+    /// on category or person covers); Search results, Library and
+    /// For You keep it.
     var showBadge = true
     /// Show the white favorite heart at the bottom-left. Covers
     /// (month card, person avatar) hide it — the heart belongs on

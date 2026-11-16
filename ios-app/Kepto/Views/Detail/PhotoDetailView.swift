@@ -36,6 +36,13 @@ import UIKit
 /// tab bar cross-fades with the viewer toolbar during a dismiss
 /// drag (TabBarFadeHelper fades the real UITabBar with the same
 /// drag progress — no fake tab bar, no binary show/hide snap).
+/// NOTE: the hiding is done by the OPENER (Library / AlbumBrowser /
+/// For You set `.statusBarHidden(feedStartItem != nil)` and hide
+/// the nav bar on their own root) — the viewer's own
+/// `.statusBarHidden(true)` / `.toolbar(.hidden)` below do NOT
+/// take effect inside an overlay in a NavigationStack (frame i_02:
+/// status bar + "< Albums" nav bar both showed over the viewer).
+/// They are kept as a fallback.
 /// The viewer toolbar is 78pt tall, like Apple Photos (measured).
 /// `NativePopGestureHelper` (same v46 bridge) still lives in this
 /// file for the album detail views.
@@ -142,7 +149,7 @@ struct PhotoDetailView: View {
     }
 
     var body: some View {
-        GeometryReader { _ in
+        GeometryReader { geo in
             ZStack {
                 // Fades with the drag-down-to-dismiss (and to 0 on a
                 // dismissing release): the album grid behind the
@@ -160,7 +167,12 @@ struct PhotoDetailView: View {
                 // stays in place during a dismiss drag and fades.
                 if chrome {
                     VStack(spacing: 0) {
+                        // Below the top safe area (notch / status
+                        // bar): the centred date used to sit at y≈0
+                        // and overlap the status bar (frame i_02).
+                        // topBar itself still adds its small +8pt.
                         topBar
+                            .padding(.top, geo.safeAreaInsets.top)
                         Spacer()
                     }
                     .opacity(chromeOpacity)
@@ -178,8 +190,12 @@ struct PhotoDetailView: View {
         // Full-screen viewer: hide the navigation bar (no back
         // button/title — the custom topBar provides them) and the
         // status bar (no clock/battery over the media while viewing;
-        // it returns when the viewer closes — the modifier leaves
-        // with the overlay). The tab bar is always rendered while
+        // it returns when the viewer closes). NOTE: these two
+        // modifiers do NOT take effect on their own here — the
+        // viewer is an overlay inside a NavigationStack, and in
+        // that context SwiftUI ignores them (frame i_02). The
+        // opener does the hiding on its own root instead; these
+        // stay as a fallback. The tab bar is always rendered while
         // the viewer is open — TabBarFadeHelper (below) fades the
         // real UITabBar in with the drag (alpha 0 at rest, so it is
         // invisible and non-interactive while viewing, and it
@@ -501,6 +517,10 @@ private struct PhotoDetailPage: View {
 
     var body: some View {
         GeometryReader { geo in
+            // The mask rect for the media (see `maskSize`): the full
+            // page while idle or dragging, the source thumbnail's
+            // size on a dismissing release.
+            let mask = maskSize(pageSize: geo.size)
             ZStack {
                 // Fades with the dismiss drag (see the viewer): the
                 // album grid behind the pushed viewer shows through
@@ -512,8 +532,21 @@ private struct PhotoDetailPage: View {
                 // and fade instead of moving. Scale BEFORE offset:
                 // scaling first keeps the offset unscaled, so the
                 // media's centre lands exactly on the thumbnail.
+                // The mask clips the media to the thumbnail rect on
+                // a dismissing release — without it the media scaled
+                // to cover the square thumbnail is taller (portrait)
+                // or wider (landscape) than the thumbnail, so it
+                // sticks out over the neighbouring cells and then
+                // vanishes when the overlay is removed (frames
+                // i_05/i_06). The mask is a no-op while idle or
+                // dragging (full-page rect), and it does not change
+                // the media's layout — it only clips the rendering.
                 mediaContent
                     .scaleEffect(dragScale)
+                    .mask {
+                        Rectangle()
+                            .frame(width: mask.width, height: mask.height)
+                    }
                     .offset(dragOffset)
                 // Centre play button for paused videos (Photos) —
                 // the ONLY centre pause/play indicator. (The old
@@ -873,6 +906,22 @@ private struct PhotoDetailPage: View {
         }
     }
 
+    /// The mask rect for the media (see the body): the full page
+    /// while idle or dragging — the media never exceeds it, so the
+    /// mask is a no-op — and the source thumbnail's size on a
+    /// dismissing release, so the media is clipped exactly to the
+    /// thumbnail rect at landing. Driven by `dismissing`, so it
+    /// animates in the same easeInOut(0.35) transaction as the
+    /// scale + offset in `dismissToThumbnail`. Page-sized when the
+    /// thumbnail is unknown (Search / For You): the fallback slides
+    /// the media down off the bottom, unchanged.
+    private func maskSize(pageSize: CGSize) -> CGSize {
+        guard dismissing, let thumb = sourceFrame, thumb.width > 0, thumb.height > 0 else {
+            return pageSize
+        }
+        return thumb.size
+    }
+
     /// Where the media flies to on a dismissing release: its source
     /// thumbnail (the media scales to cover it, centred on it — the
     /// grid cell shows the media cropped to fill the square, so the
@@ -883,8 +932,12 @@ private struct PhotoDetailPage: View {
         guard let thumb = sourceFrame, thumb.width > 0, thumb.height > 0 else {
             return (CGSize(width: 0, height: pageSize.height), 0.6)
         }
-        // The drawn media size: a video fills the page (aspectFill);
-        // a photo is aspect-fit inside it.
+        // The drawn media size: the RENDERED rect, not the page — a
+        // photo is aspect-fit inside the page, a video is aspectFill
+        // (larger than the page in one dimension). The landing scale
+        // maps this rect onto the thumbnail's rendered rect, so the
+        // content lines up exactly (and the mask in the body clips
+        // the rest to the thumbnail rect).
         let drawn: CGSize
         if isImage {
             let imageSize: CGSize
@@ -898,7 +951,26 @@ private struct PhotoDetailPage: View {
             let fitted = AVMakeRect(aspectRatio: imageSize, insideRect: CGRect(origin: .zero, size: pageSize)).size
             drawn = (fitted.width > 0 && fitted.height > 0) ? fitted : pageSize
         } else {
-            drawn = pageSize
+            // Video: aspectFill — the rendered video is LARGER than
+            // the page in one dimension (it crops to fill it), so
+            // the page size is NOT the drawn size. Using the page
+            // size made the landing scale too big: a 9:16 video on
+            // a 428×926 page renders 521×926 (old scale 0.329 vs
+            // the content-aligned 0.271), and a 16:9 video renders
+            // 1646×926 (old 0.329 vs 0.152 — over 2× too big), so
+            // the media landed as a tall/wide strip over the
+            // thumbnail instead of on it (frames i_05/i_06). The
+            // video's aspect gives the rendered rect; the max()
+            // below then yields the scale that maps it onto the
+            // thumbnail's rendered rect.
+            let videoSize: CGSize
+            if let w = item.width, let h = item.height, w > 0, h > 0 {
+                videoSize = CGSize(width: w, height: h)
+            } else {
+                videoSize = pageSize
+            }
+            let cover = max(pageSize.width / videoSize.width, pageSize.height / videoSize.height)
+            drawn = CGSize(width: videoSize.width * cover, height: videoSize.height * cover)
         }
         // Cover the thumbnail (see above): the largest ratio wins.
         let scale = max(thumb.width / drawn.width, thumb.height / drawn.height)

@@ -96,6 +96,17 @@ struct LibraryView: View {
             // shows through under the status bar and the bar, no
             // solid band — same as the Albums tab.
             .toolbarBackground(.hidden, for: .navigationBar)
+            // While the viewer overlay is open, hide the navigation
+            // bar and the status bar: the viewer's own
+            // .statusBarHidden does not take effect inside an
+            // overlay in a NavigationStack, so it has to be set
+            // here, on the opener's root. Both return the moment
+            // the viewer closes (feedStartItem = nil). The grid
+            // already extends under the bar, so hiding it does not
+            // move the cells — the viewer's thumbnail target stays
+            // valid.
+            .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
+            .statusBarHidden(feedStartItem != nil)
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .cancellationAction) {
