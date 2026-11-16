@@ -43,6 +43,11 @@ struct PhotoCollectionScreen: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var items: [Item] = []
+    /// Round-13: `sortedItems` used to re-sort the loaded pages on
+    /// every access (per cell appear, per body eval) — the same
+    /// per-access cost as the Library's allIDs, over a smaller list.
+    /// Cached here, rebuilt once per `items` change.
+    @State private var cachedSortedItems: [Item] = []
     @State private var nextCursor: String?
     @State private var isLoading = false
     @State private var isLoadingMore = false
@@ -388,7 +393,12 @@ struct PhotoCollectionScreen: View {
     /// the underlying `items` stays in server order (newest first)
     /// so the viewer, load-more and the favorite merge keep working
     /// exactly as before.
-    private var sortedItems: [Item] { items.sortedChronologically() }
+    private var sortedItems: [Item] { cachedSortedItems }
+
+    /// Rebuild the sorted-items cache from the loaded pages.
+    private func refreshSortedItems() {
+        cachedSortedItems = items.sortedChronologically()
+    }
 
     private var collectionGrid: some View {
         ScrollViewReader { proxy in
@@ -466,10 +476,15 @@ struct PhotoCollectionScreen: View {
             .onPreferenceChange(CellFramePreferenceKey.self) { frames in
                 cellFrameCache.frames.merge(frames) { _, new in new }
             }
-            .onAppear { maybeInitialScroll(proxy) }
-            .onChange(of: items) { oldItems, newItems in
+            .onAppear {
+                refreshSortedItems()
                 maybeInitialScroll(proxy)
-                maybeScrollToNewItem(proxy, oldItems: oldItems, newItems: newItems)
+            }
+            .onChange(of: items) { oldItems, newItems in
+                let oldLast = cachedSortedItems.last?.id
+                refreshSortedItems()
+                maybeInitialScroll(proxy)
+                maybeScrollToNewItem(proxy, oldLast: oldLast, newLast: cachedSortedItems.last?.id, oldCount: oldItems.count, newCount: newItems.count)
             }
         }
     }
@@ -659,11 +674,9 @@ struct PhotoCollectionScreen: View {
     /// and never while the viewer or select mode is open. (Load-more
     /// appends OLDER pages, so the displayed last item does not
     /// change there and this never fires on paging.)
-    private func maybeScrollToNewItem(_ proxy: ScrollViewProxy, oldItems: [Item], newItems: [Item]) {
+    private func maybeScrollToNewItem(_ proxy: ScrollViewProxy, oldLast: String?, newLast: String?, oldCount: Int, newCount: Int) {
         guard didInitialScroll, isAtBottom, feedStartItem == nil, !isSelecting else { return }
-        let oldLast = oldItems.sortedChronologically().last?.id
-        let newLast = newItems.sortedChronologically().last?.id
-        guard newItems.count > oldItems.count, let newLast, newLast != oldLast else { return }
+        guard newCount > oldCount, let newLast, newLast != oldLast else { return }
         withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(newLast, anchor: .bottom) }
     }
 

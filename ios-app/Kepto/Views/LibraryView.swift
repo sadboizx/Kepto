@@ -44,6 +44,19 @@ struct LibraryView: View {
     /// re-anchors it when it lands — see maybeInitialScroll).
     @State private var didInitialScroll = false
     @State private var didFallbackScroll = false
+    /// Round-13: the grid renders only the newest `visibleWindow`
+    /// items (a window around the bottom), grown as the user scrolls
+    /// up. ScrollViewReader's scrollTo on a lazy grid must lay out
+    /// every cell up to its target to compute the offset — scrolling
+    /// to the last of the FULL list blocked the main thread for tens
+    /// of seconds on open (the 46s "Loading library..." freeze).
+    /// With the window, the first scrollTo lays out at most
+    /// `visibleWindow` cells. Grown in `growWindowIfNeeded`, pinned
+    /// so the viewport does not jump.
+    @State private var visibleWindow = 120
+    /// The ScrollViewProxy for the pin scrollTo in `growWindowIfNeeded`
+    /// (grid cells have no proxy in scope).
+    @State private var scrollProxy: ScrollViewProxy?
     /// True while the last (newest) cell is on screen — i.e. the
     /// user is at the bottom. Tracked by gridCell's onAppear /
     /// onDisappear; gates the new-item follow scroll and the
@@ -384,8 +397,11 @@ struct LibraryView: View {
                 cellFrameCache.frames.merge(frames) { _, new in new }
             }
             .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
-            .onAppear { maybeInitialScroll(proxy) }
-            .onChange(of: allIDs) { oldIDs, newIDs in
+            .onAppear {
+                scrollProxy = proxy
+                maybeInitialScroll(proxy)
+            }
+            .onChange(of: viewModel.cachedAllIDs) { oldIDs, newIDs in
                 maybeInitialScroll(proxy)
                 maybeScrollToNewItem(proxy, oldIDs: oldIDs, newIDs: newIDs)
             }
@@ -485,7 +501,7 @@ struct LibraryView: View {
 
     private var daysGrid: some View {
         LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-            ForEach(days) { day in
+            ForEach(windowedDays) { day in
                 Section {
                     LazyVGrid(columns: dayColumns, spacing: 2) {
                         ForEach(day.itemIDs, id: \.self) { id in
@@ -501,10 +517,30 @@ struct LibraryView: View {
 
     private var allPhotosGrid: some View {
         LazyVGrid(columns: allColumns, spacing: 2) {
-            ForEach(allIDs, id: \.self) { id in
+            ForEach(windowedAllIDs, id: \.self) { id in
                 gridCell(for: id)
             }
         }
+    }
+
+    /// The newest `visibleWindow` ids (the grid renders only these —
+    /// see `visibleWindow`).
+    private var windowedAllIDs: [String] {
+        Array(allIDs.suffix(visibleWindow))
+    }
+
+    /// The newest day groups whose items total at least the window
+    /// (at least one group): the Days grid renders only these, so
+    /// its initial scrollTo stays bounded like All Photos.
+    private var windowedDays: [DaySection] {
+        var kept: [DaySection] = []
+        var count = 0
+        for day in days.reversed() {
+            kept.append(day)
+            count += day.itemIDs.count
+            if count >= visibleWindow { break }
+        }
+        return kept.reversed()
     }
 
     private func gridCell(for id: String) -> some View {
@@ -529,7 +565,10 @@ struct LibraryView: View {
         )
         .onAppear {
             if id == allIDs.last { isAtBottom = true }
-            maybeLoadMore(before: id)
+            if let index = viewModel.cachedIndexById[id] {
+                maybeLoadMore(at: index)
+                growWindowIfNeeded(at: index, id: id)
+            }
         }
         .onDisappear {
             if id == allIDs.last { isAtBottom = false }
@@ -591,61 +630,36 @@ struct LibraryView: View {
     /// metadata cache when it is loaded; the loaded pages while listAll
     /// is still pending or failed (so the Library never goes blank when
     /// the metadata fetch has not finished yet).
-    private var allIDs: [String] {
-        // NOTE: no ternary here — the two branches are different types
-        // ([ItemMetadata] vs [Item]), and the compiler cannot infer
-        // a single type for the ternary. Map each branch separately.
-        if viewModel.allMetadataLoaded {
-            return viewModel.allMetadata.sortedChronologically().map(\.id)
-        }
-        return viewModel.items.sortedChronologically().map(\.id)
-    }
+    /// All ids in the Library, oldest first (Apple Photos). Round-13:
+    /// a stored cache in the view model, rebuilt once when the source
+    /// changes — this used to re-sort the whole cache on every access,
+    /// which is what saturated the main thread while scrolling.
+    private var allIDs: [String] { viewModel.cachedAllIDs }
 
     /// The thumbnail source for one id: light metadata first, the
     /// loaded full `Item` as fallback (while the metadata cache is
-    /// still loading).
+    /// still loading). Both lookups are cached O(1) now — the old
+    /// code rebuilt the whole metadata dictionary per cell render
+    /// and scanned the loaded pages per cell.
     private func source(for id: String) -> (any GridItemSource)? {
-        if let meta = metadataById[id] { return meta }
-        return viewModel.items.first { $0.id == id }
-    }
-
-    private var metadataById: [String: ItemMetadata] {
-        Dictionary(viewModel.allMetadata.map { ($0.id, $0) }) { _, last in last }
-    }
-
-    /// Grouped ids for one zoom level: the full-metadata groupings
-    /// when loaded, else the loaded pages grouped the same way (the
-    /// old `groupItems` logic — sections stay correct, just partial
-    /// until listAll lands). Groups and the ids inside them are
-    /// oldest first (Apple Photos order).
-    private func groupedIDs(by components: Set<Calendar.Component>) -> [(key: Date, ids: [String])] {
-        if viewModel.allMetadataLoaded {
-            return viewModel.groupedMetadata(by: components).map { (key: $0.key, ids: $0.items.map(\.id)) }
-        }
-        let calendar = Calendar.current
-        var groups: [Date: [Item]] = [:]
-        for item in viewModel.items {
-            let comps = calendar.dateComponents(components, from: item.sortDate)
-            guard let key = calendar.date(from: comps) else { continue }
-            groups[key, default: []].append(item)
-        }
-        return groups.map { (key: $0.key, ids: $0.value.sortedChronologically().map(\.id)) }.sorted { $0.key < $1.key }
+        if let meta = viewModel.cachedMetadataById[id] { return meta }
+        return viewModel.cachedItemsById[id]
     }
 
     private var days: [DaySection] {
-        groupedIDs(by: [.year, .month, .day]).map { group in
+        viewModel.cachedDayGroups.map { group in
             DaySection(id: Self.dayIDFormatter.string(from: group.key), date: group.key, title: DateLabels.dayTitle(for: group.key), subtitle: nil, itemIDs: group.ids)
         }
     }
 
     private var months: [MonthSection] {
-        groupedIDs(by: [.year, .month]).map { group in
+        viewModel.cachedMonthGroups.map { group in
             MonthSection(id: Self.monthIDFormatter.string(from: group.key), date: group.key, title: DateLabels.monthTitle(for: group.key), itemIDs: group.ids, coverID: group.ids.last)
         }
     }
 
     private var years: [YearSection] {
-        groupedIDs(by: [.year]).map { group in
+        viewModel.cachedYearGroups.map { group in
             let year = Calendar.current.component(.year, from: group.key)
             return YearSection(year: year, title: String(year), itemIDs: group.ids, coverIDs: Array(group.ids.suffix(4)))
         }
@@ -677,11 +691,26 @@ struct LibraryView: View {
     /// item is at index (allIDs.count - items.count). Page ahead when
     /// a cell appears within 10 of that boundary (the user scrolling
     /// up into not-yet-loaded older items).
-    private func maybeLoadMore(before id: String) {
+    private func maybeLoadMore(at index: Int) {
         guard viewModel.hasMore, !viewModel.items.isEmpty else { return }
-        let oldestLoadedIndex = max(allIDs.count - viewModel.items.count, 0)
-        guard let index = allIDs.firstIndex(of: id), index <= oldestLoadedIndex + 10 else { return }
+        guard index <= viewModel.cachedOldestLoadedIndex + 10 else { return }
         Task { await viewModel.loadMore() }
+    }
+
+    /// Grow the rendered window as the user scrolls up into older
+    /// items (round-13 perf — see `visibleWindow`). Fires when a
+    /// cell appears within 10 of the window's oldest end. Prepending
+    /// cells above the viewport would shift the visible content down
+    /// by the inserted height, so the appearing cell is pinned back
+    /// to the top edge on the next runloop (after the new cells are
+    /// laid out) — the viewport does not jump. The pin lays out at
+    /// most one growth chunk of new cells.
+    private func growWindowIfNeeded(at index: Int, id: String) {
+        let windowTop = max(allIDs.count - visibleWindow, 0)
+        guard windowTop > 0, index <= windowTop + 10 else { return }
+        guard let proxy = scrollProxy else { return }
+        visibleWindow += 120
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
     }
 
     // MARK: - Scroll to bottom (Apple Photos order)
@@ -690,9 +719,12 @@ struct LibraryView: View {
     /// zoom: the last cell in All Photos / Days, the last card in
     /// Months / Years.
     private var scrollTargetID: String? {
+        // Round-13: the target is the last of the WINDOWED list, so
+        // the scrollTo lays out at most one window of cells — never
+        // the whole library (the 46s freeze on open).
         switch zoom {
-        case .all: allIDs.last
-        case .days: days.last?.itemIDs.last
+        case .all: windowedAllIDs.last
+        case .days: windowedDays.last?.itemIDs.last
         case .months: months.last?.id
         case .years: years.last?.id
         }
@@ -717,7 +749,9 @@ struct LibraryView: View {
     /// (isAtBottom), so a user who already scrolled up is never
     /// yanked back. Never fires while the viewer is open, and never
     /// on pull-to-refresh / delete (those leave allIDs unchanged or
-    /// shrink it, and the once-flag is already set).
+    /// shrink it, and the once-flag is already set). The target is
+    /// the last of the windowed list (see `scrollTargetID`), so the
+    /// scrollTo lays out at most one window of cells.
     private func maybeInitialScroll(_ proxy: ScrollViewProxy) {
         guard !didInitialScroll, !allIDs.isEmpty, feedStartItem == nil else { return }
         if viewModel.allMetadataLoaded {

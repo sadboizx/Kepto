@@ -17,7 +17,9 @@ import UniformTypeIdentifiers
 @MainActor
 final class LibraryViewModel: ObservableObject {
     /// All saved items (Library tab, newest first).
-    @Published private(set) var items: [Item] = []
+    @Published private(set) var items: [Item] = [] {
+        didSet { rebuildDerivedCache() }
+    }
     /// Search results (Search tab only), newest first.
     @Published private(set) var searchResults: [Item] = []
     /// Library counts for the Photos-style header ("N Photos,
@@ -30,15 +32,56 @@ final class LibraryViewModel: ObservableObject {
     /// local search all read this cache — never the paged `items`
     /// list — so they stay complete even before the user has
     /// scrolled through every page.
-    @Published private(set) var allMetadata: [ItemMetadata] = []
+    @Published private(set) var allMetadata: [ItemMetadata] = [] {
+        didSet { rebuildDerivedCache() }
+    }
     /// True once the full-metadata fetch has succeeded. Local
     /// search falls back to the server only while this is false.
-    @Published private(set) var allMetadataLoaded = false
+    @Published private(set) var allMetadataLoaded = false {
+        didSet { rebuildDerivedCache() }
+    }
+
+    // MARK: - Cached derived data (round-13 perf)
+    //
+    // The Library grids used to derive these from `allMetadata` /
+    // `items` with COMPUTED properties — a full re-sort of the whole
+    // cache on every view access (every grid-cell onAppear /
+    // onDisappear, every body evaluation, every maybeLoadMore call).
+    // During scrolling that saturated the main thread and delayed
+    // every gesture. They are now computed ONCE here, when the source
+    // changes (didSet on allMetadata / items / allMetadataLoaded),
+    // and every reader below is O(1). Same order, same ids, same
+    // load-more boundary as the computed versions — only the timing
+    // of the computation changed.
+    /// All ids, oldest first (Apple Photos): the full-metadata cache
+    /// when loaded, else the loaded pages.
+    @Published private(set) var cachedAllIDs: [String] = []
+    /// Metadata lookup by id (full cache; empty while not loaded).
+    @Published private(set) var cachedMetadataById: [String: ItemMetadata] = [:]
+    /// Loaded full-Item lookup by id.
+    @Published private(set) var cachedItemsById: [String: Item] = [:]
+    /// Index of each id inside cachedAllIDs (O(1) position lookup —
+    /// the old maybeLoadMore scanned the whole list per cell).
+    @Published private(set) var cachedIndexById: [String: Int] = [:]
+    /// Grouped ids, oldest group first, ids inside each group oldest
+    /// first — the same groupings the Library view used to compute
+    /// per body evaluation.
+    @Published private(set) var cachedDayGroups: [(key: Date, ids: [String])] = []
+    @Published private(set) var cachedMonthGroups: [(key: Date, ids: [String])] = []
+    @Published private(set) var cachedYearGroups: [(key: Date, ids: [String])] = []
+    /// Index of the oldest loaded full Item inside cachedAllIDs
+    /// (count - items.count): the load-more boundary.
+    @Published private(set) var cachedOldestLoadedIndex: Int = 0
     /// Collections for the Albums tab (one per creator username).
     @Published private(set) var collections: [CollectionInfo] = []
     /// User-created collections ("My collections").
     @Published private(set) var myCollections: [MyCollection] = []
-    @Published private(set) var isLoading = false
+    // Round-13: starts true so the first paint is the loading view —
+    // before, it started false and the empty state flashed for ~1s
+    // while fetch() was still starting. The setup view still wins
+    // when unconfigured (the view checks isConfigured first), and
+    // fetch()/fetchCollections() clear it in their defer.
+    @Published private(set) var isLoading = true
     @Published private(set) var isLoadingMore = false
     @Published var errorMessage: String?
     /// A link handed over by the Share Extension (kepto://save?url=...).
@@ -153,6 +196,48 @@ final class LibraryViewModel: ObservableObject {
             if let urlError = error as? URLError, urlError.code == .cancelled { return }
             // Quiet — see above.
         }
+    }
+
+    /// Recompute the cached derived data (see above) from the current
+    /// `allMetadata` / `items` / `allMetadataLoaded`. Called from
+    /// their didSet — once per source change, never per view access.
+    /// Runs on the main actor: one O(n log n) sort per change is
+    /// imperceptible; the same sort per frame was the lag.
+    private func rebuildDerivedCache() {
+        if allMetadataLoaded {
+            let sorted = allMetadata.sortedChronologically()
+            cachedAllIDs = sorted.map(\.id)
+            cachedMetadataById = Dictionary(allMetadata.map { ($0.id, $0) }) { _, last in last }
+            cachedDayGroups = groupedMetadata(by: [.year, .month, .day]).map { (key: $0.key, ids: $0.items.map(\.id)) }
+            cachedMonthGroups = groupedMetadata(by: [.year, .month]).map { (key: $0.key, ids: $0.items.map(\.id)) }
+            cachedYearGroups = groupedMetadata(by: [.year]).map { (key: $0.key, ids: $0.items.map(\.id)) }
+        } else {
+            let sorted = items.sortedChronologically()
+            cachedAllIDs = sorted.map(\.id)
+            cachedMetadataById = [:]
+            cachedDayGroups = groupedItems(items, by: [.year, .month, .day])
+            cachedMonthGroups = groupedItems(items, by: [.year, .month])
+            cachedYearGroups = groupedItems(items, by: [.year])
+        }
+        cachedItemsById = Dictionary(items.map { ($0.id, $0) }) { _, last in last }
+        var indexById: [String: Int] = [:]
+        indexById.reserveCapacity(cachedAllIDs.count)
+        for (index, id) in cachedAllIDs.enumerated() { indexById[id] = index }
+        cachedIndexById = indexById
+        cachedOldestLoadedIndex = max(cachedAllIDs.count - items.count, 0)
+    }
+
+    /// Group loaded full Items the same way `groupedMetadata` groups
+    /// metadata (fallback while the listAll cache has not landed).
+    private func groupedItems(_ items: [Item], by components: Set<Calendar.Component>) -> [(key: Date, ids: [String])] {
+        let calendar = Calendar.current
+        var groups: [Date: [Item]] = [:]
+        for item in items {
+            let comps = calendar.dateComponents(components, from: item.sortDate)
+            guard let key = calendar.date(from: comps) else { continue }
+            groups[key, default: []].append(item)
+        }
+        return groups.map { (key: $0.key, ids: $0.value.sortedChronologically().map(\.id)) }.sorted { $0.key < $1.key }
     }
 
     /// The full metadata cache grouped by the given calendar
