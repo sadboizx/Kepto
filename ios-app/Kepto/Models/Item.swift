@@ -237,6 +237,49 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
     let myCollectionIds: [String] = []
     let myCollectionNames: [String] = []
 
+    /// Full memberwise initializer. The synthesized one only takes
+    /// the 13 properties without defaults, so a call site that must
+    /// also set the favorite flag / collection membership — e.g.
+    /// upsertMetadata keeping the heart and the My-collection
+    /// membership when an item refreshes — needs this explicit init.
+    /// The last three default, so JSON decoding and plain
+    /// construction keep working unchanged.
+    init(
+        id: String,
+        platform: Platform,
+        title: String?,
+        caption: String?,
+        author: String?,
+        authorUsername: String?,
+        postedAt: String?,
+        savedAt: String,
+        contentType: String?,
+        duration: Double?,
+        width: Int?,
+        height: Int?,
+        fileSize: Int?,
+        isFavorite: Bool = false,
+        myCollectionIds: [String] = [],
+        myCollectionNames: [String] = []
+    ) {
+        self.id = id
+        self.platform = platform
+        self.title = title
+        self.caption = caption
+        self.author = author
+        self.authorUsername = authorUsername
+        self.postedAt = postedAt
+        self.savedAt = savedAt
+        self.contentType = contentType
+        self.duration = duration
+        self.width = width
+        self.height = height
+        self.fileSize = fileSize
+        self.isFavorite = isFavorite
+        self.myCollectionIds = myCollectionIds
+        self.myCollectionNames = myCollectionNames
+    }
+
     private static let isoFormatter = ISO8601DateFormatter()
 
     /// The saved date as a Date (for groupings + Memories). Nil
