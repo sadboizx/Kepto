@@ -231,11 +231,16 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
     let fileSize: Int?
     /// True when favorited (heart). Defaults to false when the key
     /// is missing — same rule as Item.isFavorite.
-    let isFavorite: Bool = false
+    /// `var` (not `let`): a `let` with an inline default cannot be
+    /// assigned again inside an initializer, so the explicit init
+    /// below could not set it — the compiler errors with
+    /// "immutable value may only be initialized once".
+    var isFavorite: Bool = false
     /// User-created collections this item is in (ids + names).
     /// Empty when the item is in no My collection.
-    let myCollectionIds: [String] = []
-    let myCollectionNames: [String] = []
+    /// `var` for the same reason as isFavorite above.
+    var myCollectionIds: [String] = []
+    var myCollectionNames: [String] = []
 
     /// Full memberwise initializer. The synthesized one only takes
     /// the 13 properties without defaults, so a call site that must
