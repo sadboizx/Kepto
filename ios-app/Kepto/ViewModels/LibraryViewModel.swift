@@ -125,6 +125,17 @@ final class LibraryViewModel: ObservableObject {
     @Published var showingImportAlbumPicker = false
     /// The just-uploaded items awaiting an album choice.
     @Published var importPickerItems: [Item] = []
+    /// Ids of items this session just imported (Photos/Files upload),
+    /// set the moment an upload returns — before the Library refresh.
+    /// The Library follows the newest one to the bottom even when the
+    /// user was scrolled up: an import is a deliberate action and the
+    /// user expects to see the new photo (the background-arrival rule
+    /// — follow only if already at the bottom — does not apply here).
+    /// Cleared by the Library once it has scrolled to the new item.
+    @Published var justImportedIDs: Set<String> = []
+
+    /// Called by the Library after it scrolled to a just-imported item.
+    func clearJustImportedIDs() { justImportedIDs.removeAll() }
     /// The album the user picked in the import picker (nil = not
     /// chosen yet). Set the moment the user taps an album — even
     /// while the upload is still running. When the upload finishes,
@@ -778,6 +789,10 @@ final class LibraryViewModel: ObservableObject {
         do {
             let (item, duplicate) = try await api.uploadFile(fileURL: fileURL, filename: filename, mimeType: mimeType, sha256: sha256)
             if !duplicate {
+                // Mark it before the refresh below, so the Library's
+                // onChange sees it as a fresh import (not a background
+                // arrival) and scrolls to it even from mid-list.
+                if let item { justImportedIDs.insert(item.id) }
                 await fetch()
                 await fetchCollections()
                 // The library just changed — refresh the full

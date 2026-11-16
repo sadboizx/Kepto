@@ -771,13 +771,19 @@ struct LibraryView: View {
     /// A new item arrived at the end (bottom): if the user is at the
     /// bottom, follow it down smoothly; if they are mid-list, leave
     /// their scroll position alone (the item waits at the bottom).
-    /// Only after the initial scroll — and never while the viewer or
-    /// select mode is open.
+    /// EXCEPTION — a just-imported item: the user added it on purpose
+    /// and expects to see it, so the Library jumps to it even from
+    /// mid-list (and even though the import sheet was open when it
+    /// landed). Only after the initial scroll — and never while the
+    /// viewer or select mode is open.
     private func maybeScrollToNewItem(_ proxy: ScrollViewProxy, oldIDs: [String], newIDs: [String]) {
-        guard (didInitialScroll || didFallbackScroll), isAtBottom, feedStartItem == nil, !selecting else { return }
+        guard (didInitialScroll || didFallbackScroll), feedStartItem == nil, !selecting else { return }
         guard zoom == .all || zoom == .days else { return }
         guard newIDs.count > oldIDs.count, let newLast = newIDs.last, newLast != oldIDs.last else { return }
+        let isFreshImport = viewModel.justImportedIDs.contains(newLast)
+        guard isAtBottom || isFreshImport else { return }
         withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(newLast, anchor: .bottom) }
+        if isFreshImport { viewModel.clearJustImportedIDs() }
     }
 
     // MARK: - Multi-select

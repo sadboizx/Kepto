@@ -186,7 +186,17 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
         return "\(width) x \(height)"
     }
 
-    private static let isoFormatter = ISO8601DateFormatter()
+    // D1 stores saved_at with fractional seconds
+    // (strftime '%Y-%m-%dT%H:%M:%fZ'), and the default
+    // ISO8601DateFormatter does NOT parse those — savedDate came back
+    // nil for every row, so sortDate silently fell back to postedDate
+    // (and uploads, posted_at null, to .distantPast = oldest = top).
+    // .withFractionalSeconds parses both forms.
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     private static func displayDate(_ isoString: String?) -> String? {
         guard let isoString,
@@ -291,7 +301,17 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
         self.myCollectionNames = myCollectionNames
     }
 
-    private static let isoFormatter = ISO8601DateFormatter()
+    // D1 stores saved_at with fractional seconds
+    // (strftime '%Y-%m-%dT%H:%M:%fZ'), and the default
+    // ISO8601DateFormatter does NOT parse those — savedDate came back
+    // nil for every row, so sortDate silently fell back to postedDate
+    // (and uploads, posted_at null, to .distantPast = oldest = top).
+    // .withFractionalSeconds parses both forms.
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     /// The saved date as a Date (for groupings + Memories). Nil
     /// when the stored ISO string does not parse.
