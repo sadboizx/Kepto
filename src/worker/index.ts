@@ -79,6 +79,7 @@ import {
   deleteMyCollection,
   detectPlatform,
   findByUrl,
+  findItemBySha256,
   findMyCollectionByName,
   getItem,
   getMyCollection,
@@ -293,6 +294,19 @@ const MAX_COLLECTION_VIDEOS = 100;
 app.post("/api/upload", async (c) => {
   const filename = c.req.query("filename") || "upload";
   const contentType = c.req.header("Content-Type") || "application/octet-stream";
+  // Content-hash dedupe: the app sends the SHA-256 of the exact bytes
+  // it uploads (query ?sha256=). If an item with that hash already
+  // exists, skip the upload entirely and return the existing item as
+  // a duplicate — the app counts it as "skipped" and keeps uploading
+  // the rest of the batch. No new item is created and the ingest is
+  // never called for a duplicate.
+  const sha256 = c.req.query("sha256") || "";
+  if (sha256) {
+    const existing = await findItemBySha256(c.env.DB, "me", sha256);
+    if (existing) {
+      return c.json({ ok: true, duplicate: true, item: existing }, 200);
+    }
+  }
   const id = crypto.randomUUID();
   await insertItem(c.env.DB, { id, user_id: "me", platform: "album", original_url: `album://${id}` });
   if (!c.env.INGEST_URL || !c.env.INGEST_TOKEN) {

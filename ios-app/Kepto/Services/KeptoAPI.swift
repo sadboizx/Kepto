@@ -237,14 +237,21 @@ final class KeptoAPI {
     /// 600s timeout because a large video upload + processing takes a
     /// while. Photos are converted to JPEG by the caller before this
     /// (the ingest cannot convert HEIC — iPhone photos are HEIC).
-    func uploadFile(fileURL: URL, filename: String, mimeType: String) async throws -> Item {
-        let query = [URLQueryItem(name: "filename", value: filename)]
+    /// `sha256` is the SHA-256 of the exact bytes being uploaded (the
+    /// caller computes it); when it matches an item already saved, the
+    /// Worker returns that item with `duplicate: true` instead of
+    /// uploading again. Returns the item and whether it was a duplicate.
+    func uploadFile(fileURL: URL, filename: String, mimeType: String, sha256: String? = nil) async throws -> (item: Item, duplicate: Bool) {
+        var query = [URLQueryItem(name: "filename", value: filename)]
+        if let sha256, !sha256.isEmpty {
+            query.append(URLQueryItem(name: "sha256", value: sha256))
+        }
         var request = authorizedRequest(url: url(path: "/api/upload", queryItems: query), method: "POST")
         request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 600
         let (data, response) = try await session.upload(for: request, fromFile: fileURL)
         let decoded = try handle(data, response, as: ItemResponse.self)
-        return decoded.item
+        return (decoded.item, decoded.duplicate ?? false)
     }
 
     /// DELETE /api/items/:id

@@ -106,6 +106,22 @@ export async function findByUrl(db: D1Database, url: string): Promise<Item | nul
   return row ?? null;
 }
 
+/** Dedupe lookup for POST /api/upload: the row whose content hash
+ * matches, if any. The app sends the SHA-256 of the exact bytes it
+ * uploads; the ingest stores the SHA-256 of the bytes it received,
+ * so a re-upload of the same photo/video matches. */
+export async function findItemBySha256(
+  db: D1Database,
+  userId: string,
+  sha256: string,
+): Promise<Item | null> {
+  const row = await db
+    .prepare(`SELECT * FROM items WHERE user_id = ?1 AND sha256 = ?2 LIMIT 1`)
+    .bind(userId, sha256)
+    .first<Item>();
+  return row ?? null;
+}
+
 /** A previously failed save can be retried: back to pending, error cleared. */
 export async function resetForRetry(db: D1Database, id: string): Promise<void> {
   await db
@@ -257,6 +273,11 @@ export interface CollectionRow {
  * so the app can show a cover without a second query. `author` is the newest
  * display name seen for that username (MAX over the group is good enough —
  * the handle is the grouping key, the name is just a label).
+ *
+ * Device imports (platform "album") are EXCLUDED: they have no author
+ * username, so without this they would form a NULL group that the app
+ * shows as an "unknown" creator. Imported photos/videos belong in the
+ * "Imports" My collection, not in Creators.
  */
 export async function listCollections(
   db: D1Database,
@@ -276,6 +297,7 @@ export async function listCollections(
             ORDER BY i2.saved_at DESC, i2.id DESC LIMIT 1) AS cover_item_id
        FROM items
        WHERE user_id = ?1
+         AND platform != 'album'
        GROUP BY author_username
        ORDER BY latest_saved_at DESC`,
     )

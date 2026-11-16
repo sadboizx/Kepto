@@ -217,6 +217,11 @@ struct ListResponse: Decodable {
 struct ItemResponse: Decodable {
     let ok: Bool
     let item: Item
+    /// True when /api/upload found this content already saved: the
+    /// app sent the file's SHA-256 and it matched an existing item,
+    /// so the Worker returned that item instead of uploading again.
+    /// Absent (nil) for /api/save and for a fresh upload.
+    let duplicate: Bool?
 }
 
 struct FavoriteResponse: Decodable {

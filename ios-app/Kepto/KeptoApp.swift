@@ -134,32 +134,6 @@ struct KeptoTabView: View {
                 .padding(.bottom, 100)
             }
         }
-        // After an import batch, offer to group the new items into an
-        // album. The name is suggested ("Imports") and editable — the
-        // user confirms or skips, and the upload summary notice is
-        // shown only after they pick, so it never fights this alert.
-        .alert("Tạo album?", isPresented: $viewModel.showingAlbumSuggestion) {
-            TextField("Tên album", text: $viewModel.suggestedAlbumName)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            Button("Tạo album") {
-                let name = viewModel.suggestedAlbumName
-                let items = viewModel.uploadedItemsForAlbum
-                viewModel.uploadedItemsForAlbum = []
-                Task { await viewModel.createAlbumForUploads(name: name, items: items) }
-            }
-            Button("Để sau", role: .cancel) {
-                let count = viewModel.uploadedItemsForAlbum.count
-                viewModel.uploadedItemsForAlbum = []
-                var notice = "Đã tải lên \(count) ảnh/video."
-                if viewModel.uploadFailedCount > 0 {
-                    notice += " (\(viewModel.uploadFailedCount) mục tải lên lỗi.)"
-                }
-                viewModel.uploadNotice = notice
-            }
-        } message: {
-            Text("Đã tải lên \(viewModel.uploadedItemsForAlbum.count) ảnh/video. Đặt tên album để gom chúng lại.")
-        }
         // One-line notice after a Photos import.
         .alert("Kepto", isPresented: .constant(viewModel.uploadNotice != nil)) {
             Button("OK") { viewModel.uploadNotice = nil }
