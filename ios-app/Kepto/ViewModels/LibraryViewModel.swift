@@ -71,22 +71,6 @@ final class LibraryViewModel: ObservableObject {
     /// picks after the upload finished, they are added at once.
     @Published var chosenImportAlbum: MyCollection?
 
-    /// Albums tab re-tap (Photos behavior): incremented by the app
-    /// root (KeptoTabView) when the user taps the Albums tab while
-    /// it is already selected. The Albums stack observes this:
-    /// if the visible list is scrolled down it scrolls to the top;
-    /// if it is already at the top it pops back to the Albums root.
-    @Published var albumsTabTapCount = 0
-    /// Whether the currently-visible view in the Albums navigation
-    /// stack is scrolled to the top. Updated by each Albums-stack
-    /// ScrollView (via onScrollGeometryChange); only the topmost
-    /// view is visible, so this reflects the visible one.
-    @Published var albumsStackAtTop = true
-    /// Set by an album detail view when a re-tap should pop to the
-    /// Albums root (the detail is already at the top). AlbumsView
-    /// observes this, clears its navigation, and resets it.
-    @Published var albumsPopToRootRequested = false
-
     /// The configured API client, or nil until the user enters a Worker URL
     /// and API key in Settings. Rebuilt by `reloadConfig()`.
     @Published private(set) var api: KeptoAPI?
@@ -548,6 +532,17 @@ final class LibraryViewModel: ObservableObject {
     /// uploading, the user CHOOSES an album for the new items (the
     /// album picker sheet) — nothing is auto-added to "Imports" any
     /// more (that was the v50 behavior, removed in v56).
+    /// Open the photo picker to add photos straight into `collection`
+    /// (from an album's long-press menu in Albums). The album is
+    /// pre-chosen, so the Add to Album picker is skipped — the items
+    /// go into this album when the upload finishes. If the user
+    /// cancels the picker without choosing, KeptoApp clears the
+    /// pre-choice so a later import doesn't land in the wrong album.
+    func addPhotos(to collection: MyCollection) {
+        chosenImportAlbum = collection
+        showingPhotoPicker = true
+    }
+
     func uploadPickedPhotos(_ items: [PhotosPickerItem]) async {
         isUploading = true
         uploadTotal = items.count
@@ -559,9 +554,15 @@ final class LibraryViewModel: ObservableObject {
         // to it when the upload finishes (or at once, if the user
         // picks after the upload finished).
         importPickerItems = []
-        chosenImportAlbum = nil
+        // If an album was pre-chosen (Add Photos from an album's
+        // long-press menu), keep it and skip the picker — the items
+        // go straight into that album when the upload finishes.
+        // Otherwise show the picker so the user chooses.
+        let preChosenAlbum = chosenImportAlbum
         await fetchMyCollections()
-        showingImportAlbumPicker = true
+        if preChosenAlbum == nil {
+            showingImportAlbumPicker = true
+        }
         defer {
             isUploading = false
             uploadTotal = 0
@@ -680,15 +681,19 @@ final class LibraryViewModel: ObservableObject {
     /// uploaded is sent along, so the Worker can skip a file that is
     /// already saved (same content hash) instead of uploading it again.
     private func uploadOnePickedPhoto(_ item: PhotosPickerItem) async -> UploadOneResult {
-        // Video: the picker hands back a file URL (a temp copy).
+        // Video: get the file via loadFileRepresentation (the reliable
+        // way — loadTransferable(type: URL.self) fails for videos
+        // that live in iCloud or need transcoding, surfacing as
+        // "Không đọc được video đã chọn"). The URL is only valid
+        // inside the callback, so copy it to our own temp file first.
         let types = item.supportedContentTypes
         let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
         if isVideo {
-            guard let fileURL = try? await item.loadTransferable(type: URL.self) else {
+            guard let (fileURL, filename) = await loadVideoFile(item) else {
                 errorMessage = "Không đọc được video đã chọn."
                 return .failed
             }
-            let filename = fileURL.lastPathComponent
+            defer { try? FileManager.default.removeItem(at: fileURL) }
             let mimeType = mimeType(for: fileURL.pathExtension)
             let hash = sha256Hex(ofFile: fileURL)
             let (uploaded, duplicate) = await upload(fileURL: fileURL, filename: filename, mimeType: mimeType, sha256: hash)
@@ -721,6 +726,34 @@ final class LibraryViewModel: ObservableObject {
             return duplicate ? .duplicate : .uploaded(uploaded)
         }
         return .failed
+    }
+
+    /// Load a picked video as a file we own. Returns the temp file
+    /// URL + the original filename (for the upload's ?filename=).
+    /// loadFileRepresentation downloads iCloud videos and hands back
+    /// a file URL; the URL dies when the callback returns, so the
+    /// file is copied to our own temp location. Returns nil when the
+    /// video cannot be read at all.
+    private func loadVideoFile(_ item: PhotosPickerItem) async -> (URL, String)? {
+        let typeId = item.supportedContentTypes.first { $0.conforms(to: .movie) }?.identifier
+            ?? item.supportedContentTypes.first { $0.conforms(to: .video) }?.identifier
+            ?? UTType.movie.identifier
+        return await withCheckedContinuation { continuation in
+            item.loadFileRepresentation(forTypeIdentifier: typeId) { url, error in
+                guard let url, error == nil else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("kepto-video-\(UUID().uuidString).\(url.pathExtension)")
+                do {
+                    try FileManager.default.copyItem(at: url, to: dest)
+                    continuation.resume(returning: (dest, url.lastPathComponent))
+                } catch {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
     }
 
     /// SHA-256 of data, as a lowercase hex string (for content-hash dedupe).

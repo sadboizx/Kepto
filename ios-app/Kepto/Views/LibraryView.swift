@@ -1646,6 +1646,30 @@ private struct SearchCategoryCard: View {
 ///   Delete Album Only).
 /// - Cancel: the picker closes and the items stay in the Library,
 ///   in no album (they are still saved).
+/// The "New Album..." card at the top of the Add to Album sheet
+/// (Photos): a gray placeholder with the stacked-photos icon and
+/// the "New Album..." label below, same size as an album card.
+/// Tapping it opens the New Album name alert.
+private struct NewAlbumCardView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Color(.systemGray5)
+                .aspectRatio(1, contentMode: .fit)
+                .overlay {
+                    Image(systemName: "photo.stack")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text("New Album...")
+                .font(.body)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
 /// One album card in the import picker: cover thumbnail + name +
 /// count, laid out like the Photos See All grid (square cover,
 /// name + count underneath, regular weight — not bold).
@@ -1661,7 +1685,8 @@ private struct PickerAlbumCardView: View {
                     Color(.systemGray5)
                         .aspectRatio(1, contentMode: .fit)
                         .overlay {
-                            Image(systemName: "photo")
+                            Image(systemName: "photo.stack")
+                                .font(.system(size: 28))
                                 .foregroundStyle(.secondary)
                         }
                 }
@@ -1699,22 +1724,55 @@ struct ImportAlbumPickerView: View {
         GridItem(.flexible(), spacing: 12),
     ]
 
+    /// "1 Photo" / "3 Photos" / "2 Videos" / "5 Items" for the items
+    /// being added (Photos header style).
+    private var addItemsLabel: String {
+        let items = viewModel.importPickerItems
+        let photos = items.filter { $0.contentType?.hasPrefix("image/") == true }.count
+        let videos = items.count - photos
+        if videos == 0 {
+            return items.count == 1 ? "1 Photo" : "\(items.count) Photos"
+        } else if photos == 0 {
+            return items.count == 1 ? "1 Video" : "\(items.count) Videos"
+        } else {
+            return "\(items.count) Items"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Upload status: the picker opens the moment the
-                    // user picks photos (v57), so the upload is
-                    // usually still running when this first appears.
+                    // Header: the items being added (Photos shows the
+                    // first photo + "1 Photo"). While the upload is
+                    // still running the picker shows progress instead.
                     if viewModel.isUploading {
                         Text("Đang tải lên \(viewModel.uploadDone)/\(viewModel.uploadTotal)…")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                    } else if !viewModel.importPickerItems.isEmpty {
-                        Text("\(viewModel.importPickerItems.count) mục sẽ được thêm vào album đã chọn.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    } else if let first = viewModel.importPickerItems.first {
+                        HStack(spacing: 12) {
+                            AspectThumbnail(itemId: first.id)
+                                .frame(width: 50, height: 50)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            Text(addItemsLabel)
+                                .font(.title3)
+                                .fontWeight(.semibold)
+                        }
                     }
+                    // "New Album..." card (Photos): a gray placeholder
+                    // with the stacked-photos icon, same size as an
+                    // album card, first in the grid.
+                    LazyVGrid(columns: pickerColumns, spacing: 16) {
+                        Button { showingNewAlbum = true } label: {
+                            NewAlbumCardView()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    // "My Albums" section.
+                    Text("My Albums")
+                        .font(.title2)
+                        .bold()
                     if viewModel.myCollections.isEmpty {
                         Text("Chưa có album nào. Tạo album mới để lưu ảnh/video vừa import.")
                             .foregroundStyle(.secondary)
@@ -1758,27 +1816,23 @@ struct ImportAlbumPickerView: View {
             .navigationTitle("Add to Album")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // Photos puts Cancel at the top-right; Edit stays
+                // at the top-left (the "+" is gone — the "New
+                // Album..." card is the way to create an album).
                 ToolbarItem(placement: .topBarLeading) {
+                    Button(isEditing ? "Done" : "Edit") {
+                        isEditing.toggle()
+                    }
+                    .fontWeight(isEditing ? .bold : .regular)
+                    .foregroundStyle(.blue)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Cancel") {
                         viewModel.importPickerItems = []
                         viewModel.chosenImportAlbum = nil
                         viewModel.showingImportAlbumPicker = false
                     }
                     .foregroundStyle(.blue)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 16) {
-                        Button(isEditing ? "Done" : "Edit") {
-                            isEditing.toggle()
-                        }
-                        .foregroundStyle(.blue)
-                        Button {
-                            showingNewAlbum = true
-                        } label: {
-                            Image(systemName: "plus")
-                                .foregroundStyle(.blue)
-                        }
-                    }
                 }
             }
             .alert("New Album", isPresented: $showingNewAlbum) {
@@ -1791,8 +1845,10 @@ struct ImportAlbumPickerView: View {
                     newAlbumName = ""
                     Task { await viewModel.createImportAlbum(name: name) }
                 }
-                // Photos greys Save out until a name is typed.
-                .disabled(newAlbumName.trimmingCharacters(in: .whitespaces).isEmpty)
+                // (No .disabled here: the v57.2 .disabled lagged
+                // behind typing in the alert, so the first tap on
+                // Save did nothing. The Worker already rejects an
+                // empty name with a clear error.)
             } message: {
                 Text("Enter a name for this album.")
             }

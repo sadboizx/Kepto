@@ -76,31 +76,12 @@ struct KeptoTabView: View {
     /// saved" or a collection summary).
     @State private var shareSaveNotice: String?
 
-    /// Tab selection with re-tap detection. SwiftUI calls this
-    /// setter on every tab tap — including tapping the
-    /// already-selected tab (the value is set again, unchanged).
-    /// A re-tap on the Albums tab (2) bumps
-    /// viewModel.albumsTabTapCount, which the Albums stack observes
-    /// (scroll to top, or pop to the Albums root when already at
-    /// the top — Photos behavior).
-    private var tabSelectionBinding: Binding<Int> {
-        Binding(
-            get: { selectedTab },
-            set: { newValue in
-                if newValue == selectedTab, newValue == 2 {
-                    viewModel.albumsTabTapCount += 1
-                }
-                selectedTab = newValue
-            }
-        )
-    }
-
     var body: some View {
         // Tab icons are exactly the iOS Photos ones, with the
         // selected tab showing the FILLED variant and the others the
         // outline variant (Photos renders the selected tab filled).
         // Search has no fill variant — magnifyingglass in both states.
-        TabView(selection: tabSelectionBinding) {
+        TabView(selection: $selectedTab) {
             LibraryView()
                 .tabItem { Label("Library", systemImage: selectedTab == 0 ? "photo.on.rectangle.fill" : "photo.on.rectangle") }
                 .tag(0)
@@ -140,6 +121,17 @@ struct KeptoTabView: View {
             let items = newValue
             viewModel.selectedPhotos = []
             Task { await viewModel.uploadPickedPhotos(items) }
+        }
+        // If the picker was dismissed without picking (Add Photos
+        // cancelled), clear the pre-chosen album so a later import
+        // doesn't silently land in the wrong album. Guarded on
+        // selectedPhotos being empty + no upload running, so a real
+        // pick (which sets selectedPhotos and starts uploading) is
+        // never cleared.
+        .onChange(of: viewModel.showingPhotoPicker) { _, isPresented in
+            if !isPresented && !viewModel.isUploading && viewModel.selectedPhotos.isEmpty {
+                viewModel.chosenImportAlbum = nil
+            }
         }
         // Spinner pill while a Photos import is in flight, floating
         // above the tab bar (and above the Library's view-mode pill).
