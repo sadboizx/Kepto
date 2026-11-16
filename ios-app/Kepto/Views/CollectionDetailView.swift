@@ -1030,8 +1030,13 @@ struct AlbumsView: View {
             return AlbumCardView(name: "Favorites", count: favoritesCount, coverItemId: viewModel.items.first(where: { $0.isFavorite })?.id, showsHeart: true)
         case .myCollection(let collection):
             // User albums show in lowercase; Recents / Favorites
-            // (the .kind cases above) keep their Title Case.
-            return AlbumCardView(name: collection.name.lowercased(), count: collection.count, coverItemId: collection.coverItemId)
+            // (the .kind cases above) keep their Title Case. The
+            // app's own "Imports" album is the exception — it keeps
+            // its professional capital I instead of "imports".
+            let displayName = collection.name.localizedCaseInsensitiveCompare("Imports") == .orderedSame
+                ? "Imports"
+                : collection.name.lowercased()
+            return AlbumCardView(name: displayName, count: collection.count, coverItemId: collection.coverItemId)
         case .creator(let collection):
             return AlbumCardView(name: collection.displayName.lowercased(), count: collection.count, coverItemId: collection.coverItemId)
         }
