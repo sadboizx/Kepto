@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// Kepto — cloud-only social archive (MVP v1 + v2).
@@ -105,6 +106,65 @@ struct KeptoTabView: View {
             Button("OK") { shareSaveNotice = nil }
         } message: {
             Text(shareSaveNotice ?? "")
+        }
+        // Import from Photos: the picker is attached HERE (the root),
+        // not in a tab, so any tab's "…" menu can open it by setting
+        // viewModel.showingPhotoPicker = true. The ViewModel owns the
+        // picker state and the whole upload flow.
+        .photosPicker(isPresented: $viewModel.showingPhotoPicker, selection: $viewModel.selectedPhotos, maxSelectionCount: 10, matching: .any(of: [.images, .videos]))
+        .onChange(of: viewModel.selectedPhotos) { _, newValue in
+            guard !newValue.isEmpty else { return }
+            let items = newValue
+            viewModel.selectedPhotos = []
+            Task { await viewModel.uploadPickedPhotos(items) }
+        }
+        // Spinner pill while a Photos import is in flight, floating
+        // above the tab bar (and above the Library's view-mode pill).
+        .overlay(alignment: .bottom) {
+            if viewModel.isUploading {
+                HStack(spacing: 10) {
+                    ProgressView().tint(.white)
+                    Text(viewModel.uploadTotal > 1 ? "Đang tải lên \(viewModel.uploadDone)/\(viewModel.uploadTotal)…" : "Đang tải lên…")
+                        .font(.subheadline)
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.black.opacity(0.7), in: Capsule())
+                .padding(.bottom, 100)
+            }
+        }
+        // After an import batch, offer to group the new items into an
+        // album. The name is suggested ("Imports") and editable — the
+        // user confirms or skips, and the upload summary notice is
+        // shown only after they pick, so it never fights this alert.
+        .alert("Tạo album?", isPresented: $viewModel.showingAlbumSuggestion) {
+            TextField("Tên album", text: $viewModel.suggestedAlbumName)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Tạo album") {
+                let name = viewModel.suggestedAlbumName
+                let items = viewModel.uploadedItemsForAlbum
+                viewModel.uploadedItemsForAlbum = []
+                Task { await viewModel.createAlbumForUploads(name: name, items: items) }
+            }
+            Button("Để sau", role: .cancel) {
+                let count = viewModel.uploadedItemsForAlbum.count
+                viewModel.uploadedItemsForAlbum = []
+                var notice = "Đã tải lên \(count) ảnh/video."
+                if viewModel.uploadFailedCount > 0 {
+                    notice += " (\(viewModel.uploadFailedCount) mục tải lên lỗi.)"
+                }
+                viewModel.uploadNotice = notice
+            }
+        } message: {
+            Text("Đã tải lên \(viewModel.uploadedItemsForAlbum.count) ảnh/video. Đặt tên album để gom chúng lại.")
+        }
+        // One-line notice after a Photos import.
+        .alert("Kepto", isPresented: .constant(viewModel.uploadNotice != nil)) {
+            Button("OK") { viewModel.uploadNotice = nil }
+        } message: {
+            Text(viewModel.uploadNotice ?? "")
         }
     }
 

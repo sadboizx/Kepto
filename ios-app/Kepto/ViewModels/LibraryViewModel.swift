@@ -1,7 +1,9 @@
 import Foundation
 import Photos
+import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Owns the library state. Cloud-only: items live in D1 behind the
 /// Worker API; nothing is cached on disk. The app is Photos-style now:
@@ -30,6 +32,28 @@ final class LibraryViewModel: ObservableObject {
     /// A link handed over by the Share Extension (kepto://save?url=...).
     /// The app root saves it directly, then clears it.
     @Published var pendingShareURL: String?
+
+    /// Import from Photos: the PhotosPicker presentation + selection.
+    /// The picker itself is attached at the app root (KeptoTabView),
+    /// so any tab's "…" menu can open it by setting
+    /// `showingPhotoPicker = true`. Multi-select: up to 10 items.
+    @Published var showingPhotoPicker = false
+    @Published var selectedPhotos: [PhotosPickerItem] = []
+    /// True while a Photos import is in flight (the root shows a
+    /// spinner pill with the progress).
+    @Published var isUploading = false
+    /// Batch-import progress (shown in the spinner pill as "2/5").
+    @Published var uploadDone = 0
+    @Published var uploadTotal = 0
+    /// Items from the last import batch, offered for a new album.
+    @Published var uploadedItemsForAlbum: [Item] = []
+    /// How many items in the last batch failed to import.
+    @Published var uploadFailedCount = 0
+    /// Suggested album name (pre-filled, editable) for the import batch.
+    @Published var suggestedAlbumName = ""
+    @Published var showingAlbumSuggestion = false
+    /// One-line notice after an import (shown by the root).
+    @Published var uploadNotice: String?
 
     /// The configured API client, or nil until the user enters a Worker URL
     /// and API key in Settings. Rebuilt by `reloadConfig()`.
@@ -367,6 +391,134 @@ final class LibraryViewModel: ObservableObject {
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return nil
+        }
+    }
+
+    /// Upload the photos/videos the user just picked in the PhotosPicker
+    /// (up to 10 at once), one by one so a slow connection does not
+    /// pile up parallel uploads. The root shows a spinner pill with
+    /// the progress ("Đang tải lên 2/5…"). When at least one item
+    /// imported, the app offers to group them into an album with a
+    /// suggested name ("Imports").
+    func uploadPickedPhotos(_ items: [PhotosPickerItem]) async {
+        isUploading = true
+        uploadTotal = items.count
+        uploadDone = 0
+        defer {
+            isUploading = false
+            uploadTotal = 0
+            uploadDone = 0
+        }
+        var uploaded: [Item] = []
+        var failed = 0
+        for item in items {
+            if let created = await uploadOnePickedPhoto(item) {
+                uploaded.append(created)
+            } else {
+                failed += 1
+            }
+            uploadDone += 1
+        }
+        uploadFailedCount = failed
+        if uploaded.isEmpty {
+            uploadNotice = "Không tải lên được. Thử lại nhé."
+            return
+        }
+        // Offer to group the batch into an album (suggested name
+        // pre-filled, editable). The notice is shown after the user
+        // picks "Tạo album" or "Để sau", so it never fights the alert.
+        uploadedItemsForAlbum = uploaded
+        suggestedAlbumName = suggestedAlbumNameForUpload()
+        showingAlbumSuggestion = true
+    }
+
+    /// Upload one picked photo/video. Photos are converted to JPEG first
+    /// (iPhone photos are HEIC and the ingest cannot convert HEIC);
+    /// videos are uploaded as-is. Returns the finished item, or nil
+    /// (and the error alert) on failure.
+    private func uploadOnePickedPhoto(_ item: PhotosPickerItem) async -> Item? {
+        // Video: the picker hands back a file URL (a temp copy).
+        let types = item.supportedContentTypes
+        let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
+        if isVideo {
+            guard let fileURL = try? await item.loadTransferable(type: URL.self) else {
+                errorMessage = "Không đọc được video đã chọn."
+                return nil
+            }
+            let filename = fileURL.lastPathComponent
+            let mimeType = mimeType(for: fileURL.pathExtension)
+            return await upload(fileURL: fileURL, filename: filename, mimeType: mimeType)
+        }
+        // Photo: load the raw bytes (Data conforms to Transferable;
+        // UIImage does not), decode them, and re-encode as JPEG
+        // (HEIC -> JPEG — the ingest cannot convert HEIC).
+        guard let rawData = try? await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: rawData),
+              let data = image.jpegData(compressionQuality: 0.9) else {
+            errorMessage = "Không đọc được ảnh đã chọn."
+            return nil
+        }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kepto-upload-\(UUID().uuidString).jpg")
+        do {
+            try data.write(to: tempURL)
+        } catch {
+            errorMessage = "Không chuẩn bị được ảnh để tải lên."
+            return nil
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        return await upload(fileURL: tempURL, filename: "photo.jpg", mimeType: "image/jpeg")
+    }
+
+    /// Suggested name for the album holding a Photos import batch: a
+    /// fixed professional name — "Imports" — so every import batch
+    /// accumulates in the one album of that name (createAlbumForUploads
+    /// reuses an existing album of the same name instead of creating
+    /// a duplicate). The user can edit it in the prompt before
+    /// confirming.
+    private func suggestedAlbumNameForUpload() -> String {
+        "Imports"
+    }
+
+    /// Create a My collection with the (possibly edited) suggested name
+    /// and add every just-imported item to it, then report the result.
+    /// If a collection with that name already exists, the items go
+    /// into it instead of creating a duplicate — so the fixed default
+    /// name "Imports" accumulates every import batch in one album.
+    func createAlbumForUploads(name: String, items: [Item]) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmed.isEmpty ? suggestedAlbumNameForUpload() : trimmed
+        // Refresh the list first so the reuse check sees the current
+        // albums (they may not have been fetched on this tab yet).
+        await fetchMyCollections()
+        var collection = myCollections.first(where: { $0.name.localizedCaseInsensitiveCompare(finalName) == .orderedSame })
+        let reused = collection != nil
+        if collection == nil {
+            collection = await createMyCollection(name: finalName)
+        }
+        guard let collection else { return }
+        var added = 0
+        for item in items {
+            if await addItemToMyCollection(collectionId: collection.id, item: item) == true {
+                added += 1
+            }
+        }
+        var notice = reused
+            ? "Đã thêm \(added) ảnh/video vào album “\(finalName)”."
+            : "Đã tạo album “\(finalName)” với \(added) ảnh/video."
+        if uploadFailedCount > 0 {
+            notice += " (\(uploadFailedCount) mục tải lên lỗi.)"
+        }
+        uploadNotice = notice
+    }
+
+    /// MIME type for a video file extension (used for the upload body).
+    private func mimeType(for pathExtension: String) -> String {
+        switch pathExtension.lowercased() {
+        case "mov": return "video/quicktime"
+        case "m4v": return "video/x-m4v"
+        case "mp4": return "video/mp4"
+        default: return "video/mp4"
         }
     }
 

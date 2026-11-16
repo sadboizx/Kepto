@@ -863,6 +863,9 @@ struct AlbumsView: View {
                     // The "…" menu lives on every tab except the
                     // Player: Clipboard, then Settings.
                     Menu {
+                        Button { viewModel.showingPhotoPicker = true } label: {
+                            Label("Import from Photos", systemImage: "photo.on.rectangle")
+                        }
                         Button {
                             Task {
                                 if let notice = await viewModel.saveFromClipboard() {
@@ -872,7 +875,7 @@ struct AlbumsView: View {
                                 }
                             }
                         } label: {
-                            Label("Clipboard", systemImage: "doc.on.clipboard")
+                            Label("Paste Clipboard", systemImage: "doc.on.clipboard")
                         }
                         Button { showingSettings = true } label: {
                             Label("Settings", systemImage: "gearshape")
