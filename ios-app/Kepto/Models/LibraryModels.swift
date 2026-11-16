@@ -36,12 +36,14 @@ enum LibraryZoom: Int, CaseIterable, Identifiable {
 /// CollectionDetailView.swift) into ONE enum: the cases Kepto needs
 /// are `recents` / `favorites` (built-in albums), `user` (user-created
 /// collections), `people` (creators — Photos' People & Pets slot),
-/// `media` (Media Types rows: Videos / Photos). Dropped Photos cases
-/// and why: `shared` (Kepto has no sharing by design), `hidden` /
-/// `deleted` (Hide dropped, Q3; no Recently Deleted), `imports` (no
-/// auto-Imports album since v56), `utility` (no Utilities section).
+/// `media` (Media Types rows: Videos / Photos), `deleted` (the
+/// Utilities row: Recently Deleted, note-only — Kepto has no trash).
+/// Dropped Photos cases and why: `shared` (Kepto has no sharing by
+/// design), `hidden` (Hide dropped, Q3), `imports` (no auto-Imports
+/// album since v56), `utility` (no such case — the Utilities section
+/// is built from plain rows).
 enum AlbumKind: String, Hashable {
-    case recents, favorites, user, people, media
+    case recents, favorites, user, people, media, deleted
 
     var title: String {
         switch self {
@@ -50,15 +52,17 @@ enum AlbumKind: String, Hashable {
         case .user: return L10n.myAlbums
         case .people: return L10n.creators
         case .media: return L10n.mediaTypes
+        case .deleted: return L10n.recentlyDeleted
         }
     }
 }
 
-/// One album row (My Albums / Creators / Media Types). Ported from
-/// Photos — `collectionID` is the MyCollection id (kind `.user`), the
-/// creator username (kind `.people`), or nil for built-in albums and
-/// Media Types rows. `symbol`/`tint` are only the no-cover fallback
-/// (album tiles show the cover thumbnail when one exists).
+/// One album row (My Albums / Creators / Media Types / Utilities).
+/// Ported from Photos — `collectionID` is the MyCollection id (kind
+/// `.user`), the creator username (kind `.people`), or nil for
+/// built-in albums and Media Types / Utilities rows. `symbol`/`tint`
+/// are only the no-cover fallback (album tiles show the cover
+/// thumbnail when one exists).
 struct AlbumItem: Identifiable, Hashable {
     let id: String
     var title: String

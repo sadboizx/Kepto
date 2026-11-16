@@ -136,20 +136,29 @@ struct PhotoCollectionScreen: View {
             }
     }
 
-    /// Navigation + sheets over the grid: the feed destination, the
+    /// Navigation + sheets over the grid: the viewer overlay, the
     /// slideshow cover, and the four sheets (Add to Album picker,
     /// single share, bulk share, Add to Album sheet). A separate
     /// property so the compiler type-checks it apart from `body`.
     private var collectionWithNavigation: some View {
         collectionWithAlerts
-            .navigationDestination(item: $feedStartItem) { startItem in
-                PhotoDetailView(
-                    items: $items,
-                    startItemId: startItem.id,
-                    onNearEnd: { await loadMore() },
-                    title: title,
-                    sourceFrame: feedStartFrame
-                )
+            // Viewer as a full-screen OVERLAY over this grid, not a
+            // push — see PhotoDetailView's header comment for why
+            // (a push's hosting layer is opaque: the grid never
+            // showed through the fading background, and the pop slid
+            // a black bar across the screen).
+            .overlay {
+                if let startItem = feedStartItem {
+                    PhotoDetailView(
+                        items: $items,
+                        startItemId: startItem.id,
+                        onNearEnd: { await loadMore() },
+                        title: title,
+                        sourceFrame: feedStartFrame,
+                        onDismiss: { feedStartItem = nil }
+                    )
+                    .ignoresSafeArea()
+                }
             }
             .fullScreenCover(isPresented: $showingSlideshow) {
                 SlideshowView(items: slideshowItems)
@@ -233,27 +242,52 @@ struct PhotoCollectionScreen: View {
             // the edge pan, so the swipe-back starts at once instead of
             // hesitating while the system decides (smoother pop).
             .background(NativePopGestureHelper())
-            .navigationTitle(title)
+            // While selecting, the back button and the title hide and
+            // the toolbar shows Select All (pill, left) + Cancel
+            // (pill, right). The swipe-back gesture still works while
+            // the back button is hidden — NativePopGestureHelper
+            // (above) permits it whenever there is a view to pop to
+            // (same as the See All Edit mode).
+            .navigationTitle(isSelecting ? "" : title)
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(isSelecting)
             // Transparent status bar / nav bar (see AlbumsView).
             .toolbarBackground(.hidden, for: .navigationBar)
             // The system back button ("< Albums") is white via
             // .tint(.primary) on the AlbumsView NavigationStack (the tint
-            // comes from the stack, not the pushed view). It stays the
-            // system button so the swipe-back gesture works.
+            // comes from the stack, not the pushed view). It shows
+            // only when not selecting.
             .toolbar {
                 if isSelecting {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button(L10n.cancel) { exitSelectionMode() }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button(selectedIDs.count == items.count ? L10n.deselectAll : L10n.selectAll) {
+                        Button {
                             if selectedIDs.count == items.count {
                                 selectedIDs.removeAll()
                             } else {
                                 selectedIDs = Set(items.map(\.id))
                             }
+                        } label: {
+                            Text(selectedIDs.count == items.count ? L10n.deselectAll : L10n.selectAll)
+                                .font(.footnote)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(.regularMaterial, in: Capsule())
                         }
+                        .buttonStyle(.plain)
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button { exitSelectionMode() } label: {
+                            Text(L10n.cancel)
+                                .font(.footnote)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
                 } else {
                     ToolbarItem(placement: .topBarTrailing) {

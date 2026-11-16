@@ -117,6 +117,15 @@ enum L10n {
             ? "Ảnh xoá từ app này được chuyển vào Đã xoá gần đây của Photos hệ thống và giữ khoảng 30 ngày. PhotoKit công khai không cho app bên thứ ba liệt kê album đó."
             : "Items you delete move to the system Photos Recently Deleted album for about 30 days. Public PhotoKit does not let third-party apps list that album."
     }
+    /// Recently Deleted note (Kepto, Option A): Kepto has no trash —
+    /// deletes are permanent. Short and plain; do NOT reuse
+    /// `deletedNote` above — that string describes the system album
+    /// as if Kepto deletes went there, which they don't.
+    static var recentlyDeletedNote: String {
+        isVI
+            ? "Mục xoá trong Kepto sẽ mất vĩnh viễn khỏi cloud, không khôi phục được. Ảnh đã lưu về máy vẫn nằm trong Đã xoá gần đây của Photos hệ thống khoảng 30 ngày."
+            : "Items deleted in Kepto are permanently removed from the cloud and can't be restored. Photos saved to your device stay in the system Photos Recently Deleted album for about 30 days."
+    }
     static var hiddenNote: String {
         isVI
             ? "Ảnh ẩn trong app này được lọc khỏi Thư viện. Ảnh ẩn bằng Photos hệ thống cũng hiện ở đây (chỉ xem)."
@@ -173,8 +182,9 @@ enum L10n {
 
     /// Kepto additions (step 9): keys for the ported views' inline
     /// strings. Same ternary pattern as the Photos keys above.
-    static var importFromPhotos: String { isVI ? "Nhập từ Photos" : "Import from Photos" }
-    static var pasteClipboard: String { isVI ? "Dán từ Clipboard" : "Paste Clipboard" }
+    static var photoLibrary: String { isVI ? "Thư viện ảnh" : "Photo Library" }
+    static var chooseFiles: String { isVI ? "Chọn tệp" : "Choose Files" }
+    static var pasteClipboard: String { isVI ? "Dán từ Clipboard" : "Paste from Clipboard" }
     static var settings: String { isVI ? "Cài đặt" : "Settings" }
     static var moreOptions: String { isVI ? "Tuỳ chọn khác" : "More options" }
     static var removeFromAlbum: String { isVI ? "Xoá khỏi album" : "Remove from Album" }

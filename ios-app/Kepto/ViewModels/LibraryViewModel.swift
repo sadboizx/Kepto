@@ -45,12 +45,19 @@ final class LibraryViewModel: ObservableObject {
     /// The app root saves it directly, then clears it.
     @Published var pendingShareURL: String?
 
-    /// Import from Photos: the PhotosPicker presentation + selection.
+    /// Photo Library: the PhotosPicker presentation + selection.
     /// The picker itself is attached at the app root (KeptoTabView),
     /// so any tab's "…" menu can open it by setting
     /// `showingPhotoPicker = true`. Multi-select: up to 10 items.
     @Published var showingPhotoPicker = false
     @Published var selectedPhotos: [PhotosPickerItem] = []
+    /// Choose Files: the Files-app document picker presentation.
+    /// The picker itself is attached at the app root (KeptoTabView),
+    /// like the PhotosPicker, so any tab's "…" menu can open it by
+    /// setting `showingDocumentPicker = true`. Multi-select, images
+    /// + videos; picked files are copied to temp and uploaded through
+    /// the same pipeline as PhotosPicker picks.
+    @Published var showingDocumentPicker = false
     /// True while a Photos import is in flight (the root shows a
     /// spinner pill with the progress).
     @Published var isUploading = false
@@ -748,6 +755,139 @@ final class LibraryViewModel: ObservableObject {
         }
         // Otherwise the picker is still open: the user picks an
         // album and addImportItemsToAlbum adds these items at once.
+    }
+
+    /// Upload the files the user just picked in the Files app
+    /// (Choose Files), one by one — the same flow as
+    /// `uploadPickedPhotos`: spinner pill with progress, duplicates
+    /// skipped, album picker right away (unless an album was
+    /// pre-chosen), same notices. The per-file step is
+    /// `uploadOnePickedFile`; the batch scaffolding is a mirror of
+    /// `uploadPickedPhotos` on purpose (same calls, same order) so
+    /// the two paths cannot drift apart in behavior.
+    func uploadPickedFiles(_ urls: [URL]) async {
+        isUploading = true
+        uploadTotal = urls.count
+        uploadDone = 0
+        // Show the Add to Album picker RIGHT AWAY (v57): the user
+        // picks the album while the files upload in the background,
+        // instead of waiting for the whole batch to finish. The
+        // choice is stored in chosenImportAlbum; the items are added
+        // to it when the upload finishes (or at once, if the user
+        // picks after the upload finished).
+        importPickerItems = []
+        // If an album was pre-chosen (Add Photos from an album's
+        // long-press menu), keep it and skip the picker — the items
+        // go straight into that album when the upload finishes.
+        // Otherwise show the picker so the user chooses.
+        let preChosenAlbum = chosenImportAlbum
+        await fetchMyCollections()
+        if preChosenAlbum == nil {
+            showingImportAlbumPicker = true
+        }
+        defer {
+            isUploading = false
+            uploadTotal = 0
+            uploadDone = 0
+        }
+        var uploaded: [Item] = []
+        var duplicates = 0
+        var failed = 0
+        for url in urls {
+            switch await uploadOnePickedFile(url) {
+            case .uploaded(let created):
+                uploaded.append(created)
+                importPickerItems.append(created)
+            case .duplicate:
+                duplicates += 1
+            case .failed:
+                failed += 1
+            }
+            uploadDone += 1
+        }
+        uploadDuplicateCount = duplicates
+        uploadFailedCount = failed
+        if uploaded.isEmpty {
+            // Nothing to add — close the picker (the user may have
+            // already picked an album, but there are no items for it).
+            showingImportAlbumPicker = false
+            importPickerItems = []
+            chosenImportAlbum = nil
+            if duplicates > 0 && failed == 0 {
+                uploadNotice = "Tất cả đã có trước đó (\(duplicates) trùng, đã bỏ qua)."
+            } else if duplicates > 0 {
+                uploadNotice = "Không tải lên được mục mới (\(duplicates) trùng, \(failed) lỗi)."
+            } else {
+                uploadNotice = "Không tải lên được. Thử lại nhé."
+            }
+            return
+        }
+        // Upload done. Turn isUploading off BEFORE the add check:
+        // addImportItemsToAlbum (called from the picker) decides by
+        // this flag whether to add now or defer to here, and the user
+        // may tap an album in the same moment this finishes.
+        isUploading = false
+        if chosenImportAlbum != nil {
+            await addItemsToChosenAlbum()
+        } else if !showingImportAlbumPicker {
+            // The user cancelled while uploading — the items stay in
+            // the Library, in no album. Clear the staging list.
+            importPickerItems = []
+        }
+        // Otherwise the picker is still open: the user picks an
+        // album and addImportItemsToAlbum adds these items at once.
+    }
+
+    /// Upload one file picked in the Files app (Choose Files).
+    /// Videos are uploaded as-is; photos are converted to JPEG first
+    /// (same HEIC rule as the PhotosPicker path). The file URL comes
+    /// from the document picker with `asCopy: true`, so it is already
+    /// a copy in the app's temp directory — readable directly, and
+    /// removed after the upload like the PhotosPicker temp files.
+    /// The SHA-256 of the exact bytes being uploaded is sent along,
+    /// so the Worker can skip a file that is already saved (same
+    /// content hash) instead of uploading it again.
+    private func uploadOnePickedFile(_ url: URL) async -> UploadOneResult {
+        let ext = url.pathExtension
+        let type = UTType(filenameExtension: ext)
+        let isVideo = type?.conforms(to: .video) == true || type?.conforms(to: .movie) == true
+        if isVideo {
+            defer { try? FileManager.default.removeItem(at: url) }
+            let filename = url.lastPathComponent
+            let mimeType = mimeType(for: ext)
+            let hash = sha256Hex(ofFile: url)
+            let (uploaded, duplicate) = await upload(fileURL: url, filename: filename, mimeType: mimeType, sha256: hash)
+            if let uploaded {
+                return duplicate ? .duplicate : .uploaded(uploaded)
+            }
+            return .failed
+        }
+        // Photo: read the bytes, decode, re-encode as JPEG (HEIC ->
+        // JPEG — the ingest cannot convert HEIC), same as the
+        // PhotosPicker path.
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let rawData = try? Data(contentsOf: url),
+              let image = UIImage(data: rawData),
+              let data = image.jpegData(compressionQuality: 0.9) else {
+            errorMessage = "Không đọc được ảnh đã chọn."
+            return .failed
+        }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kepto-upload-\(UUID().uuidString).jpg")
+        do {
+            try data.write(to: tempURL)
+        } catch {
+            errorMessage = "Không chuẩn bị được ảnh để tải lên."
+            return .failed
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let filename = url.deletingPathExtension().lastPathComponent + ".jpg"
+        let hash = sha256Hex(of: data)
+        let (uploaded, duplicate) = await upload(fileURL: tempURL, filename: filename, mimeType: "image/jpeg", sha256: hash)
+        if let uploaded {
+            return duplicate ? .duplicate : .uploaded(uploaded)
+        }
+        return .failed
     }
 
     /// The user picked an album for the just-imported items. Record

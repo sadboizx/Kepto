@@ -20,8 +20,9 @@ import SwiftUI
 ///   the current feed viewer, scoped to that memory / the featured
 ///   list. Step 7 replaces the viewer with Photos' detail viewer,
 ///   which takes ids directly.
-/// - The "…" menu (Import from Photos / Paste Clipboard / Settings)
-///   stays on the tab like the other ported tabs.
+/// - The "…" menu (Paste from Clipboard / Photo Library /
+///   Choose Files / Settings) stays on the tab like the other
+///   ported tabs.
 /// - No L10n yet (step 9): strings are inline like the rest of
 ///   Kepto, and will be swapped to `L10n.*` then.
 struct ForYouView: View {
@@ -52,11 +53,9 @@ struct ForYouView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     // The "…" menu lives on every tab except the
-                    // Player: Clipboard, then Settings.
+                    // Player: Paste from Clipboard, Photo Library,
+                    // Choose Files, Settings.
                     Menu {
-                        Button { viewModel.showingPhotoPicker = true } label: {
-                            Label(L10n.importFromPhotos, systemImage: "photo.on.rectangle")
-                        }
                         Button {
                             Task {
                                 if let notice = await viewModel.saveFromClipboard() {
@@ -67,6 +66,12 @@ struct ForYouView: View {
                             }
                         } label: {
                             Label(L10n.pasteClipboard, systemImage: "doc.on.clipboard")
+                        }
+                        Button { viewModel.showingPhotoPicker = true } label: {
+                            Label(L10n.photoLibrary, systemImage: "photo.on.rectangle")
+                        }
+                        Button { viewModel.showingDocumentPicker = true } label: {
+                            Label(L10n.chooseFiles, systemImage: "folder")
                         }
                         Button { showingSettings = true } label: {
                             Label(L10n.settings, systemImage: "gearshape")
@@ -81,8 +86,13 @@ struct ForYouView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
-            .navigationDestination(item: $feedStartItem) { startItem in
-                PhotoDetailView(items: $feedItems, startItemId: startItem.id, title: L10n.forYou)
+            // Viewer as a full-screen OVERLAY over this tab, not a
+            // push — see PhotoDetailView's header comment.
+            .overlay {
+                if let startItem = feedStartItem {
+                    PhotoDetailView(items: $feedItems, startItemId: startItem.id, title: L10n.forYou, onDismiss: { feedStartItem = nil })
+                        .ignoresSafeArea()
+                }
             }
             .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
                 Button("OK") { saveNotice = nil }

@@ -23,8 +23,8 @@ import UIKit
 /// fetched by id — and the grid keeps paging ahead as the user
 /// scrolls so the resolution is usually already in memory.
 ///
-/// Kepto features kept: the "…" menu (Import from Photos, Paste
-/// Clipboard, Settings), the Save-a-link alert, the setup view
+/// Kepto features kept: the "…" menu (Paste from Clipboard, Photo
+/// Library, Choose Files, Settings), the Save-a-link alert, the setup view
 /// when unconfigured, and the feed viewer for now (step 7 replaces
 /// it with Photos' detail viewer). No `PhotoLibraryService`, no
 /// `PHAsset` anywhere in this file.
@@ -88,6 +88,10 @@ struct LibraryView: View {
             // count ("N Selected") still shows, centred inline.
             .navigationTitle(selecting ? L10n.selectedCount(selection.count) : "")
             .navigationBarTitleDisplayMode(.inline)
+            // Transparent status bar / nav bar (Photos): the grid
+            // shows through under the status bar and the bar, no
+            // solid band — same as the Albums tab.
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .cancellationAction) {
@@ -112,11 +116,14 @@ struct LibraryView: View {
                             }
                             .disabled(allIDs.isEmpty)
                             Menu {
-                                Button { viewModel.showingPhotoPicker = true } label: {
-                                    Label(L10n.importFromPhotos, systemImage: "photo.on.rectangle")
-                                }
                                 Button { Task { await saveDirectFromClipboard() } } label: {
                                     Label(L10n.pasteClipboard, systemImage: "doc.on.clipboard")
+                                }
+                                Button { viewModel.showingPhotoPicker = true } label: {
+                                    Label(L10n.photoLibrary, systemImage: "photo.on.rectangle")
+                                }
+                                Button { viewModel.showingDocumentPicker = true } label: {
+                                    Label(L10n.chooseFiles, systemImage: "folder")
                                 }
                                 Button { showingSettings = true } label: {
                                     Label(L10n.settings, systemImage: "gearshape")
@@ -174,18 +181,26 @@ struct LibraryView: View {
                 }
                 Button(L10n.cancel, role: .cancel) { urlInput = "" }
             }
-            // Inside the NavigationStack (not on the outer view): a
-            // navigationDestination attached outside the stack never
-            // presents — that was why tapping a cell did not open the
-            // Player.
-            .navigationDestination(item: $feedStartItem) { startItem in
-                PhotoDetailView(
-                    items: Binding(get: { viewModel.items }, set: { _ in }),
-                    startItemId: startItem.id,
-                    onNearEnd: { await viewModel.loadMore() },
-                    title: L10n.library,
-                    sourceFrame: feedStartFrame
-                )
+            // The viewer is a full-screen OVERLAY over this grid
+            // (not a NavigationStack push): the grid stays in the
+            // same hierarchy underneath, so it genuinely shows
+            // through when the black background fades during a
+            // drag-down-to-dismiss — a push cannot do that (its
+            // hosting layer is opaque, so the fade only ever
+            // revealed black, and the pop slid a black bar across
+            // the screen). Closing just clears feedStartItem.
+            .overlay {
+                if let startItem = feedStartItem {
+                    PhotoDetailView(
+                        items: Binding(get: { viewModel.items }, set: { _ in }),
+                        startItemId: startItem.id,
+                        onNearEnd: { await viewModel.loadMore() },
+                        title: L10n.library,
+                        sourceFrame: feedStartFrame,
+                        onDismiss: { feedStartItem = nil }
+                    )
+                    .ignoresSafeArea()
+                }
             }
         }
         .sheet(isPresented: $showingSettings, onDismiss: {
@@ -1174,8 +1189,9 @@ struct GridItemContextMenu: View {
 /// - Cancel: the picker closes and the items stay in the Library,
 ///   in no album (they are still saved).
 /// The "New Album..." card at the top of the Add to Album sheet
-/// (Photos): a gray placeholder with the stacked-photos icon and
-/// the "New Album..." label below, same size as an album card.
+/// (Photos): a gray placeholder with the Add-to-Album icon
+/// (rectangle.stack.badge.plus, same as the "Add to Album" action)
+/// and the "New Album..." label below, same size as an album card.
 /// Tapping it opens the New Album name alert.
 private struct NewAlbumCardView: View {
     var body: some View {
@@ -1183,7 +1199,7 @@ private struct NewAlbumCardView: View {
             Color(.systemGray5)
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
-                    Image(systemName: "photo.stack")
+                    Image(systemName: "rectangle.stack.badge.plus")
                         .font(.system(size: 28))
                         .foregroundStyle(.secondary)
                 }
@@ -1288,7 +1304,7 @@ struct ImportAlbumPickerView: View {
                         }
                     }
                     // "New Album..." card (Photos): a gray placeholder
-                    // with the stacked-photos icon, same size as an
+                    // with the Add-to-Album icon, same size as an
                     // album card, first in the grid.
                     LazyVGrid(columns: pickerColumns, spacing: 16) {
                         Button { showingNewAlbum = true } label: {

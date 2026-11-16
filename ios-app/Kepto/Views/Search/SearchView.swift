@@ -73,11 +73,9 @@ struct SearchView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     // The "…" menu lives on every tab except the
-                    // Player: Clipboard, then Settings.
+                    // Player: Paste from Clipboard, Photo Library,
+                    // Choose Files, Settings.
                     Menu {
-                        Button { viewModel.showingPhotoPicker = true } label: {
-                            Label(L10n.importFromPhotos, systemImage: "photo.on.rectangle")
-                        }
                         Button {
                             Task {
                                 if let notice = await viewModel.saveFromClipboard() {
@@ -88,6 +86,12 @@ struct SearchView: View {
                             }
                         } label: {
                             Label(L10n.pasteClipboard, systemImage: "doc.on.clipboard")
+                        }
+                        Button { viewModel.showingPhotoPicker = true } label: {
+                            Label(L10n.photoLibrary, systemImage: "photo.on.rectangle")
+                        }
+                        Button { viewModel.showingDocumentPicker = true } label: {
+                            Label(L10n.chooseFiles, systemImage: "folder")
                         }
                         Button { showingSettings = true } label: {
                             Label(L10n.settings, systemImage: "gearshape")
@@ -102,8 +106,13 @@ struct SearchView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
-            .navigationDestination(item: $feedStartItem) { startItem in
-                PhotoDetailView(items: $feedItems, startItemId: startItem.id, title: L10n.search)
+            // Viewer as a full-screen OVERLAY over these results,
+            // not a push — see PhotoDetailView's header comment.
+            .overlay {
+                if let startItem = feedStartItem {
+                    PhotoDetailView(items: $feedItems, startItemId: startItem.id, title: L10n.search, onDismiss: { feedStartItem = nil })
+                        .ignoresSafeArea()
+                }
             }
             .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
                 Button("OK") { saveNotice = nil }

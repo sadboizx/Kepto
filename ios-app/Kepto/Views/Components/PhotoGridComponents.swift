@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 /// Shared grid pieces ported from Photos' `PhotoGrid.swift`:
 /// `DayHeader`, `SelectBottomBar`, `ZoomSegmentBar`.
@@ -139,5 +141,48 @@ struct ZoomSegmentBar: View {
         // more opaque than ultraThinMaterial, so the pill has a real
         // visible background over the grid, like the real Photos app).
         .background(.regularMaterial, in: Capsule())
+    }
+}
+
+/// Files-app document picker for the "…" menu's "Choose Files"
+/// action: picks image/video files from Files and hands their URLs
+/// to the existing upload pipeline (same as PhotosPicker picks).
+/// `asCopy: true` copies the picked files into the app's temp
+/// directory, so the URLs stay readable without security-scoped
+/// resource handling. Multi-select. The sheet itself is attached at
+/// the app root (KeptoTabView), like the PhotosPicker.
+struct DocumentPickerView: UIViewControllerRepresentable {
+    var onPick: ([URL]) -> Void
+    var onCancel: () -> Void = {}
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.image, UTType.video], asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        var onPick: ([URL]) -> Void
+        var onCancel: () -> Void
+
+        init(onPick: @escaping ([URL]) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
     }
 }

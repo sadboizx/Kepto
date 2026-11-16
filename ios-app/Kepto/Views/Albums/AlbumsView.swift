@@ -8,7 +8,7 @@ enum AlbumSection: String, Hashable {
     case creators
 }
 
-/// Albums: the Photos-style Albums tab. Three sections, in Photos
+/// Albums: the Photos-style Albums tab. Four sections, in Photos
 /// order:
 ///  - "My Albums": Recents (all saved items), Favorites (hearted
 ///    items), then the user's own collections — a sideways-scrolling
@@ -20,6 +20,8 @@ enum AlbumSection: String, Hashable {
 ///    See All.
 ///  - "Media Types": Videos / Photos rows (Photos style, Q6). No
 ///    Shared Albums section — Kepto has no sharing by design.
+///  - "Utilities": Recently Deleted only (Option A — a note screen,
+///    not a trash list: Kepto deletes are permanent).
 /// A blue "+" at the top-left creates a new album (a user-created
 /// collection). Tapping a card opens its videos in a square grid;
 /// tapping a video there opens the feed. "See All" opens the whole
@@ -50,6 +52,9 @@ struct AlbumsView: View {
     @State private var showingDeleteAlbumConfirmation = false
     /// The section whose "See All" page is open (nil = closed).
     @State private var seeAllSection: AlbumSection?
+    /// The Recently Deleted note screen (false = closed): Option A —
+    /// a note, not a trash list.
+    @State private var showingRecentlyDeleted = false
     /// The album whose detail page is open (nil = closed).
     /// Navigation is a Button + navigationDestination, NOT an inline
     /// NavigationLink in the LazyVGrid: inline links in a lazy grid
@@ -73,6 +78,11 @@ struct AlbumsView: View {
             }
             .navigationDestination(item: $seeAllSection) { section in
                 seeAllView(for: section)
+            }
+            // Recently Deleted (Option A): a note screen, not a
+            // grid — Kepto has no trash.
+            .navigationDestination(isPresented: $showingRecentlyDeleted) {
+                RecentlyDeletedNoteView()
             }
             .task {
                 await viewModel.fetchCollections()
@@ -186,8 +196,8 @@ struct AlbumsView: View {
         .tint(.primary)
     }
 
-    /// The Albums root list: the three sections (My Albums, Creators,
-    /// Media Types) in a ScrollView. Extracted from `body` — the
+    /// The Albums root list: the four sections (My Albums, Creators,
+    /// Media Types, Utilities) in a ScrollView. Extracted from `body` — the
     /// whole body was too large for the compiler to type-check in
     /// reasonable time.
     private func mainScrollView() -> some View {
@@ -200,6 +210,7 @@ struct AlbumsView: View {
                         seeAllSection = .creators
                     }
                     mediaTypesSection()
+                    utilitiesSection()
                 }
                 .padding(.top, 8)
                 .padding(.bottom, 16)
@@ -231,12 +242,10 @@ struct AlbumsView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     // The "…" menu lives on every tab except the
-                    // Player: Clipboard, then Settings. (No Edit
-                    // button here — Edit lives only on See All.)
+                    // Player: Paste from Clipboard, Photo Library,
+                    // Choose Files, Settings. (No Edit button here —
+                    // Edit lives only on See All.)
                     Menu {
-                        Button { viewModel.showingPhotoPicker = true } label: {
-                            Label(L10n.importFromPhotos, systemImage: "photo.on.rectangle")
-                        }
                         Button {
                             Task {
                                 if let notice = await viewModel.saveFromClipboard() {
@@ -247,6 +256,12 @@ struct AlbumsView: View {
                             }
                         } label: {
                             Label(L10n.pasteClipboard, systemImage: "doc.on.clipboard")
+                        }
+                        Button { viewModel.showingPhotoPicker = true } label: {
+                            Label(L10n.photoLibrary, systemImage: "photo.on.rectangle")
+                        }
+                        Button { viewModel.showingDocumentPicker = true } label: {
+                            Label(L10n.chooseFiles, systemImage: "folder")
                         }
                         Button { showingSettings = true } label: {
                             Label(L10n.settings, systemImage: "gearshape")
@@ -378,7 +393,7 @@ struct AlbumsView: View {
     /// was saved.
     private var creatorItems: [AlbumItem] {
         viewModel.collections.map { collection in
-            AlbumItem(id: "creator:\(collection.id)", title: collection.displayName.lowercased(),
+            AlbumItem(id: "creator:\(collection.id)", title: collection.displayName,
                       count: collection.count, coverID: collection.coverItemId,
                       kind: .people, symbol: "person", tint: .gray,
                       collectionID: collection.id)
@@ -402,14 +417,14 @@ struct AlbumsView: View {
         ]
     }
 
-    /// User albums show in lowercase; Recents / Favorites keep
-    /// their Title Case. The app's own "Imports" album is the
-    /// exception — it keeps its professional capital I instead of
-    /// "imports".
+    /// User albums show as-is (their stored names); Recents /
+    /// Favorites keep their Title Case. The app's own "Imports"
+    /// album is the exception — it always shows as "Imports" with
+    /// a capital I, whatever case the stored name has.
     private func myCollectionDisplayName(_ collection: MyCollection) -> String {
         collection.name.localizedCaseInsensitiveCompare("Imports") == .orderedSame
             ? "Imports"
-            : collection.name.lowercased()
+            : collection.name
     }
 
     /// Two rows for the horizontal grids (Photos Albums style: each
@@ -433,9 +448,11 @@ struct AlbumsView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(title)
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .foregroundStyle(.primary)
+                    // PhotosClone section header (native insetGrouped
+                    // List style): small, uppercase, secondary gray.
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
                 Spacer()
                 Button(L10n.seeAll, action: onSeeAll)
                     .font(.subheadline)
@@ -477,9 +494,11 @@ struct AlbumsView: View {
     private func mediaTypesSection() -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.mediaTypes)
-                .font(.title2)
-                .fontWeight(.bold)
-                .foregroundStyle(.white)
+                // PhotosClone section header (native insetGrouped
+                // List style): small, uppercase, secondary gray.
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
                 .padding(.horizontal)
             VStack(spacing: 0) {
                 ForEach(mediaItems, id: \.self) { album in
@@ -494,6 +513,37 @@ struct AlbumsView: View {
             }
             .padding(.horizontal)
         }
+    }
+
+    /// The Utilities section: Recently Deleted only (Option A — a
+    /// note screen, not a trash list). Same header style as Media
+    /// Types; the row is the shared `utilityRow` (trash icon, red
+    /// tint like PhotosClone, no count).
+    private func utilitiesSection() -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.utilities)
+                // PhotosClone section header (native insetGrouped
+                // List style): small, uppercase, secondary gray.
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .padding(.horizontal)
+            VStack(spacing: 0) {
+                Button { showingRecentlyDeleted = true } label: {
+                    utilityRow(recentlyDeletedItem)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    /// The Recently Deleted row: trash icon, red tint (PhotosClone),
+    /// no count, no cover — the note screen has nothing to list.
+    private var recentlyDeletedItem: AlbumItem {
+        AlbumItem(id: "utilities:deleted", title: L10n.recentlyDeleted, count: 0,
+                  coverID: nil, kind: .deleted, symbol: "trash", tint: .red,
+                  collectionID: nil)
     }
 
     /// One album card (Photos' `albumTile`): a SQUARE cover (1:1,
@@ -553,7 +603,8 @@ struct AlbumsView: View {
             Text(album.title)
                 .foregroundStyle(.primary)
             Spacer()
-            Text(itemCountText(album.count))
+            // PhotosClone: the Recently Deleted row shows no count.
+            Text(album.kind == .deleted ? "" : itemCountText(album.count))
                 .foregroundStyle(.secondary)
                 .font(.body)
         }
@@ -571,7 +622,7 @@ struct AlbumsView: View {
     private func isDeletable(_ album: AlbumItem) -> Bool {
         switch album.kind {
         case .user, .people: return true
-        case .recents, .favorites, .media: return false
+        case .recents, .favorites, .media, .deleted: return false
         }
     }
 
@@ -614,7 +665,7 @@ struct AlbumsView: View {
             } catch {
                 viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
-        case .recents, .favorites, .media:
+        case .recents, .favorites, .media, .deleted:
             break
         }
     }
@@ -672,6 +723,10 @@ struct AlbumsView: View {
             }
         case .media:
             selectedSource = .media(album.id == "media:video" ? .video : .photo)
+        case .deleted:
+            // The Utilities row navigates to its note screen directly
+            // (showingRecentlyDeleted), never through select().
+            break
         }
     }
 
@@ -685,5 +740,24 @@ struct AlbumsView: View {
     /// favorited items among the loaded ones.
     private var favoritesCount: Int {
         viewModel.libraryStats?.favorites ?? viewModel.items.filter(\.isFavorite).count
+    }
+}
+
+/// Recently Deleted, note-only (Option A): Kepto has no trash —
+/// deletes are permanent, so there is nothing to list. The screen
+/// says so plainly and points at the system Photos Recently Deleted
+/// album for photos saved to the device. No grid, no Worker/D1
+/// changes, no change to the delete flow.
+private struct RecentlyDeletedNoteView: View {
+    var body: some View {
+        ScrollView {
+            Text(L10n.recentlyDeletedNote)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        .navigationTitle(L10n.recentlyDeleted)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

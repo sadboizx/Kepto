@@ -108,7 +108,7 @@ struct KeptoTabView: View {
         } message: {
             Text(shareSaveNotice ?? "")
         }
-        // Import from Photos: the picker is attached HERE (the root),
+        // Photo Library: the picker is attached HERE (the root),
         // not in a tab, so any tab's "…" menu can open it by setting
         // viewModel.showingPhotoPicker = true. The ViewModel owns the
         // picker state and the whole upload flow.
@@ -128,6 +128,25 @@ struct KeptoTabView: View {
         .onChange(of: viewModel.showingPhotoPicker) { _, isPresented in
             if !isPresented && !viewModel.isUploading && viewModel.selectedPhotos.isEmpty {
                 viewModel.chosenImportAlbum = nil
+            }
+        }
+        // Choose Files: the Files-app document picker is attached
+        // HERE (the root), like the PhotosPicker, so any tab's "…"
+        // menu can open it by setting
+        // viewModel.showingDocumentPicker = true. The ViewModel owns
+        // the picker state and the whole upload flow.
+        .sheet(isPresented: $viewModel.showingDocumentPicker) {
+            DocumentPickerView { urls in
+                viewModel.showingDocumentPicker = false
+                Task { await viewModel.uploadPickedFiles(urls) }
+            } onCancel: {
+                viewModel.showingDocumentPicker = false
+                // Cancelled without picking: clear a pre-chosen album
+                // (same rule as the PhotosPicker above) so a later
+                // import doesn't silently land in the wrong album.
+                if !viewModel.isUploading {
+                    viewModel.chosenImportAlbum = nil
+                }
             }
         }
         // Spinner pill while a Photos import is in flight, floating

@@ -18,13 +18,20 @@ import UIKit
 /// NOT auto-play on paging (Photos behaviour): tap the centre play
 /// button or the toolbar Play button; the player machinery (deferred
 /// play, kept player, loop, scrub) is FeedView's, reused as-is.
-/// The viewer is pushed on a NavigationStack like FeedView was; the
-/// native interactive pop gesture keeps working through
-/// `NativePopGestureHelper` below (same v46 bridge). The
-/// drag-down-to-dismiss is a custom gesture, added at the user's
-/// explicit request (Photos-style: only the media moves and shrinks,
-/// the background + chrome fade) — it sits alongside the native edge
-/// pop, which is untouched.
+/// The viewer is presented as a full-screen OVERLAY over the grid
+/// that opened it (not a NavigationStack push): the grid stays in
+/// the same view hierarchy underneath, so it genuinely shows through
+/// when the black background fades during a drag-down-to-dismiss —
+/// a push cannot do that (the pushed view's hosting layer is opaque,
+/// so fading the black layers only ever revealed black, and the
+/// standard pop slid a black bar across the screen). Closing the
+/// viewer just removes the overlay (no pop animation, no slide).
+/// There is NO swipe-back here (user request): the
+/// drag-down-to-dismiss is the viewer's only exit — a custom
+/// gesture, added at the user's explicit request (Photos-style: only
+/// the media moves and shrinks, the background + chrome fade).
+/// `NativePopGestureHelper` (same v46 bridge) still lives in this
+/// file for the album detail views.
 struct PhotoDetailView: View {
     /// The list to page through. A Binding so appends from `onNearEnd`
     /// (the library's loadMore, or a collection's) are visible here.
@@ -33,11 +40,17 @@ struct PhotoDetailView: View {
     let startItemId: String
     /// Called when the user nears the end (loads the next page).
     var onNearEnd: (() async -> Void)? = nil
-    /// Title shown next to the back chevron in the top bar.
+    /// Retained for the existing call sites (Library / Search /
+    /// For You / albums pass a title); no longer displayed — the top
+    /// bar shows only the centred date now.
     var title: String = L10n.library
+    /// Close the viewer (the opener clears its `feedStartItem`, which
+    /// removes this overlay). The drag-down release and the
+    /// delete-the-last-item path both go through here — there is no
+    /// NavigationStack pop any more (see the header comment).
+    var onDismiss: (() -> Void)? = nil
 
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
 
     /// The id of the page the viewer is showing. Optional because
     /// `.scrollPosition(id:)` needs a `Binding<String?>`.
@@ -77,12 +90,13 @@ struct PhotoDetailView: View {
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil, title: String = L10n.library,
-         sourceFrame: CGRect? = nil) {
+         sourceFrame: CGRect? = nil, onDismiss: (() -> Void)? = nil) {
         self._items = items
         self.startItemId = startItemId
         self.onNearEnd = onNearEnd
         self.title = title
         self.sourceFrame = sourceFrame
+        self.onDismiss = onDismiss
         self._currentID = State(initialValue: startItemId)
     }
 
@@ -133,21 +147,13 @@ struct PhotoDetailView: View {
                     .transition(.opacity)
                 }
             }
-            // Native back gesture (interactive pop) + paging ScrollView:
-            // the paging ScrollView claims the touch, so the navigation
-            // controller's edge pan never fires on its own. The
-            // NativePopGestureHelper below (a UIKit bridge) makes the
-            // scroll view's pan wait for the edge pan, so a rightward
-            // swipe from the left edge pops with the NATIVE gesture
-            // (interactive transition, follows the finger, cancels
-            // mid-swipe) while horizontal swipes still page the viewer.
-            // The drag-down-to-dismiss lives in the page (it moves
-            // only the media, not the whole viewer) — nothing here
-            // moves with the finger any more.
-            .background(NativePopGestureHelper())
+            // No swipe-back here (user request): the drag-down-to-
+            // dismiss in the page is the viewer's only exit. The
+            // paging ScrollView claims touches; horizontal swipes
+            // still page the viewer.
         }
         // No taps while the release-dismiss animation is running
-        // (the viewer is popping anyway).
+        // (the viewer is closing anyway).
         .disabled(dismissing)
         // Full-screen viewer: hide the navigation bar (no back
         // button/title — the custom topBar provides them). The tab
@@ -225,6 +231,7 @@ struct PhotoDetailView: View {
                 itemPendingDelete = video
                 showDelete = true
             },
+            onDismiss: onDismiss,
             isScrubbing: $isScrubbing,
             dragOffset: $dragOffset,
             dragScale: $dragScale,
@@ -237,9 +244,11 @@ struct PhotoDetailView: View {
         .containerRelativeFrame(.horizontal)
     }
 
-    /// Top bar (Photos): back chevron + title on the left, the
-    /// current item's date centred, no Edit button (Q2: Editor
-    /// dropped). White text over a top gradient, like Photos.
+    /// Top bar (Photos): the current item's date centred, no back
+    /// button / title and no Edit button (Q2: Editor dropped; the
+    /// "< album" back label was removed at the user's request —
+    /// drag-down-to-dismiss is the viewer's only exit). White text
+    /// over a top gradient, like Photos.
     private var topBar: some View {
         ZStack {
             // Centred date (posted, else saved).
@@ -251,22 +260,6 @@ struct PhotoDetailView: View {
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.75))
                 }
-            }
-            HStack {
-                Button {
-                    Haptics.tap()
-                    dismiss()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.body.weight(.semibold))
-                        Text(title)
-                            .font(.body)
-                            .lineLimit(1)
-                    }
-                }
-                .accessibilityLabel(L10n.back)
-                Spacer()
             }
         }
         .foregroundStyle(.white)
@@ -332,7 +325,7 @@ struct PhotoDetailView: View {
             // on screen. Removing it here moves the viewer to the
             // nearest remaining item (see `handleItemsChange`).
             items.removeAll { $0.id == target.id }
-            if items.isEmpty { dismiss() }
+            if items.isEmpty { onDismiss?() }
         } catch {
             deleteError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -361,6 +354,10 @@ private struct PhotoDetailPage: View {
     /// Called when the user taps Delete in the toolbar (the viewer
     /// shows the delete confirmation for this item).
     var onDeleteRequest: ((Item) -> Void)? = nil
+    /// Close the viewer (the opener removes the overlay). The
+    /// drag-down release calls this after the media has landed on
+    /// its thumbnail — there is no NavigationStack pop any more.
+    var onDismiss: (() -> Void)? = nil
     @EnvironmentObject private var viewModel: LibraryViewModel
 
     @State private var player: AVPlayer?
@@ -388,7 +385,6 @@ private struct PhotoDetailPage: View {
     /// when opened from Search / For You, or when the cell scrolled
     /// away): on a dismissing release the media shrinks onto it.
     var sourceFrame: CGRect? = nil
-    @Environment(\.dismiss) private var dismiss
     /// Whether the video was playing when a scrub started — it resumes
     /// after the scrub only in that case (a paused video stays paused).
     @State private var wasPlayingBeforeScrub = false
@@ -800,9 +796,12 @@ private struct PhotoDetailPage: View {
 
     /// Release past the threshold: animate the media onto its source
     /// thumbnail (or down off the screen when the thumbnail is
-    /// unknown), fade the background + chrome out, then pop. The pop
-    /// happens in the animation's completion, so the media visibly
-    /// shrinks onto the thumbnail instead of vanishing mid-flight.
+    /// unknown), fade the background + chrome out, then close the
+    /// overlay. The close happens in the animation's completion, so
+    /// the media visibly shrinks onto the thumbnail instead of
+    /// vanishing mid-flight — and because the overlay is just
+    /// removed (no NavigationStack pop), nothing slides across the
+    /// screen afterwards.
     private func dismissToThumbnail(pageSize: CGSize, pageGlobalFrame: CGRect) {
         let target = dismissTarget(pageSize: pageSize, pageGlobalFrame: pageGlobalFrame)
         withAnimation(.easeInOut(duration: 0.35)) {
@@ -810,7 +809,7 @@ private struct PhotoDetailPage: View {
             dragScale = target.scale
             dismissing = true
         } completion: {
-            dismiss()
+            onDismiss?()
         }
     }
 
