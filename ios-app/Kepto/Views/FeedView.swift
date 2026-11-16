@@ -25,10 +25,11 @@ import UIKit
 /// with the sprite preview popup). The background is black throughout.
 /// Photo posts show the full image instead of a player.
 ///
-/// Video actions live in the bottom-right rail: a "…" button
-/// (Save to Photos, Share, Favorite, Add to Album, Delete) and a
-/// speedometer button (playback speed). No long-press menu. No
-/// Share-with / Repost / friends list.
+/// Video actions: a "…" button at the top-right corner
+/// (Facebook-style header position; Save to Photos, Share,
+/// Favorite, Add to Album, Delete) and a running-person
+/// (figure.run) button at the bottom-right corner for playback
+/// speed. No long-press menu. No Share-with / Repost / friends list.
 struct FeedView: View {
     /// The list to page through. A Binding so appends from `onNearEnd`
     /// (the library's loadMore, or a collection's) are visible here.
@@ -240,10 +241,11 @@ struct FeedView: View {
 /// The player is created on appear and kept (paused)
 /// when the page scrolls away — see the note on `schedulePlay`
 /// for why it is not destroyed. It plays only while this page is
-/// the current one, and loops. There is no long-press menu: the
-/// bottom-right rail has a "…" button (Save to Photos, Share,
-/// Favorite, Add to Album, Delete) and a speedometer button
-/// (playback speed). The username and caption are overlaid on
+/// the current one, and loops. There is no long-press menu: a
+/// "…" button sits at the top-right corner (Save to Photos,
+/// Share, Favorite, Add to Album, Delete) and a running-person
+/// button at the bottom-right corner opens the playback speed
+/// menu. The username and caption are overlaid on
 /// the video itself, not repeated in the menu.
 private struct FeedVideoPage: View {
     let item: Item
@@ -270,9 +272,9 @@ private struct FeedVideoPage: View {
     /// stops being current or disappears.
     @State private var playTask: Task<Void, Never>?
     @State private var fullImage: UIImage?
-    /// Playback speed from the speedometer button (1.0 = normal).
+    /// Playback speed from the running-person button (1.0 = normal).
     @State private var playbackRate: Float = 1.0
-    /// Speeds offered by the speedometer button's menu.
+    /// Speeds offered by the running-person button's menu.
     private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     /// The "…" menu's "Add to Album" picker (nil = closed).
     @State private var showingAlbumPicker = false
@@ -359,8 +361,9 @@ private struct FeedVideoPage: View {
                 }
                 // Username + caption, overlaid bottom-left on the
                 // video (TikTok-style), directly above the progress
-                // bar. The "…" and speedometer buttons sit to the
-                // right of this text, so nothing covers it.
+                // bar. The running-person (playback speed) button
+                // sits to the right of this text, so nothing covers
+                // it; the "…" button is at the top-right corner.
                 // Progress bar sits ABOVE the username (not at the
                 // very bottom): the username is at the bottom edge,
                 // just above the Home Indicator, and the progress bar
@@ -397,69 +400,30 @@ private struct FeedVideoPage: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            // Right-side action rail (Facebook-style),
-                            // bottom-right next to the username:
-                            // "…" opens the menu (Save to Photos,
-                            // Share, Favorite, Add to Album, Delete —
-                            // no Playback speed in it any more), and
-                            // the speed button at the very bottom-right
-                            // corner opens the playback speed menu.
-                            // (The long-press context menu is gone —
-                            // these two buttons replace it.)
-                            VStack(spacing: 12) {
+                            // Playback speed button (running-person
+                            // icon) at the bottom-right corner, next
+                            // to the username. The "…" button moved
+                            // to the top-right corner (Facebook-style).
+                            if !isImage {
                                 Menu {
-                                    Button { Task { await downloadVideo() } } label: {
-                                        Label("Save to Photos", systemImage: "arrow.down.to.line")
-                                    }
-                                    Button { shareItem() } label: {
-                                        Label("Share", systemImage: "square.and.arrow.up")
-                                    }
-                                    Button {
-                                        Task {
-                                            if let updated = await viewModel.toggleFavorite(item: item) {
-                                                showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
+                                    ForEach(speeds, id: \.self) { rate in
+                                        Button {
+                                            selectRate(rate)
+                                        } label: {
+                                            if rate == playbackRate {
+                                                Label(String(format: "%gx", rate), systemImage: "checkmark")
+                                            } else {
+                                                Text(String(format: "%gx", rate))
                                             }
                                         }
-                                    } label: {
-                                        Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
-                                    }
-                                    Button { showingAlbumPicker = true } label: {
-                                        Label("Add to Album", systemImage: "folder.badge.plus")
-                                    }
-                                    Button(role: .destructive) {
-                                        onDeleteRequest?(item)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
                                     }
                                 } label: {
-                                    Image(systemName: "ellipsis")
+                                    Image(systemName: "figure.run")
                                         .font(.system(size: 18, weight: .semibold))
                                         .foregroundStyle(.white)
                                         .frame(width: 44, height: 44)
                                         .background(.ultraThinMaterial, in: Circle())
-                                        .accessibilityLabel("More options")
-                                }
-                                if !isImage {
-                                    Menu {
-                                        ForEach(speeds, id: \.self) { rate in
-                                            Button {
-                                                selectRate(rate)
-                                            } label: {
-                                                if rate == playbackRate {
-                                                    Label(String(format: "%gx", rate), systemImage: "checkmark")
-                                                } else {
-                                                    Text(String(format: "%gx", rate))
-                                                }
-                                            }
-                                        }
-                                    } label: {
-                                        Image(systemName: "speedometer")
-                                            .font(.system(size: 18, weight: .semibold))
-                                            .foregroundStyle(.white)
-                                            .frame(width: 44, height: 44)
-                                            .background(.ultraThinMaterial, in: Circle())
-                                            .accessibilityLabel("Playback speed")
-                                    }
+                                        .accessibilityLabel("Playback speed")
                                 }
                             }
                         }
@@ -468,6 +432,48 @@ private struct FeedVideoPage: View {
                         // Indicator (a small gap, not touching it).
                         .padding(.bottom, geo.safeAreaInsets.bottom + 8)
                     }
+                }
+                // "…" button at the TOP-RIGHT corner (Facebook-style
+                // header position), over the video. Opens the menu
+                // (Save to Photos, Share, Favorite, Add to Album,
+                // Delete — no Playback speed in it). Shown for videos
+                // and photos alike.
+                if item.status == .ready {
+                    Menu {
+                        Button { Task { await downloadVideo() } } label: {
+                            Label("Save to Photos", systemImage: "arrow.down.to.line")
+                        }
+                        Button { shareItem() } label: {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            Task {
+                                if let updated = await viewModel.toggleFavorite(item: item) {
+                                    showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
+                                }
+                            }
+                        } label: {
+                            Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
+                        }
+                        Button { showingAlbumPicker = true } label: {
+                            Label("Add to Album", systemImage: "folder.badge.plus")
+                        }
+                        Button(role: .destructive) {
+                            onDeleteRequest?(item)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .accessibilityLabel("More options")
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, 12)
+                    .padding(.top, geo.safeAreaInsets.top + 8)
                 }
                 // Transient notice (Copy link / Download result).
                 // Sits above the progress bar (which is now above the
@@ -496,8 +502,9 @@ private struct FeedVideoPage: View {
                 showControlsTemporarily()
             }
             // No long-press context menu any more — the "…" button
-            // (bottom-right) opens the menu, and the speedometer
-            // button opens the playback speed menu.
+            // (top-right corner) opens the menu, and the
+            // running-person button (bottom-right) opens the
+            // playback speed menu.
         }
         .background(Color.black)
         .sheet(isPresented: $showingAlbumPicker) {
@@ -653,7 +660,7 @@ private struct FeedVideoPage: View {
         isPlaying = true
     }
 
-    /// Playback speed from the speedometer button. Applies immediately
+    /// Playback speed from the running-person button. Applies immediately
     /// when the video is playing; otherwise it applies on resume.
     private func selectRate(_ rate: Float) {
         playbackRate = rate
