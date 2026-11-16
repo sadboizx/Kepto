@@ -209,10 +209,11 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     /// unparsable). Used by the Player info sheet.
     var postedDate: Date? { postedAt.flatMap { Self.isoFormatter.date(from: $0) } }
 
-    /// Date taken (Apple Photos sort key): the original post date,
-    /// else the save/import date. Items with no parseable date sort
-    /// as the oldest (.distantPast) — they never crash the sort.
-    var sortDate: Date { postedDate ?? savedDate ?? .distantPast }
+    /// Save/import date (the sort key): when the item was saved
+    /// into Kepto, else the original post date. Items with no
+    /// parseable date sort as the oldest (.distantPast) — they never
+    /// crash the sort.
+    var sortDate: Date { savedDate ?? postedDate ?? .distantPast }
 }
 
 /// Light metadata for one item (GET /api/listAll). Everything the
@@ -299,10 +300,11 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
     /// The posted date as a Date (nil when missing/unparsable).
     var postedDate: Date? { postedAt.flatMap { Self.isoFormatter.date(from: $0) } }
 
-    /// Date taken (Apple Photos sort key): the original post date,
-    /// else the save/import date. Items with no parseable date sort
-    /// as the oldest (.distantPast) — they never crash the sort.
-    var sortDate: Date { postedDate ?? savedDate ?? .distantPast }
+    /// Save/import date (the sort key): when the item was saved
+    /// into Kepto, else the original post date. Items with no
+    /// parseable date sort as the oldest (.distantPast) — they never
+    /// crash the sort.
+    var sortDate: Date { savedDate ?? postedDate ?? .distantPast }
 
     var displayAuthor: String {
         guard let author, !author.isEmpty else { return platform.displayName }
