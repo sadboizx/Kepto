@@ -106,6 +106,50 @@ export async function findByUrl(db: D1Database, url: string): Promise<Item | nul
   return row ?? null;
 }
 
+/**
+ * The platform video ID inside a URL, if it has one. The same video
+ * is often shared under different URL forms — a tracking query string
+ * (`?is_from_webapp=1…`), another host (`m.tiktok.com`), or a repost
+ * under a different username (`/@other/video/<same-id>`) — so the exact
+ * URL lookup above misses it. The video ID is the same in every form,
+ * so it is the reliable dedupe key. Returns null when the URL has no
+ * recognizable video ID (then only the exact-URL lookup applies).
+ */
+export function extractVideoId(url: string): { platform: string; id: string } | null {
+  let m: RegExpMatchArray | null;
+  // TikTok: /video/<numeric id> (the ID is a long snowflake number).
+  m = url.match(/tiktok\.com\/[^?#]*\/video\/(\d{10,})/i);
+  if (m) return { platform: "tiktok", id: m[1] };
+  // YouTube: ?v=<11-char id> or youtu.be/<11-char id>.
+  m = url.match(/[?&]v=([A-Za-z0-9_-]{11})(?:[&#]|$)/);
+  if (m) return { platform: "youtube", id: m[1] };
+  m = url.match(/youtu\.be\/([A-Za-z0-9_-]{11})(?:[?&#]|$)/i);
+  if (m) return { platform: "youtube", id: m[1] };
+  // Instagram: /p/<code>/, /reel/<code>/, /reels/<code>/.
+  m = url.match(/instagram\.com\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)/i);
+  if (m) return { platform: "instagram", id: m[1] };
+  // Facebook: story.php?story_fbid=<id>.
+  m = url.match(/story_fbid=(\d+)/);
+  if (m) return { platform: "facebook", id: m[1] };
+  return null;
+}
+
+/**
+ * Fallback dedupe lookup: the row whose stored URL contains this
+ * platform video ID, if any. `instr` is a plain substring search
+ * (no LIKE wildcards), so an ID containing `_` or `%` cannot
+ * false-match. The ID is long and unique per video, so a substring
+ * hit means the same video — even when it was saved under a
+ * different URL form (query string, host, or username).
+ */
+export async function findByVideoId(db: D1Database, videoId: string): Promise<Item | null> {
+  const row = await db
+    .prepare(`SELECT * FROM items WHERE instr(original_url, ?1) > 0 LIMIT 1`)
+    .bind(videoId)
+    .first<Item>();
+  return row ?? null;
+}
+
 /** Dedupe lookup for POST /api/upload: the row whose content hash
  * matches, if any. The app sends the SHA-256 of the exact bytes it
  * uploads; the ingest stores the SHA-256 of the bytes it received,

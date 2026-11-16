@@ -78,7 +78,9 @@ import {
   deleteItem,
   deleteMyCollection,
   detectPlatform,
+  extractVideoId,
   findByUrl,
+  findByVideoId,
   findItemBySha256,
   findMyCollectionByName,
   getItem,
@@ -174,7 +176,20 @@ async function saveOne(
   rawUrl: string,
 ): Promise<SaveOneResult> {
   const url = normalizeSaveUrl(rawUrl);
-  const existing = await findByUrl(c.env.DB, url);
+  let existing = await findByUrl(c.env.DB, url);
+  if (!existing) {
+    // Fallback: the same video saved under a different URL form —
+    // a tracking query string, another host, or a repost under a
+    // different username — has a different stored URL, so the exact
+    // lookup above misses it and the video would be downloaded again
+    // (notably when a Collection re-lists videos saved individually
+    // first). Match by the platform video ID instead: the ID is the
+    // same no matter how the link was shared.
+    const vid = extractVideoId(url);
+    if (vid) {
+      existing = await findByVideoId(c.env.DB, vid.id);
+    }
+  }
   if (existing) {
     if (existing.status === "failed") {
       await resetForRetry(c.env.DB, existing.id);
