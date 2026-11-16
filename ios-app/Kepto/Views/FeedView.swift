@@ -448,10 +448,13 @@ private struct FeedVideoPage: View {
                                 onDeleteRequest?(item)
                             }
                         }
-                        .padding(.horizontal, 8)
-                        // At the very bottom, just above the Home
-                        // Indicator (a small gap, not touching it).
-                        .padding(.bottom, geo.safeAreaInsets.bottom + 8)
+                        // Full-width with a blurred background, like
+                        // the Photos toolbar (no horizontal inset —
+                        // it spans edge to edge, and the blur extends
+                        // to the bottom edge under the Home Indicator).
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, geo.safeAreaInsets.bottom)
+                        .background(.ultraThinMaterial)
                     }
                 }
                 // (No top-right "…" menu any more — its actions live
@@ -512,6 +515,8 @@ private struct FeedVideoPage: View {
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+            // OLED: pure black sheet background.
+            .presentationBackground(Color.black)
         }
         .sheet(item: $shareFile) { file in
             ShareSheet(activityItems: [file.url])
@@ -813,79 +818,53 @@ private struct FeedVideoPage: View {
 
 
 /// Photos-style info sheet for one item (the (i) button in the
-/// Player toolbar): the media, caption, posted date, quality info,
-/// and "Saved from <platform>" (tappable — opens the original post
-/// in Safari). Save to Photos and Add to Album live here too, so
-/// they are still reachable from the Player now that the top-right
-/// "…" menu is gone.
+/// Player toolbar). OLED background (pure black), no media preview.
+/// The title is the TikTok display name + relative posted time
+/// ("Linh Bơ 🥑 · 1d ago"), then the caption — like a TikTok
+/// header — then the Photos info cards: "No camera information"
+/// (dimensions, file size, duration) and "Saved from <platform>"
+/// (tappable — opens the original post in Safari). Save to Photos
+/// and Add to Album live here too, so they are still reachable
+/// from the Player now that the top-right "…" menu is gone.
 private struct ItemInfoSheet: View {
     let item: Item
     var onSaveToPhotos: () -> Void = {}
     var onAddToAlbum: () -> Void = {}
-    @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var thumb: UIImage?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let thumb {
-                        Image(uiImage: thumb)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    // Title: TikTok display name + relative posted
+                    // time, large like the TikTok header.
+                    HStack(spacing: 6) {
+                        Text(authorName)
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                        if let relative = relativeTimeString {
+                            Text("· \(relative)")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    // Caption (#dance #gaixinh), like the TikTok header.
                     if let caption = item.caption,
                        !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(caption)
                             .font(.title3)
-                            .fontWeight(.semibold)
                     }
-                    // Date posted (or saved date when the post date
-                    // is unknown): "Tuesday · 13 Oct 2026 · 18:13".
+                    // Absolute posted date ("Saturday · 17 Jan 2026 ·
+                    // 09:47"), like the Photos info panel.
                     if let dateString = infoDateString {
                         Text(dateString)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    // Quality info: "720p · 1280 × 720 · 2.4 MB"
-                    // plus the duration for videos.
-                    if let quality = qualityString {
-                        Text(quality)
-                            .font(.subheadline)
-                    }
-                    if let duration = item.formattedDuration {
-                        Text(duration)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    // "Saved from <platform>" — tappable, opens the
-                    // original post in Safari. Imported photos have
-                    // no original post (album:// URL), so they show
-                    // "Imported from Photos" instead.
-                    if let originalURL = URL(string: item.originalUrl),
-                       let scheme = originalURL.scheme, scheme.hasPrefix("http") {
-                        Button {
-                            dismiss()
-                            UIApplication.shared.open(originalURL)
-                        } label: {
-                            HStack {
-                                Text("Saved from \(item.platform.displayName)")
-                                    .font(.subheadline)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .foregroundStyle(.blue)
-                    } else {
-                        Text("Imported from Photos")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
+                    // "No camera information" card (Photos info panel).
+                    cameraCard
+                    // "Saved from <platform>" card (Photos info panel).
+                    savedFromCard
                     Divider()
                     Button {
                         dismiss()
@@ -902,6 +881,8 @@ private struct ItemInfoSheet: View {
                 }
                 .padding()
             }
+            // OLED: pure black, not the system dark gray.
+            .background(Color.black)
             .navigationTitle("Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -909,14 +890,39 @@ private struct ItemInfoSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .task {
-                guard thumb == nil, let api = viewModel.api else { return }
-                thumb = try? await api.fetchThumbnail(id: item.id)
-            }
         }
     }
 
-    /// "Tuesday · 13 Oct 2026 · 18:13" — the posted date, or the
+    /// TikTok display name (author), else "@username", else the
+    /// platform name.
+    private var authorName: String {
+        if let author = item.author,
+           !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return author
+        }
+        return item.collectionName
+    }
+
+    /// "1d ago" / "2h ago" / "3w ago" from the posted date (else
+    /// the saved date).
+    private var relativeTimeString: String? {
+        guard let date = item.postedDate ?? item.savedDate else { return nil }
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 { return "just now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h ago" }
+        let days = hours / 24
+        if days < 7 { return "\(days)d ago" }
+        let weeks = days / 7
+        if weeks < 5 { return "\(weeks)w ago" }
+        let months = days / 30
+        if months < 12 { return "\(months)mo ago" }
+        return "\(days / 365)y ago"
+    }
+
+    /// "Saturday · 17 Jan 2026 · 09:47" — the posted date, or the
     /// saved date when the post date is unknown.
     private var infoDateString: String? {
         let date = item.postedDate ?? item.savedDate
@@ -926,13 +932,73 @@ private struct ItemInfoSheet: View {
         return formatter.string(from: date)
     }
 
-    /// "720p · 1280 × 720 · 2.4 MB" (video) or "1280 × 720 · 2.4 MB"
-    /// (photo). The "720p" label comes from the smaller side, so a
-    /// vertical 720×1280 video reads "720p" too.
-    private var qualityString: String? {
+    /// "No camera information" card (Photos info panel): the codec
+    /// badge + media icon, "No lens information", dimensions +
+    /// file size, and the duration for videos. Kepto stores no
+    /// camera/lens metadata, so those two rows are always "No …".
+    private var cameraCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("No camera information")
+                Spacer()
+                if let codec = codecBadge {
+                    Text(codec)
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(.systemGray4), in: RoundedRectangle(cornerRadius: 4))
+                }
+                Image(systemName: isVideo ? "video.fill" : "camera.fill")
+                    .foregroundStyle(.secondary)
+            }
+            Text("No lens information")
+                .foregroundStyle(.secondary)
+            if let dimsAndSize = dimensionsAndSize {
+                Text(dimsAndSize)
+                    .foregroundStyle(.secondary)
+            }
+            // Duration (video only), on its own row like Photos'
+            // "29,98 FPS | 00:47" row.
+            if let duration = item.formattedDuration {
+                Divider()
+                HStack {
+                    Spacer()
+                    Text(duration)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .font(.subheadline)
+        .padding()
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var isVideo: Bool { item.contentType?.hasPrefix("video/") == true }
+
+    /// Short codec/container label from the stored MIME type
+    /// ("MP4", "MOV", "JPEG", "HEIC", …) for the badge.
+    private var codecBadge: String? {
+        guard let type = item.contentType else { return nil }
+        let subtype = type.split(separator: "/").last.map(String.init) ?? ""
+        switch subtype.lowercased() {
+        case "mp4": return "MP4"
+        case "quicktime": return "MOV"
+        case "x-matroska": return "MKV"
+        case "jpeg": return "JPEG"
+        case "png": return "PNG"
+        case "heic": return "HEIC"
+        case "webp": return "WEBP"
+        case "gif": return "GIF"
+        case "hevc": return "HEVC"
+        default: return subtype.isEmpty ? nil : subtype.uppercased()
+        }
+    }
+
+    /// "360 × 640 · 28 MB".
+    private var dimensionsAndSize: String? {
         var parts: [String] = []
         if let width = item.width, let height = item.height {
-            parts.append(qualityLabel(for: min(width, height)))
             parts.append("\(width) × \(height)")
         }
         if let size = item.formattedFileSize {
@@ -941,14 +1007,49 @@ private struct ItemInfoSheet: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    private func qualityLabel(for pixels: Int) -> String {
-        switch pixels {
-        case 2160...: return "2160p"
-        case 1440..<2160: return "1440p"
-        case 1080..<1440: return "1080p"
-        case 720..<1080: return "720p"
-        case 480..<720: return "480p"
-        default: return "\(pixels)p"
+    /// "Saved from <platform>" card (Photos info panel): icon +
+    /// text + chevron, tappable — opens the original post in
+    /// Safari. Imported photos have no original post (album://
+    /// URL), so they show "Imported from Photos" instead.
+    private var savedFromCard: some View {
+        Group {
+            if let originalURL = URL(string: item.originalUrl),
+               let scheme = originalURL.scheme, scheme.hasPrefix("http") {
+                Button {
+                    dismiss()
+                    UIApplication.shared.open(originalURL)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "link")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color(.systemGray4), in: RoundedRectangle(cornerRadius: 8))
+                        Text("Saved from \(item.platform.displayName)")
+                            .font(.subheadline)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.systemGray4), in: RoundedRectangle(cornerRadius: 8))
+                    Text("Imported from Photos")
+                        .font(.subheadline)
+                    Spacer()
+                }
+                .padding()
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+            }
         }
     }
 }
