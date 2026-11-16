@@ -76,16 +76,39 @@ struct KeptoTabView: View {
     /// saved" or a collection summary).
     @State private var shareSaveNotice: String?
 
+    /// Tab selection with re-tap detection. SwiftUI calls this
+    /// setter on every tab tap — including tapping the
+    /// already-selected tab (the value is set again, unchanged).
+    /// A re-tap on the Albums tab (2) bumps
+    /// viewModel.albumsTabTapCount, which the Albums stack observes
+    /// (scroll to top, or pop to the Albums root when already at
+    /// the top — Photos behavior).
+    private var tabSelectionBinding: Binding<Int> {
+        Binding(
+            get: { selectedTab },
+            set: { newValue in
+                if newValue == selectedTab, newValue == 2 {
+                    viewModel.albumsTabTapCount += 1
+                }
+                selectedTab = newValue
+            }
+        )
+    }
+
     var body: some View {
-        TabView(selection: $selectedTab) {
+        // Tab icons are exactly the iOS Photos ones, with the
+        // selected tab showing the FILLED variant and the others the
+        // outline variant (Photos renders the selected tab filled).
+        // Search has no fill variant — magnifyingglass in both states.
+        TabView(selection: tabSelectionBinding) {
             LibraryView()
-                .tabItem { Label("Library", systemImage: "photo.on.rectangle") }
+                .tabItem { Label("Library", systemImage: selectedTab == 0 ? "photo.on.rectangle.fill" : "photo.on.rectangle") }
                 .tag(0)
             ForYouView()
-                .tabItem { Label("For You", systemImage: "heart.text.square") }
+                .tabItem { Label("For You", systemImage: selectedTab == 1 ? "heart.text.square.fill" : "heart.text.square") }
                 .tag(1)
             AlbumsView()
-                .tabItem { Label("Albums", systemImage: "square.stack") }
+                .tabItem { Label("Albums", systemImage: selectedTab == 2 ? "square.stack.fill" : "square.stack") }
                 .tag(2)
             SearchView()
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }

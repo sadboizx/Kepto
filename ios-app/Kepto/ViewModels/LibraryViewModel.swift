@@ -54,6 +54,22 @@ final class LibraryViewModel: ObservableObject {
     /// One-line notice after an import (shown by the root).
     @Published var uploadNotice: String?
 
+    /// Albums tab re-tap (Photos behavior): incremented by the app
+    /// root (KeptoTabView) when the user taps the Albums tab while
+    /// it is already selected. The Albums stack observes this:
+    /// if the visible list is scrolled down it scrolls to the top;
+    /// if it is already at the top it pops back to the Albums root.
+    @Published var albumsTabTapCount = 0
+    /// Whether the currently-visible view in the Albums navigation
+    /// stack is scrolled to the top. Updated by each Albums-stack
+    /// ScrollView (via onScrollGeometryChange); only the topmost
+    /// view is visible, so this reflects the visible one.
+    @Published var albumsStackAtTop = true
+    /// Set by an album detail view when a re-tap should pop to the
+    /// Albums root (the detail is already at the top). AlbumsView
+    /// observes this, clears its navigation, and resets it.
+    @Published var albumsPopToRootRequested = false
+
     /// The configured API client, or nil until the user enters a Worker URL
     /// and API key in Settings. Rebuilt by `reloadConfig()`.
     @Published private(set) var api: KeptoAPI?

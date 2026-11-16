@@ -40,7 +40,12 @@ struct CollectionDetailView: View {
     private var columns: [GridItem] { albumGridColumns() }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
+            // Top anchor for the Albums tab-tap "scroll to top".
+            Color.clear
+                .frame(height: 0)
+                .id("albumsStackTop")
             VStack(spacing: 0) {
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(items) { item in
@@ -82,6 +87,26 @@ struct CollectionDetailView: View {
                         Spacer()
                     }
                     .padding(.vertical, 12)
+                }
+            }
+        }
+        // Track whether this grid is at the top (contentOffset 0 =
+        // top). Shares viewModel.albumsStackAtTop with the other
+        // Albums-stack views; only the topmost is visible.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y
+        } action: { _, newValue in
+            viewModel.albumsStackAtTop = newValue <= 1
+        }
+        // Albums tab re-tapped (Photos behavior): scrolled down ->
+        // scroll to the top; already at the top -> pop back to the
+        // Albums root.
+        .onChange(of: viewModel.albumsTabTapCount) { _, _ in
+            if viewModel.albumsStackAtTop {
+                viewModel.albumsPopToRootRequested = true
+            } else {
+                withAnimation {
+                    proxy.scrollTo("albumsStackTop", anchor: .top)
                 }
             }
         }
@@ -200,6 +225,7 @@ struct CollectionDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the saved copies from the cloud. This cannot be undone.")
+        }
         }
     }
 
@@ -405,7 +431,12 @@ struct MyCollectionDetailView: View {
     private var columns: [GridItem] { albumGridColumns() }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
+            // Top anchor for the Albums tab-tap "scroll to top".
+            Color.clear
+                .frame(height: 0)
+                .id("albumsStackTop")
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(items) { item in
                     PhotosGridCell(
@@ -449,6 +480,26 @@ struct MyCollectionDetailView: View {
                     Spacer()
                 }
                 .padding(.vertical, 12)
+            }
+        }
+        // Track whether this grid is at the top (contentOffset 0 =
+        // top). Shares viewModel.albumsStackAtTop with the other
+        // Albums-stack views; only the topmost is visible.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y
+        } action: { _, newValue in
+            viewModel.albumsStackAtTop = newValue <= 1
+        }
+        // Albums tab re-tapped (Photos behavior): scrolled down ->
+        // scroll to the top; already at the top -> pop back to the
+        // Albums root.
+        .onChange(of: viewModel.albumsTabTapCount) { _, _ in
+            if viewModel.albumsStackAtTop {
+                viewModel.albumsPopToRootRequested = true
+            } else {
+                withAnimation {
+                    proxy.scrollTo("albumsStackTop", anchor: .top)
+                }
             }
         }
         // Native pop gesture: make this grid's ScrollView defer to
@@ -607,6 +658,7 @@ struct MyCollectionDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the saved copies from the cloud. This cannot be undone.")
+        }
         }
     }
 
@@ -871,7 +923,12 @@ struct AlbumsView: View {
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             ScrollView {
+                // Top anchor for the Albums tab-tap "scroll to top".
+                Color.clear
+                    .frame(height: 0)
+                    .id("albumsStackTop")
                 VStack(alignment: .leading, spacing: 28) {
                     albumSection(title: "My Albums", cards: myAlbumCards) {
                         seeAllSection = .myAlbums
@@ -882,6 +939,27 @@ struct AlbumsView: View {
                 }
                 .padding(.top, 8)
                 .padding(.bottom, 16)
+            }
+            // Track whether the Albums list is at the top
+            // (contentOffset 0 = top). The album detail views update
+            // the same flag; only the topmost view is visible, so it
+            // reflects the visible one.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y
+            } action: { _, newValue in
+                viewModel.albumsStackAtTop = newValue <= 1
+            }
+            // Albums tab re-tapped (Photos behavior). A detail is
+            // open — the detail handles the tap itself. On the Albums
+            // root, scroll to the top.
+            .onChange(of: viewModel.albumsTabTapCount) { _, _ in
+                guard selectedCollection == nil,
+                      selectedMyCollection == nil,
+                      selectedAlbumKind == nil,
+                      seeAllSection == nil else { return }
+                withAnimation {
+                    proxy.scrollTo("albumsStackTop", anchor: .top)
+                }
             }
             .navigationTitle("Albums")
             // Transparent status bar / nav bar: the sections show
@@ -942,7 +1020,11 @@ struct AlbumsView: View {
                 AlbumItemsView(kind: kind)
             }
             .navigationDestination(item: $seeAllSection) { section in
+                ScrollViewReader { proxy in
                 ScrollView {
+                    Color.clear
+                        .frame(height: 0)
+                        .id("albumsStackTop")
                     LazyVGrid(columns: albumColumns, spacing: 16) {
                         ForEach(section == .myAlbums ? myAlbumCards : creatorCards, id: \.self) { card in
                             Button { select(card) } label: {
@@ -952,6 +1034,24 @@ struct AlbumsView: View {
                         }
                     }
                     .padding()
+                }
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y
+                } action: { _, newValue in
+                    viewModel.albumsStackAtTop = newValue <= 1
+                }
+                // Albums tab re-tapped while the See All list is open:
+                // scrolled down -> scroll to the top; already at the
+                // top -> pop back to the Albums root.
+                .onChange(of: viewModel.albumsTabTapCount) { _, _ in
+                    if viewModel.albumsStackAtTop {
+                        viewModel.albumsPopToRootRequested = true
+                    } else {
+                        withAnimation {
+                            proxy.scrollTo("albumsStackTop", anchor: .top)
+                        }
+                    }
+                }
                 }
                 .navigationTitle(section == .myAlbums ? "My Albums" : "Creators")
             }
@@ -990,6 +1090,18 @@ struct AlbumsView: View {
                 Button("OK") { viewModel.errorMessage = nil }
             } message: {
                 Text(viewModel.errorMessage ?? "")
+            }
+            // An album detail asked to pop to the Albums root (it was
+            // already at the top when the tab was re-tapped). Clear
+            // every navigation binding, then reset the flag.
+            .onChange(of: viewModel.albumsPopToRootRequested) { _, requested in
+                guard requested else { return }
+                selectedCollection = nil
+                selectedMyCollection = nil
+                selectedAlbumKind = nil
+                seeAllSection = nil
+                viewModel.albumsPopToRootRequested = false
+            }
             }
         }
         // White back button ("< Albums") in the pushed detail views:
@@ -1200,7 +1312,12 @@ struct AlbumItemsView: View {
     private var columns: [GridItem] { albumGridColumns() }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
+            // Top anchor for the Albums tab-tap "scroll to top".
+            Color.clear
+                .frame(height: 0)
+                .id("albumsStackTop")
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(items) { item in
                     PhotosGridCell(
@@ -1246,6 +1363,26 @@ struct AlbumItemsView: View {
                     Spacer()
                 }
                 .padding(.vertical, 12)
+            }
+        }
+        // Track whether this grid is at the top (contentOffset 0 =
+        // top). Shares viewModel.albumsStackAtTop with the other
+        // Albums-stack views; only the topmost is visible.
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y
+        } action: { _, newValue in
+            viewModel.albumsStackAtTop = newValue <= 1
+        }
+        // Albums tab re-tapped (Photos behavior): scrolled down ->
+        // scroll to the top; already at the top -> pop back to the
+        // Albums root.
+        .onChange(of: viewModel.albumsTabTapCount) { _, _ in
+            if viewModel.albumsStackAtTop {
+                viewModel.albumsPopToRootRequested = true
+            } else {
+                withAnimation {
+                    proxy.scrollTo("albumsStackTop", anchor: .top)
+                }
             }
         }
         // Native pop gesture: make this grid's ScrollView defer to
@@ -1363,6 +1500,7 @@ struct AlbumItemsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This removes the saved copies from the cloud. This cannot be undone.")
+        }
         }
     }
 
