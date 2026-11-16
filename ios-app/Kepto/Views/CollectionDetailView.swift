@@ -880,6 +880,15 @@ enum AlbumCard: Hashable {
     case kind(AlbumKind)
     case myCollection(MyCollection)
     case creator(CollectionInfo)
+
+    /// The name shown for this card (used by the delete confirmation).
+    var displayName: String {
+        switch self {
+        case .kind(let kind): return kind.title
+        case .myCollection(let collection): return collection.name
+        case .creator(let collection): return collection.displayName
+        }
+    }
 }
 
 /// Albums: the Photos-style Albums tab. Two sections, each a
@@ -905,6 +914,17 @@ struct AlbumsView: View {
     @State private var saveNotice: String?
     /// Presents the Settings sheet from the "…" menu.
     @State private var showingSettings = false
+    /// Photos-style Edit mode (like the My Albums See All screen):
+    /// album cards show a red minus badge; tapping it deletes the
+    /// album. The "+" button still creates a new album.
+    @State private var isEditingAlbums = false
+    /// Edit mode for the See All page (separate from the Albums tab
+    /// itself, like Photos: each screen has its own Edit state).
+    @State private var isEditingSeeAll = false
+    /// The album card awaiting delete confirmation from its red
+    /// minus badge (nil = no confirmation open).
+    @State private var albumPendingDelete: AlbumCard?
+    @State private var showingDeleteAlbumConfirmation = false
     /// The section whose "See All" page is open (nil = closed).
     @State private var seeAllSection: AlbumSection?
     /// The collection whose detail page is open (nil = closed).
@@ -977,33 +997,42 @@ struct AlbumsView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    // The "…" menu lives on every tab except the
-                    // Player: Clipboard, then Settings.
-                    Menu {
-                        Button { viewModel.showingPhotoPicker = true } label: {
-                            Label("Import from Photos", systemImage: "photo.on.rectangle")
+                    HStack(spacing: 12) {
+                        // Photos-style Edit mode: album cards show a
+                        // red minus badge to delete them.
+                        Button(isEditingAlbums ? "Done" : "Edit") {
+                            isEditingAlbums.toggle()
                         }
-                        Button {
-                            Task {
-                                if let notice = await viewModel.saveFromClipboard() {
-                                    saveNotice = notice
-                                } else {
-                                    saveNotice = "Không có link trên clipboard."
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                        // The "…" menu lives on every tab except the
+                        // Player: Clipboard, then Settings.
+                        Menu {
+                            Button { viewModel.showingPhotoPicker = true } label: {
+                                Label("Import from Photos", systemImage: "photo.on.rectangle")
+                            }
+                            Button {
+                                Task {
+                                    if let notice = await viewModel.saveFromClipboard() {
+                                        saveNotice = notice
+                                    } else {
+                                        saveNotice = "Không có link trên clipboard."
+                                    }
                                 }
+                            } label: {
+                                Label("Paste Clipboard", systemImage: "doc.on.clipboard")
+                            }
+                            Button { showingSettings = true } label: {
+                                Label("Settings", systemImage: "gearshape")
                             }
                         } label: {
-                            Label("Paste Clipboard", systemImage: "doc.on.clipboard")
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 32, height: 32)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .accessibilityLabel("More options")
                         }
-                        Button { showingSettings = true } label: {
-                            Label("Settings", systemImage: "gearshape")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .accessibilityLabel("More options")
                     }
                 }
             }
@@ -1027,10 +1056,32 @@ struct AlbumsView: View {
                         .id("albumsStackTop")
                     LazyVGrid(columns: albumColumns, spacing: 16) {
                         ForEach(section == .myAlbums ? myAlbumCards : creatorCards, id: \.self) { card in
-                            Button { select(card) } label: {
-                                cardView(for: card)
+                            // The minus badge is a SIBLING of the card
+                            // button (not inside it): the card button
+                            // is disabled in Edit mode, which would
+                            // also disable a badge nested inside it.
+                            ZStack(alignment: .topLeading) {
+                                Button { select(card) } label: {
+                                    cardView(for: card)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isEditingSeeAll)
+                                // Red minus badge (Photos Edit mode).
+                                // Only on deletable albums.
+                                if isEditingSeeAll, isDeletable(card) {
+                                    Button {
+                                        albumPendingDelete = card
+                                        showingDeleteAlbumConfirmation = true
+                                    } label: {
+                                        Image(systemName: "minus.circle.fill")
+                                            .font(.system(size: 22))
+                                            .foregroundStyle(.red)
+                                            .background(Color.white, in: Circle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .offset(x: -8, y: -8)
+                                }
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                     .padding()
@@ -1054,6 +1105,16 @@ struct AlbumsView: View {
                 }
                 }
                 .navigationTitle(section == .myAlbums ? "My Albums" : "Creators")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        // Photos-style Edit mode for this See All page.
+                        Button(isEditingSeeAll ? "Done" : "Edit") {
+                            isEditingSeeAll.toggle()
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                    }
+                }
             }
             .task {
                 await viewModel.fetchCollections()
@@ -1090,6 +1151,40 @@ struct AlbumsView: View {
                 Button("OK") { viewModel.errorMessage = nil }
             } message: {
                 Text(viewModel.errorMessage ?? "")
+            }
+            // Delete confirmation for a red minus badge (Edit mode).
+            // MyCollection: both choices (like the detail "…" menu).
+            // Creator: only "Delete Album & Videos" — keeping the
+            // videos would just make the creator album reappear.
+            .confirmationDialog(
+                "Delete Album \"\(albumPendingDelete?.displayName ?? "")\"?",
+                isPresented: $showingDeleteAlbumConfirmation,
+                titleVisibility: .visible
+            ) {
+                if let card = albumPendingDelete {
+                    switch card {
+                    case .myCollection:
+                        Button("Delete Album & Videos", role: .destructive) {
+                            Task { await deleteAlbumCard(card, deleteItems: true) }
+                        }
+                        Button("Delete Album Only", role: .destructive) {
+                            Task { await deleteAlbumCard(card, deleteItems: false) }
+                        }
+                    case .creator:
+                        Button("Delete Album & Videos", role: .destructive) {
+                            Task { await deleteAlbumCard(card, deleteItems: true) }
+                        }
+                    case .kind:
+                        break
+                    }
+                }
+                Button("Cancel", role: .cancel) { albumPendingDelete = nil }
+            } message: {
+                if case .creator(let collection) = albumPendingDelete {
+                    Text("This permanently deletes the album and all \(collection.count) video\(collection.count == 1 ? "" : "s") by this creator. This cannot be undone.")
+                } else if case .myCollection(let collection) = albumPendingDelete {
+                    Text("Delete Album & Videos permanently deletes the album and every video in it (\(collection.count) video\(collection.count == 1 ? "" : "s")). Delete Album Only removes just the album — the videos stay saved in the library.")
+                }
             }
             // An album detail asked to pop to the Albums root (it was
             // already at the top when the tab was re-tapped). Clear
@@ -1142,7 +1237,11 @@ struct AlbumsView: View {
 
     /// One section (My Albums / Creators): a header with a "See All"
     /// button on the right, then a sideways-scrolling 2-row grid of
-    /// album cards. Swipe sideways to see more albums.
+    /// album cards. Swipe sideways to see more albums. In Edit mode
+    /// each deletable card (user albums + creators; NOT Recents /
+    /// Favorites) shows a red minus badge at its top-left corner —
+    /// tapping it deletes the album. Tapping the card itself does
+    /// nothing while editing (it navigates only outside edit mode).
     private func albumSection(title: String, cards: [AlbumCard], onSeeAll: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -1159,15 +1258,73 @@ struct AlbumsView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHGrid(rows: albumRows, spacing: 12) {
                     ForEach(cards, id: \.self) { card in
-                        Button { select(card) } label: {
-                            cardView(for: card)
-                                .frame(width: albumCardWidth)
+                        // The minus badge is a SIBLING of the card
+                        // button (not inside it): the card button is
+                        // disabled in Edit mode, which would also
+                        // disable a badge nested inside its label.
+                        ZStack(alignment: .topLeading) {
+                            Button { select(card) } label: {
+                                cardView(for: card)
+                                    .frame(width: albumCardWidth)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isEditingAlbums)
+                            // Red minus badge (Photos Edit mode).
+                            // Only on deletable albums.
+                            if isEditingAlbums, isDeletable(card) {
+                                Button {
+                                    albumPendingDelete = card
+                                    showingDeleteAlbumConfirmation = true
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .font(.system(size: 22))
+                                        .foregroundStyle(.red)
+                                        .background(Color.white, in: Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .offset(x: -8, y: -8)
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal)
             }
+        }
+    }
+
+    /// Whether an album card can be deleted from Edit mode. Recents
+    /// and Favorites are built-in and cannot be deleted; user albums
+    /// and creator albums can.
+    private func isDeletable(_ card: AlbumCard) -> Bool {
+        switch card {
+        case .kind: return false
+        case .myCollection, .creator: return true
+        }
+    }
+
+    /// Delete the album from its red minus badge (Edit mode).
+    /// MyCollection: the same two choices as the detail "…" menu
+    /// (Delete Album & Videos / Delete Album Only). Creator: only
+    /// "Delete Album & Videos" — keeping the videos would just make
+    /// the creator album reappear.
+    private func deleteAlbumCard(_ card: AlbumCard, deleteItems: Bool) async {
+        switch card {
+        case .myCollection(let collection):
+            do {
+                try await viewModel.deleteMyCollection(id: collection.id, deleteItems: deleteItems)
+            } catch {
+                viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        case .creator(let collection):
+            do {
+                // collection.id is the username, or "__unknown__" for
+                // the NULL-username creator — the Worker handles both.
+                try await viewModel.deleteCreatorCollection(username: collection.id)
+            } catch {
+                viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        case .kind:
+            break
         }
     }
 

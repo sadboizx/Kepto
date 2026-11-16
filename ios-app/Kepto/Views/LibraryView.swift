@@ -1634,3 +1634,134 @@ private struct SearchCategoryCard: View {
         .buttonStyle(.plain)
     }
 }
+
+/// Album picker shown after a Photos import: the user chooses which
+/// album the just-uploaded items go into. Replaces the old
+/// auto-"Imports" behavior (v50) — nothing is auto-added any more.
+/// - Tap an album: the items go into it and the picker closes.
+/// - "New Album" (the "+" button): name a new album, the items go
+///   into it.
+/// - "Edit": album rows show a red minus badge to delete an album
+///   (same two choices as the Albums tab: Delete Album & Videos /
+///   Delete Album Only).
+/// - Cancel: the picker closes and the items stay in the Library,
+///   in no album (they are still saved).
+struct ImportAlbumPickerView: View {
+    @EnvironmentObject private var viewModel: LibraryViewModel
+    @Environment(\.dismiss) private var dismiss
+    /// Edit mode: red minus badges on album rows.
+    @State private var isEditing = false
+    /// "New Album" name alert (from the "+" button).
+    @State private var showingNewAlbum = false
+    @State private var newAlbumName = ""
+    /// The album awaiting delete confirmation (nil = none).
+    @State private var albumPendingDelete: MyCollection?
+    @State private var showingDeleteConfirmation = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if viewModel.myCollections.isEmpty {
+                    Text("Chưa có album nào. Tạo album mới để lưu ảnh/video vừa import.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(viewModel.myCollections) { collection in
+                    HStack(spacing: 12) {
+                        // Red minus badge (Photos Edit mode).
+                        if isEditing {
+                            Button {
+                                albumPendingDelete = collection
+                                showingDeleteConfirmation = true
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .font(.system(size: 22))
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Button {
+                            Task { await viewModel.addImportItemsToAlbum(collection) }
+                        } label: {
+                            HStack {
+                                Text(collection.name)
+                                    .foregroundStyle(.white)
+                                Spacer()
+                                Text("\(collection.count)")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isEditing)
+                    }
+                }
+            }
+            .navigationTitle("Add to Album")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        viewModel.importPickerItems = []
+                        viewModel.showingImportAlbumPicker = false
+                    }
+                    .foregroundStyle(.blue)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack(spacing: 16) {
+                        Button(isEditing ? "Done" : "Edit") {
+                            isEditing.toggle()
+                        }
+                        .foregroundStyle(.blue)
+                        Button {
+                            showingNewAlbum = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+            }
+            .alert("New Album", isPresented: $showingNewAlbum) {
+                TextField("Album name", text: $newAlbumName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Cancel", role: .cancel) { newAlbumName = "" }
+                Button("Create") {
+                    let name = newAlbumName
+                    newAlbumName = ""
+                    Task { await viewModel.createImportAlbum(name: name) }
+                }
+            } message: {
+                Text("Enter a name for this album.")
+            }
+            .confirmationDialog(
+                "Delete Album \"\(albumPendingDelete?.name ?? "")\"?",
+                isPresented: $showingDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                if let collection = albumPendingDelete {
+                    Button("Delete Album & Videos", role: .destructive) {
+                        Task { await deleteAlbum(collection, deleteItems: true) }
+                    }
+                    Button("Delete Album Only", role: .destructive) {
+                        Task { await deleteAlbum(collection, deleteItems: false) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { albumPendingDelete = nil }
+            } message: {
+                if let collection = albumPendingDelete {
+                    Text("Delete Album & Videos permanently deletes the album and every video in it (\(collection.count) video\(collection.count == 1 ? "" : "s")). Delete Album Only removes just the album — the videos stay saved in the library.")
+                }
+            }
+        }
+    }
+
+    /// Delete an album from the picker's Edit mode. Refreshes the
+    /// album list so the deleted album disappears at once.
+    private func deleteAlbum(_ collection: MyCollection, deleteItems: Bool) async {
+        do {
+            try await viewModel.deleteMyCollection(id: collection.id, deleteItems: deleteItems)
+        } catch {
+            viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+}

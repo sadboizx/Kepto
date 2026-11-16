@@ -89,6 +89,7 @@ import {
   insertItem,
   listCollections,
   listItems,
+  listItemsByAuthor,
   listMyCollectionExclusiveItems,
   listMyCollectionItems,
   listMyCollections,
@@ -648,6 +649,30 @@ app.delete("/api/my-collections/:id", async (c) => {
   }
   await deleteMyCollection(c.env.DB, collection.id);
   return c.json({ ok: true, deleted: collection.id, deleted_items: deletedItems });
+});
+
+/**
+ * Delete a whole creator album (a per-creator collection, derived
+ * from author_username). There is no separate collection row for a
+ * creator — the album IS its videos — so deleting it permanently
+ * deletes every video by that creator (R2 media + D1 rows, and
+ * their memberships in user albums via deleteItem). There is no
+ * "album only" variant: keeping the videos would just make the
+ * creator album reappear.
+ */
+app.delete("/api/collections/:username", async (c) => {
+  const username = c.req.param("username");
+  const rows = await listItemsByAuthor(c.env.DB, username);
+  if (!rows.length) return c.json({ ok: false, error: "Không tìm thấy creator." }, 404);
+  const keys: string[] = [];
+  for (const row of rows) {
+    for (const k of [row.r2_key, row.thumb_key, row.preview_key]) {
+      if (k) keys.push(k);
+    }
+    await deleteItem(c.env.DB, row.id);
+  }
+  if (keys.length) await c.env.MEDIA.delete(keys);
+  return c.json({ ok: true, deleted: username, deleted_items: rows.length });
 });
 
 app.get("/api/items/:id", async (c) => {

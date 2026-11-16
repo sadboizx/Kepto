@@ -426,7 +426,50 @@ export async function markFailed(
 }
 
 export async function deleteItem(db: D1Database, id: string): Promise<void> {
+  // Also drop the item from every user collection it was in, so no
+  // membership row dangles after the item is gone.
+  await db
+    .prepare(`DELETE FROM my_collection_items WHERE item_id = ?1`)
+    .bind(id)
+    .run();
   await db.prepare(`DELETE FROM items WHERE id = ?1`).bind(id).run();
+}
+
+/** All items by one creator (author_username), with their R2 keys. */
+export async function listItemsByAuthor(
+  db: D1Database,
+  username: string,
+): Promise<
+  { id: string; r2_key: string | null; thumb_key: string | null; preview_key: string | null }[]
+> {
+  // The "__unknown__" sentinel (from CollectionInfo.id) means the
+  // items whose author_username is NULL — `= ?1` never matches NULL.
+  const { results } =
+    username === "__unknown__"
+      ? await db
+          .prepare(
+            `SELECT id, r2_key, thumb_key, preview_key FROM items
+             WHERE user_id = 'me' AND author_username IS NULL`,
+          )
+          .all<{
+            id: string;
+            r2_key: string | null;
+            thumb_key: string | null;
+            preview_key: string | null;
+          }>()
+      : await db
+          .prepare(
+            `SELECT id, r2_key, thumb_key, preview_key FROM items
+             WHERE user_id = 'me' AND author_username = ?1`,
+          )
+          .bind(username)
+          .all<{
+            id: string;
+            r2_key: string | null;
+            thumb_key: string | null;
+            preview_key: string | null;
+          }>();
+  return results ?? [];
 }
 
 // ---------------------------------------------------------------------------

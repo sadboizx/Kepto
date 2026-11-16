@@ -163,6 +163,13 @@ struct KeptoTabView: View {
         } message: {
             Text(viewModel.uploadNotice ?? "")
         }
+        // Album picker after a Photos import: the user chooses which
+        // album the just-uploaded items go into (or creates a new
+        // one). Cancel leaves them in the Library, in no album.
+        .sheet(isPresented: $viewModel.showingImportAlbumPicker) {
+            ImportAlbumPickerView()
+                .environmentObject(viewModel)
+        }
     }
 
     /// Saves a link handed over by the Share Extension, then shows

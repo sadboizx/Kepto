@@ -360,6 +360,16 @@ final class KeptoAPI {
         try checkDeleteResponse(data, response)
     }
 
+    /// DELETE /api/collections/:username — delete a whole creator
+    /// album. A creator collection is derived from its videos, so
+    /// this permanently deletes every video by that creator
+    /// (R2 media + D1 rows). There is no "album only" variant.
+    func deleteCreatorCollection(username: String) async throws {
+        let encoded = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
+        let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/collections/\(encoded)"), method: "DELETE"))
+        try checkDeleteResponse(data, response)
+    }
+
     // MARK: - Authenticated media URLs
 
     /// URL for GET /api/play/:id. The Bearer token is NOT in the URL —

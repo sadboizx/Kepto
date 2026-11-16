@@ -54,6 +54,15 @@ final class LibraryViewModel: ObservableObject {
     /// One-line notice after an import (shown by the root).
     @Published var uploadNotice: String?
 
+    /// Album picker after a Photos import: the just-uploaded items
+    /// wait here until the user chooses an album for them (or taps
+    /// Cancel — the items stay in the Library, in no album). This
+    /// REPLACES the old auto-"Imports" behavior (v50): nothing is
+    /// auto-added to any album any more.
+    @Published var showingImportAlbumPicker = false
+    /// The just-uploaded items awaiting an album choice.
+    @Published var importPickerItems: [Item] = []
+
     /// Albums tab re-tap (Photos behavior): incremented by the app
     /// root (KeptoTabView) when the user taps the Albums tab while
     /// it is already selected. The Albums stack observes this:
@@ -220,6 +229,22 @@ final class LibraryViewModel: ObservableObject {
             await fetch()
             await fetchCollections()
         }
+    }
+
+    /// Delete a whole creator album (a per-creator collection). This
+    /// permanently deletes every video by that creator (R2 + D1) —
+    /// there is no "album only" variant, because keeping the videos
+    /// would just make the creator album reappear. Throws so the
+    /// caller can show the failure. Refreshes the Library and the
+    /// creator list so the deleted videos disappear at once.
+    func deleteCreatorCollection(username: String) async throws {
+        guard let api else { throw KeptoAPIError.notConfigured }
+        try await api.deleteCreatorCollection(username: username)
+        // Remove by id (authorUsername ?? "__unknown__") so the
+        // "unknown" creator (NULL username) is removed too.
+        collections.removeAll { $0.id == username }
+        await fetch()
+        await fetchCollections()
     }
 
     /// Rename a user collection. Updates the local list so the Albums
@@ -511,9 +536,10 @@ final class LibraryViewModel: ObservableObject {
     /// pile up parallel uploads. The root shows a spinner pill with
     /// the progress ("Đang tải lên 2/5…"). A duplicate (already saved —
     /// same content hash) is skipped automatically and the batch keeps
-    /// going; the summary notice says how many were skipped. The
-    /// newly uploaded items go straight into the "Imports" album —
-    /// no prompt, the name is fixed ("Imports", capital I).
+    /// going; the summary notice says how many were skipped. After
+    /// uploading, the user CHOOSES an album for the new items (the
+    /// album picker sheet) — nothing is auto-added to "Imports" any
+    /// more (that was the v50 behavior, removed in v56).
     func uploadPickedPhotos(_ items: [PhotosPickerItem]) async {
         isUploading = true
         uploadTotal = items.count
@@ -549,7 +575,45 @@ final class LibraryViewModel: ObservableObject {
             }
             return
         }
-        await createAlbumForUploads(name: "Imports", items: uploaded)
+        // Do NOT auto-add to "Imports" any more (v56). Show the album
+        // picker so the user chooses where these items go.
+        importPickerItems = uploaded
+        await fetchMyCollections()
+        showingImportAlbumPicker = true
+    }
+
+    /// Add the just-imported items (importPickerItems) to the chosen
+    /// album, then close the picker and report the result. The
+    /// notice also says how many were skipped as duplicates/failed.
+    func addImportItemsToAlbum(_ collection: MyCollection) async {
+        let items = importPickerItems
+        importPickerItems = []
+        showingImportAlbumPicker = false
+        var added = 0
+        for item in items {
+            if await addItemToMyCollection(collectionId: collection.id, item: item) == true {
+                added += 1
+            }
+        }
+        var notice = "Đã thêm \(added) ảnh/video vào album “\(collection.name)”."
+        var skipped: [String] = []
+        if uploadDuplicateCount > 0 { skipped.append("\(uploadDuplicateCount) trùng, đã bỏ qua") }
+        if uploadFailedCount > 0 { skipped.append("\(uploadFailedCount) lỗi") }
+        if !skipped.isEmpty {
+            notice += " (\(skipped.joined(separator: "; ")).)"
+        }
+        uploadNotice = notice
+    }
+
+    /// Create a new album from the import picker and add the
+    /// just-imported items to it. Returns nil (and errorMessage) on
+    /// failure; the picker stays open so the user can pick another.
+    func createImportAlbum(name: String) async -> MyCollection? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let collection = await createMyCollection(name: trimmed) else { return nil }
+        await addImportItemsToAlbum(collection)
+        return collection
     }
 
     /// Result of uploading one picked photo/video.
@@ -634,42 +698,6 @@ final class LibraryViewModel: ObservableObject {
         }
         let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    /// Add every just-imported item to a My collection, then report the
-    /// result. The name is the fixed default "Imports" (capital I) —
-    /// no prompt. If a collection with that name already exists, the
-    /// items go into it instead of creating a duplicate, so every
-    /// import batch accumulates in the one "Imports" album. The notice
-    /// also says how many were skipped as duplicates or failed.
-    func createAlbumForUploads(name: String, items: [Item]) async {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalName = trimmed.isEmpty ? "Imports" : trimmed
-        // Refresh the list first so the reuse check sees the current
-        // albums (they may not have been fetched on this tab yet).
-        await fetchMyCollections()
-        var collection = myCollections.first(where: { $0.name.localizedCaseInsensitiveCompare(finalName) == .orderedSame })
-        let reused = collection != nil
-        if collection == nil {
-            collection = await createMyCollection(name: finalName)
-        }
-        guard let collection else { return }
-        var added = 0
-        for item in items {
-            if await addItemToMyCollection(collectionId: collection.id, item: item) == true {
-                added += 1
-            }
-        }
-        var notice = reused
-            ? "Đã thêm \(added) ảnh/video vào album “\(finalName)”."
-            : "Đã tạo album “\(finalName)” với \(added) ảnh/video."
-        var skipped: [String] = []
-        if uploadDuplicateCount > 0 { skipped.append("\(uploadDuplicateCount) trùng, đã bỏ qua") }
-        if uploadFailedCount > 0 { skipped.append("\(uploadFailedCount) lỗi") }
-        if !skipped.isEmpty {
-            notice += " (\(skipped.joined(separator: "; ")).)"
-        }
-        uploadNotice = notice
     }
 
     /// MIME type for a video file extension (used for the upload body).
