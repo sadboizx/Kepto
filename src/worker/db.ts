@@ -589,9 +589,13 @@ export async function listMyCollectionExclusiveItems(
        WHERE mci.collection_id = ?1
          AND NOT EXISTS (
            SELECT 1 FROM my_collection_items m2
-           WHERE m2.item_id = mci.item_id AND m2.collection_id != ?1
+           WHERE m2.item_id = mci.item_id AND m2.collection_id != ?2
          )`,
     )
+    // NOTE: ?1 and ?2 are DISTINCT placeholders, both bound to the
+    // same value. D1 does not reliably reuse one numbered placeholder
+    // (?1 twice) in a single query — that was the v52 bug: "Delete
+    // Album & Videos" threw and the Worker returned a plain 500.
     .bind(collectionId, collectionId)
     .all<{
       id: string;
