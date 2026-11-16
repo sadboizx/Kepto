@@ -362,7 +362,7 @@ struct AlbumsView: View {
                                 Button {
                                     showingNewCollection = true
                                 } label: {
-                                    Label(L10n.newAlbum, systemImage: "square.stack")
+                                    Label(L10n.newAlbum, systemImage: "rectangle.stack.badge.plus")
                                 }
                             } label: {
                                 Image(systemName: "plus")
@@ -393,7 +393,7 @@ struct AlbumsView: View {
                       coverID: viewModel.items.first?.id, kind: .recents,
                       symbol: "clock", tint: .gray, collectionID: nil),
             AlbumItem(id: "favorites", title: L10n.favorites, count: favoritesCount,
-                      coverID: viewModel.items.first(where: { $0.isFavorite })?.id,
+                      coverID: favoritesCoverID,
                       kind: .favorites, symbol: "heart", tint: .red, collectionID: nil),
         ]
         items += viewModel.myCollections.map { collection in
@@ -565,8 +565,10 @@ struct AlbumsView: View {
     /// One album card (Photos' `albumTile`): a SQUARE cover (1:1,
     /// centre-cropped, slightly rounded corners) with the name and
     /// the item count BELOW the card — not overlaid on it. The
-    /// Favorites cover gets the white heart Photos shows. Without a
-    /// cover, the card shows the album symbol in its tint color.
+    /// Favorites cover is the newest favorite's media thumbnail,
+    /// like any other album (round 5 — the white heart badge is
+    /// gone). Without a cover, the card shows the album symbol in
+    /// its tint color (the heart is the Favorites empty state).
     private func albumTile(_ album: AlbumItem) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack {
@@ -579,14 +581,6 @@ struct AlbumsView: View {
                     Image(systemName: album.symbol)
                         .font(.title2)
                         .foregroundStyle(album.tint.color)
-                }
-                if album.kind == .favorites {
-                    Image(systemName: "heart.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
-                        .padding(10)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
             }
             .aspectRatio(1, contentMode: .fit)
@@ -757,21 +751,44 @@ struct AlbumsView: View {
     private var favoritesCount: Int {
         viewModel.libraryStats?.favorites ?? viewModel.items.filter(\.isFavorite).count
     }
+
+    /// Favorites cover: the NEWEST favorited item's thumbnail. The
+    /// full metadata cache (listAll) is the source — the paged
+    /// Library list only holds the newest 50 items, so a favorite
+    /// older than that never resolved and the card fell back to the
+    /// heart symbol. Falls back to the paged list while the cache
+    /// is still loading; nil (heart placeholder) when there are no
+    /// favorites at all.
+    private var favoritesCoverID: String? {
+        viewModel.allMetadata.first(where: { $0.isFavorite })?.id
+            ?? viewModel.items.first(where: { $0.isFavorite })?.id
+    }
 }
 
 /// Recently Deleted, note-only (Option A): Kepto has no trash —
 /// deletes are permanent, so there is nothing to list. The screen
 /// says so plainly and points at the system Photos Recently Deleted
 /// album for photos saved to the device. No grid, no Worker/D1
-/// changes, no change to the delete flow.
+/// changes, no change to the delete flow. The note is vertically
+/// centred (round 5); swipe-back works via NativePopGestureHelper
+/// (same fix as the See All grid — the ScrollView would otherwise
+/// swallow the left edge pan).
 private struct RecentlyDeletedNoteView: View {
     var body: some View {
-        ScrollView {
-            Text(L10n.recentlyDeletedNote)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
+        GeometryReader { geo in
+            ScrollView {
+                Text(L10n.recentlyDeletedNote)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    // minHeight + default centre alignment: a short
+                    // note sits in the middle of the screen; a long
+                    // note grows past minHeight and scrolls from
+                    // the top like a normal ScrollView.
+                    .frame(minHeight: geo.size.height)
+            }
+            .background(NativePopGestureHelper())
         }
         .navigationTitle(L10n.recentlyDeleted)
         .navigationBarTitleDisplayMode(.inline)

@@ -1470,16 +1470,16 @@ struct TabBarFadeHelper: UIViewControllerRepresentable {
     /// 0 = tab bar fully transparent, 1 = fully visible.
     var alpha: CGFloat
 
-    func makeUIViewController(context: Context) -> TabBarFadeController {
+    fileprivate func makeUIViewController(context: Context) -> TabBarFadeController {
         TabBarFadeController(alpha: alpha)
     }
 
-    func updateUIViewController(_ uiViewController: TabBarFadeController, context: Context) {
+    fileprivate func updateUIViewController(_ uiViewController: TabBarFadeController, context: Context) {
         uiViewController.alpha = alpha
         uiViewController.applyAlpha()
     }
 
-    static func dismantleUIViewController(_ uiViewController: TabBarFadeController, coordinator: ()) {
+    fileprivate static func dismantleUIViewController(_ uiViewController: TabBarFadeController, coordinator: ()) {
         uiViewController.restore()
     }
 }
