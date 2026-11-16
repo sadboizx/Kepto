@@ -730,16 +730,17 @@ final class LibraryViewModel: ObservableObject {
 
     /// Load a picked video as a file we own. Returns the temp file
     /// URL + the original filename (for the upload's ?filename=).
-    /// loadFileRepresentation downloads iCloud videos and hands back
-    /// a file URL; the URL dies when the callback returns, so the
-    /// file is copied to our own temp location. Returns nil when the
-    /// video cannot be read at all.
+    /// loadFileRepresentation lives on NSItemProvider (not on
+    /// PhotosPickerItem itself) — it downloads iCloud videos and
+    /// hands back a file URL; the URL dies when the callback
+    /// returns, so the file is copied to our own temp location.
+    /// Returns nil when the video cannot be read at all.
     private func loadVideoFile(_ item: PhotosPickerItem) async -> (URL, String)? {
         let typeId = item.supportedContentTypes.first { $0.conforms(to: .movie) }?.identifier
             ?? item.supportedContentTypes.first { $0.conforms(to: .video) }?.identifier
             ?? UTType.movie.identifier
         return await withCheckedContinuation { continuation in
-            item.loadFileRepresentation(forTypeIdentifier: typeId) { url, error in
+            item.itemProvider.loadFileRepresentation(forTypeIdentifier: typeId) { url, error in
                 guard let url, error == nil else {
                     continuation.resume(returning: nil)
                     return
