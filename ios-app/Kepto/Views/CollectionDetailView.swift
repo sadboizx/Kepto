@@ -42,10 +42,16 @@ struct CollectionDetailView: View {
     var body: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            // Top anchor for the Albums tab-tap "scroll to top".
-            Color.clear
-                .frame(height: 0)
-                .id("albumsStackTop")
+            // Top anchor for the Albums tab-tap "scroll to top",
+            // AND the scroll-offset reporter (iOS 17:
+            // .onScrollGeometryChange needs iOS 18). minY is 0 at
+            // the top, -y when scrolled down y.
+            GeometryReader { geo in
+                Color.clear
+                    .preference(key: ScrollTopOffsetKey.self, value: geo.frame(in: .named("albumsScroll")).minY)
+            }
+            .frame(height: 0)
+            .id("albumsStackTop")
             VStack(spacing: 0) {
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(items) { item in
@@ -90,13 +96,12 @@ struct CollectionDetailView: View {
                 }
             }
         }
-        // Track whether this grid is at the top (contentOffset 0 =
-        // top). Shares viewModel.albumsStackAtTop with the other
-        // Albums-stack views; only the topmost is visible.
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y
-        } action: { _, newValue in
-            viewModel.albumsStackAtTop = newValue <= 1
+        // The named coordinate space the GeometryReader above
+        // measures against, and the offset listener: at the top
+        // minY is 0 (atTop true), scrolled down it is negative.
+        .coordinateSpace(name: "albumsScroll")
+        .onPreferenceChange(ScrollTopOffsetKey.self) { minY in
+            viewModel.albumsStackAtTop = minY >= -1
         }
         // Albums tab re-tapped (Photos behavior): scrolled down ->
         // scroll to the top; already at the top -> pop back to the
@@ -433,10 +438,16 @@ struct MyCollectionDetailView: View {
     var body: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            // Top anchor for the Albums tab-tap "scroll to top".
-            Color.clear
-                .frame(height: 0)
-                .id("albumsStackTop")
+            // Top anchor for the Albums tab-tap "scroll to top",
+            // AND the scroll-offset reporter (iOS 17:
+            // .onScrollGeometryChange needs iOS 18). minY is 0 at
+            // the top, -y when scrolled down y.
+            GeometryReader { geo in
+                Color.clear
+                    .preference(key: ScrollTopOffsetKey.self, value: geo.frame(in: .named("albumsScroll")).minY)
+            }
+            .frame(height: 0)
+            .id("albumsStackTop")
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(items) { item in
                     PhotosGridCell(
@@ -482,13 +493,12 @@ struct MyCollectionDetailView: View {
                 .padding(.vertical, 12)
             }
         }
-        // Track whether this grid is at the top (contentOffset 0 =
-        // top). Shares viewModel.albumsStackAtTop with the other
-        // Albums-stack views; only the topmost is visible.
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y
-        } action: { _, newValue in
-            viewModel.albumsStackAtTop = newValue <= 1
+        // The named coordinate space the GeometryReader above
+        // measures against, and the offset listener: at the top
+        // minY is 0 (atTop true), scrolled down it is negative.
+        .coordinateSpace(name: "albumsScroll")
+        .onPreferenceChange(ScrollTopOffsetKey.self) { minY in
+            viewModel.albumsStackAtTop = minY >= -1
         }
         // Albums tab re-tapped (Photos behavior): scrolled down ->
         // scroll to the top; already at the top -> pop back to the
@@ -891,6 +901,23 @@ enum AlbumCard: Hashable {
     }
 }
 
+/// Reports how far an Albums-stack ScrollView is scrolled: the minY
+/// of a GeometryReader pinned to the top of the content, in the
+/// ScrollView's own coordinate space ("albumsScroll"). At the top
+/// minY is 0; scrolled down by y it is -y. This is the iOS 17
+/// compatible way to track "is this list at the top" —
+/// `.onScrollGeometryChange` needs iOS 18. Each Albums-stack
+/// ScrollView (Albums root, See All, the 3 album details) has its
+/// own GeometryReader + `.onPreferenceChange` for this key, writing
+/// into the shared `viewModel.albumsStackAtTop`; only the topmost
+/// view is visible, so its value is the one that counts.
+private struct ScrollTopOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 /// Albums: the Photos-style Albums tab. Two sections, each a
 /// sideways-scrolling 2-row grid of square album cards (cover +
 /// name + count below, like Photos iOS 17.4), with a "See All"
@@ -944,101 +971,7 @@ struct AlbumsView: View {
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
-            ScrollView {
-                // Top anchor for the Albums tab-tap "scroll to top".
-                Color.clear
-                    .frame(height: 0)
-                    .id("albumsStackTop")
-                VStack(alignment: .leading, spacing: 28) {
-                    albumSection(title: "My Albums", cards: myAlbumCards) {
-                        seeAllSection = .myAlbums
-                    }
-                    albumSection(title: "Creators", cards: creatorCards) {
-                        seeAllSection = .creators
-                    }
-                }
-                .padding(.top, 8)
-                .padding(.bottom, 16)
-            }
-            // Track whether the Albums list is at the top
-            // (contentOffset 0 = top). The album detail views update
-            // the same flag; only the topmost view is visible, so it
-            // reflects the visible one.
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                geometry.contentOffset.y
-            } action: { _, newValue in
-                viewModel.albumsStackAtTop = newValue <= 1
-            }
-            // Albums tab re-tapped (Photos behavior). A detail is
-            // open — the detail handles the tap itself. On the Albums
-            // root, scroll to the top.
-            .onChange(of: viewModel.albumsTabTapCount) { _, _ in
-                guard selectedCollection == nil,
-                      selectedMyCollection == nil,
-                      selectedAlbumKind == nil,
-                      seeAllSection == nil else { return }
-                withAnimation {
-                    proxy.scrollTo("albumsStackTop", anchor: .top)
-                }
-            }
-            .navigationTitle("Albums")
-            // Transparent status bar / nav bar: the sections show
-            // through under the status bar and the title, no solid
-            // band.
-            .toolbarBackground(.hidden, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showingNewCollection = true
-                    } label: {
-                        // Photos uses a thin "+" here — regular
-                        // weight, not semibold (semibold looks too
-                        // thick next to the title).
-                        Image(systemName: "plus")
-                            .font(.system(size: 20, weight: .regular))
-                            .foregroundStyle(.blue)
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 12) {
-                        // Photos-style Edit mode: album cards show a
-                        // red minus badge to delete them.
-                        Button(isEditingAlbums ? "Done" : "Edit") {
-                            isEditingAlbums.toggle()
-                        }
-                        .font(.subheadline)
-                        .foregroundStyle(.blue)
-                        // The "…" menu lives on every tab except the
-                        // Player: Clipboard, then Settings.
-                        Menu {
-                            Button { viewModel.showingPhotoPicker = true } label: {
-                                Label("Import from Photos", systemImage: "photo.on.rectangle")
-                            }
-                            Button {
-                                Task {
-                                    if let notice = await viewModel.saveFromClipboard() {
-                                        saveNotice = notice
-                                    } else {
-                                        saveNotice = "Không có link trên clipboard."
-                                    }
-                                }
-                            } label: {
-                                Label("Paste Clipboard", systemImage: "doc.on.clipboard")
-                            }
-                            Button { showingSettings = true } label: {
-                                Label("Settings", systemImage: "gearshape")
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 32, height: 32)
-                                .background(.ultraThinMaterial, in: Circle())
-                                .accessibilityLabel("More options")
-                        }
-                    }
-                }
-            }
+            mainScrollView(proxy: proxy)
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
@@ -1052,73 +985,7 @@ struct AlbumsView: View {
                 AlbumItemsView(kind: kind)
             }
             .navigationDestination(item: $seeAllSection) { section in
-                ScrollViewReader { proxy in
-                ScrollView {
-                    Color.clear
-                        .frame(height: 0)
-                        .id("albumsStackTop")
-                    LazyVGrid(columns: albumColumns, spacing: 16) {
-                        ForEach(section == .myAlbums ? myAlbumCards : creatorCards, id: \.self) { card in
-                            // The minus badge is a SIBLING of the card
-                            // button (not inside it): the card button
-                            // is disabled in Edit mode, which would
-                            // also disable a badge nested inside it.
-                            ZStack(alignment: .topLeading) {
-                                Button { select(card) } label: {
-                                    cardView(for: card)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isEditingSeeAll)
-                                // Red minus badge (Photos Edit mode).
-                                // Only on deletable albums.
-                                if isEditingSeeAll, isDeletable(card) {
-                                    Button {
-                                        albumPendingDelete = card
-                                        showingDeleteAlbumConfirmation = true
-                                    } label: {
-                                        Image(systemName: "minus.circle.fill")
-                                            .font(.system(size: 22))
-                                            .foregroundStyle(.red)
-                                            .background(Color.white, in: Circle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .offset(x: -8, y: -8)
-                                }
-                            }
-                        }
-                    }
-                    .padding()
-                }
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.contentOffset.y
-                } action: { _, newValue in
-                    viewModel.albumsStackAtTop = newValue <= 1
-                }
-                // Albums tab re-tapped while the See All list is open:
-                // scrolled down -> scroll to the top; already at the
-                // top -> pop back to the Albums root.
-                .onChange(of: viewModel.albumsTabTapCount) { _, _ in
-                    if viewModel.albumsStackAtTop {
-                        viewModel.albumsPopToRootRequested = true
-                    } else {
-                        withAnimation {
-                            proxy.scrollTo("albumsStackTop", anchor: .top)
-                        }
-                    }
-                }
-                }
-                .navigationTitle(section == .myAlbums ? "My Albums" : "Creators")
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        // Photos-style Edit mode for this See All page.
-                        Button(isEditingSeeAll ? "Done" : "Edit") {
-                            isEditingSeeAll.toggle()
-                        }
-                        .font(.subheadline)
-                        .foregroundStyle(.blue)
-                    }
-                }
-            }
+                seeAllView(for: section)
             .task {
                 await viewModel.fetchCollections()
                 await viewModel.fetchStats()
@@ -1212,6 +1079,194 @@ struct AlbumsView: View {
         // .foregroundStyle(.blue)); the selection checkmark stays
         // blue (explicit .blue in PhotosGridCell).
         .tint(.white)
+    }
+
+    /// The Albums root list: the two sections (My Albums, Creators)
+    /// in a ScrollView. Extracted from `body` — the whole body was
+    /// too large for the compiler to type-check in reasonable time.
+    private func mainScrollView(proxy: ScrollViewProxy) -> some View {
+            ScrollView {
+                // Top anchor for the Albums tab-tap "scroll to top",
+                // AND the scroll-offset reporter (iOS 17:
+                // .onScrollGeometryChange needs iOS 18). minY is 0 at
+                // the top, -y when scrolled down y.
+                GeometryReader { geo in
+                    Color.clear
+                        .preference(key: ScrollTopOffsetKey.self, value: geo.frame(in: .named("albumsScroll")).minY)
+                }
+                .frame(height: 0)
+                .id("albumsStackTop")
+                VStack(alignment: .leading, spacing: 28) {
+                    albumSection(title: "My Albums", cards: myAlbumCards) {
+                        seeAllSection = .myAlbums
+                    }
+                    albumSection(title: "Creators", cards: creatorCards) {
+                        seeAllSection = .creators
+                    }
+                }
+                .padding(.top, 8)
+                .padding(.bottom, 16)
+            }
+            // The named coordinate space the GeometryReader above
+            // measures against, and the offset listener: at the top
+            // minY is 0 (atTop true), scrolled down it is negative.
+            .coordinateSpace(name: "albumsScroll")
+            .onPreferenceChange(ScrollTopOffsetKey.self) { minY in
+                viewModel.albumsStackAtTop = minY >= -1
+            }
+            // Albums tab re-tapped (Photos behavior). A detail is
+            // open — the detail handles the tap itself. On the Albums
+            // root, scroll to the top.
+            .onChange(of: viewModel.albumsTabTapCount) { _, _ in
+                guard selectedCollection == nil,
+                      selectedMyCollection == nil,
+                      selectedAlbumKind == nil,
+                      seeAllSection == nil else { return }
+                withAnimation {
+                    proxy.scrollTo("albumsStackTop", anchor: .top)
+                }
+            }
+            .navigationTitle("Albums")
+            // Transparent status bar / nav bar: the sections show
+            // through under the status bar and the title, no solid
+            // band.
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingNewCollection = true
+                    } label: {
+                        // Photos uses a thin "+" here — regular
+                        // weight, not semibold (semibold looks too
+                        // thick next to the title).
+                        Image(systemName: "plus")
+                            .font(.system(size: 20, weight: .regular))
+                            .foregroundStyle(.blue)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack(spacing: 12) {
+                        // Photos-style Edit mode: album cards show a
+                        // red minus badge to delete them.
+                        Button(isEditingAlbums ? "Done" : "Edit") {
+                            isEditingAlbums.toggle()
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                        // The "…" menu lives on every tab except the
+                        // Player: Clipboard, then Settings.
+                        Menu {
+                            Button { viewModel.showingPhotoPicker = true } label: {
+                                Label("Import from Photos", systemImage: "photo.on.rectangle")
+                            }
+                            Button {
+                                Task {
+                                    if let notice = await viewModel.saveFromClipboard() {
+                                        saveNotice = notice
+                                    } else {
+                                        saveNotice = "Không có link trên clipboard."
+                                    }
+                                }
+                            } label: {
+                                Label("Paste Clipboard", systemImage: "doc.on.clipboard")
+                            }
+                            Button { showingSettings = true } label: {
+                                Label("Settings", systemImage: "gearshape")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 32, height: 32)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .accessibilityLabel("More options")
+                        }
+                    }
+                }
+            }
+    }
+
+    /// The See All page for one section: the whole section as a
+    /// 2-column grid of album cards (Photos style). Extracted from
+    /// `body` for the same type-check reason as mainScrollView.
+    private func seeAllView(for section: AlbumSection) -> some View {
+                ScrollViewReader { proxy in
+                ScrollView {
+                    // Top anchor for the Albums tab-tap "scroll to
+                    // top", AND the scroll-offset reporter (iOS 17:
+                    // .onScrollGeometryChange needs iOS 18). minY is
+                    // 0 at the top, -y when scrolled down y.
+                    GeometryReader { geo in
+                        Color.clear
+                            .preference(key: ScrollTopOffsetKey.self, value: geo.frame(in: .named("albumsScroll")).minY)
+                    }
+                    .frame(height: 0)
+                    .id("albumsStackTop")
+                    LazyVGrid(columns: albumColumns, spacing: 16) {
+                        ForEach(section == .myAlbums ? myAlbumCards : creatorCards, id: \.self) { card in
+                            // The minus badge is a SIBLING of the card
+                            // button (not inside it): the card button
+                            // is disabled in Edit mode, which would
+                            // also disable a badge nested inside it.
+                            ZStack(alignment: .topLeading) {
+                                Button { select(card) } label: {
+                                    cardView(for: card)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isEditingSeeAll)
+                                // Red minus badge (Photos Edit mode).
+                                // Only on deletable albums.
+                                if isEditingSeeAll, isDeletable(card) {
+                                    Button {
+                                        albumPendingDelete = card
+                                        showingDeleteAlbumConfirmation = true
+                                    } label: {
+                                        Image(systemName: "minus.circle.fill")
+                                            .font(.system(size: 22))
+                                            .foregroundStyle(.red)
+                                            .background(Color.white, in: Circle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .offset(x: -8, y: -8)
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                }
+                // The named coordinate space the GeometryReader above
+                // measures against, and the offset listener: at the
+                // top minY is 0 (atTop true), scrolled down it is
+                // negative.
+                .coordinateSpace(name: "albumsScroll")
+                .onPreferenceChange(ScrollTopOffsetKey.self) { minY in
+                    viewModel.albumsStackAtTop = minY >= -1
+                }
+                // Albums tab re-tapped while the See All list is open:
+                // scrolled down -> scroll to the top; already at the
+                // top -> pop back to the Albums root.
+                .onChange(of: viewModel.albumsTabTapCount) { _, _ in
+                    if viewModel.albumsStackAtTop {
+                        viewModel.albumsPopToRootRequested = true
+                    } else {
+                        withAnimation {
+                            proxy.scrollTo("albumsStackTop", anchor: .top)
+                        }
+                    }
+                }
+                }
+                .navigationTitle(section == .myAlbums ? "My Albums" : "Creators")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        // Photos-style Edit mode for this See All page.
+                        Button(isEditingSeeAll ? "Done" : "Edit") {
+                            isEditingSeeAll.toggle()
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                    }
+                }
+            }
     }
 
     /// "My Albums" cards: Recents, Favorites, then the user's own
@@ -1474,10 +1529,16 @@ struct AlbumItemsView: View {
     var body: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            // Top anchor for the Albums tab-tap "scroll to top".
-            Color.clear
-                .frame(height: 0)
-                .id("albumsStackTop")
+            // Top anchor for the Albums tab-tap "scroll to top",
+            // AND the scroll-offset reporter (iOS 17:
+            // .onScrollGeometryChange needs iOS 18). minY is 0 at
+            // the top, -y when scrolled down y.
+            GeometryReader { geo in
+                Color.clear
+                    .preference(key: ScrollTopOffsetKey.self, value: geo.frame(in: .named("albumsScroll")).minY)
+            }
+            .frame(height: 0)
+            .id("albumsStackTop")
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(items) { item in
                     PhotosGridCell(
@@ -1525,13 +1586,12 @@ struct AlbumItemsView: View {
                 .padding(.vertical, 12)
             }
         }
-        // Track whether this grid is at the top (contentOffset 0 =
-        // top). Shares viewModel.albumsStackAtTop with the other
-        // Albums-stack views; only the topmost is visible.
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y
-        } action: { _, newValue in
-            viewModel.albumsStackAtTop = newValue <= 1
+        // The named coordinate space the GeometryReader above
+        // measures against, and the offset listener: at the top
+        // minY is 0 (atTop true), scrolled down it is negative.
+        .coordinateSpace(name: "albumsScroll")
+        .onPreferenceChange(ScrollTopOffsetKey.self) { minY in
+            viewModel.albumsStackAtTop = minY >= -1
         }
         // Albums tab re-tapped (Photos behavior): scrolled down ->
         // scroll to the top; already at the top -> pop back to the
