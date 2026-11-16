@@ -991,8 +991,11 @@ struct AlbumsView: View {
                     Button {
                         showingNewCollection = true
                     } label: {
+                        // Photos uses a thin "+" here — regular
+                        // weight, not semibold (semibold looks too
+                        // thick next to the title).
                         Image(systemName: "plus")
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(.system(size: 20, weight: .regular))
                             .foregroundStyle(.blue)
                     }
                 }
