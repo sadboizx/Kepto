@@ -113,6 +113,9 @@ final class LibraryViewModel: ObservableObject {
         do {
             collections = try await api.collections()
         } catch {
+            // Cancellation is not an error — never show "cancelled".
+            if error is CancellationError { return }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         // Quiet: a failure here must not wipe the per-creator list above.
@@ -133,6 +136,8 @@ final class LibraryViewModel: ObservableObject {
             myCollections.insert(created, at: 0)
             return created
         } catch {
+            if error is CancellationError { return nil }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return nil
         }
@@ -163,6 +168,8 @@ final class LibraryViewModel: ObservableObject {
             }
             return added
         } catch {
+            if error is CancellationError { return nil }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return nil
         }
@@ -227,6 +234,38 @@ final class LibraryViewModel: ObservableObject {
     }
 
     /// First page of all saved items (Library tab, newest first).
+    /// The background task polling for pending items to become ready.
+    /// While it runs, a thumbnail appears as soon as its ingest
+    /// finishes — no tab switch or pull-to-refresh needed.
+    private var pendingPollTask: Task<Void, Never>?
+
+    /// Start (or restart) the pending-items poll: while any item is
+    /// still pending (ingesting), refetch every 5s so its thumbnail
+    /// appears as soon as the ingest finishes — without the user
+    /// having to switch tabs or pull to refresh. Stops on its own
+    /// when nothing is pending (or after 5 minutes, so a stuck item
+    /// does not poll forever). Called after every save/upload and
+    /// when the Library appears, so a new pending item always starts
+    /// a poll. Safe to call when nothing is pending (it exits at once).
+    /// The poll lives in the ViewModel (not in the View's .task), so
+    /// it keeps running even if the user switches tabs — when they
+    /// switch back, the thumbnail is already there.
+    func startPendingPoll() {
+        pendingPollTask?.cancel()
+        pendingPollTask = Task { [weak self] in
+            guard let self else { return }
+            var polls = 0
+            while !Task.isCancelled
+                    && self.items.contains(where: { $0.status == .pending })
+                    && polls < 60 {
+                polls += 1
+                try? await Task.sleep(for: .seconds(5))
+                if Task.isCancelled { break }
+                await self.fetch()
+            }
+        }
+    }
+
     /// Called on pull-to-refresh and on appear.
     func fetch() async {
         guard let api else {
@@ -246,6 +285,11 @@ final class LibraryViewModel: ObservableObject {
             items = page
             nextCursor = cursor
         } catch {
+            // Cancellation is not an error — the task was superseded
+            // (view gone, refresh re-triggered). Never show it as an
+            // alert ("cancelled"); just stop quietly.
+            if error is CancellationError { return }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -264,6 +308,10 @@ final class LibraryViewModel: ObservableObject {
             items.append(contentsOf: page)
             nextCursor = next
         } catch {
+            // Cancellation is not an error (scroll task superseded) —
+            // never show it as an alert ("cancelled").
+            if error is CancellationError { return }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -288,6 +336,8 @@ final class LibraryViewModel: ObservableObject {
             searchResults = page
             searchCursor = cursor
         } catch {
+            if error is CancellationError { return }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -307,6 +357,8 @@ final class LibraryViewModel: ObservableObject {
             searchResults.append(contentsOf: page)
             searchCursor = next
         } catch {
+            if error is CancellationError { return }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -365,8 +417,13 @@ final class LibraryViewModel: ObservableObject {
             let result = try await api.save(url: url)
             await fetch()
             await fetchCollections()
+            // The new item(s) are pending (ingesting) — start the poll
+            // so their thumbnails appear when the ingest finishes.
+            startPendingPoll()
             return result
         } catch {
+            if error is CancellationError { return nil }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return nil
         }
@@ -391,9 +448,14 @@ final class LibraryViewModel: ObservableObject {
             if !duplicate {
                 await fetch()
                 await fetchCollections()
+                // The new item is pending (ingesting) — start the poll
+                // so its thumbnail appears when the ingest finishes.
+                startPendingPoll()
             }
             return (item, duplicate)
         } catch {
+            if error is CancellationError { return (nil, false) }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return (nil, false) }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return (nil, false)
         }
@@ -635,6 +697,8 @@ final class LibraryViewModel: ObservableObject {
             }
             return updated
         } catch {
+            if error is CancellationError { return nil }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return nil
         }

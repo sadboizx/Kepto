@@ -152,6 +152,9 @@ struct LibraryView: View {
             .task {
                 await viewModel.fetch()
                 await viewModel.fetchStats()
+                // If anything is still ingesting, poll until its
+                // thumbnail is ready (no tab switch needed).
+                viewModel.startPendingPoll()
             }
             .alert("Lưu link", isPresented: $showingURLInput) {
             TextField(
