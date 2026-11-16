@@ -1169,15 +1169,29 @@ private final class NativePopGestureViewController: UIViewController {
               let pop = nav.interactivePopGestureRecognizer else { return }
         // Force the pop gesture on (a hidden nav bar can disable it).
         pop.isEnabled = true
-        // Install (once) a delegate that allows the pop whenever
-        // there is a view to pop to, overriding any veto from the
-        // hidden nav bar. The transition animation itself is
-        // untouched — only whether the gesture may begin.
+        // Install (or RE-install) a delegate that allows the pop
+        // whenever there is a view to pop to, overriding any veto
+        // from the hidden nav bar. The transition animation itself
+        // is untouched — only whether the gesture may begin.
+        //
+        // The delegate must be re-installed, not just "installed
+        // once": pop.delegate is weak, so when a pushed screen is
+        // popped its helper (and its delegate) deallocates and
+        // pop.delegate becomes nil — and another screen's helper may
+        // have replaced ours in the meantime. If this helper only
+        // installs when ITS OWN popDelegate is nil, it never restores
+        // the gesture after returning from that screen. (Bug: after
+        // viewing a video and popping back to the album, swipe-back
+        // to Albums stopped working — the Player's delegate had
+        // deallocated and the album's helper never reinstalled its
+        // own.) So always ensure OUR delegate is the current one.
         if popDelegate == nil {
             let delegate = PopGestureDelegate()
             delegate.navigationController = nav
-            pop.delegate = delegate
             popDelegate = delegate
+        }
+        if pop.delegate !== popDelegate {
+            pop.delegate = popDelegate
         }
         // The hosting (SwiftUI) view controller's view holds the
         // ScrollView — the paging feed (Player) or the grid

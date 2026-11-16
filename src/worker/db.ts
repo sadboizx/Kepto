@@ -525,11 +525,31 @@ export async function listMyCollections(
 export async function getMyCollection(
   db: D1Database,
   id: string,
-): Promise<MyCollection | null> {
+): Promise<MyCollectionRow | null> {
+  // Return the AGGREGATED row (count + cover_item_id), like
+  // listMyCollections — NOT the raw my_collections row. The raw row
+  // has no `count`, and the iOS MyCollection.count is a non-optional
+  // Int, so decoding the create/rename response failed with
+  // "The data couldn't be read because it is missing" and the new
+  // album never appeared until the app restarted (listMyCollections
+  // DOES include count, so a restart showed it). This also fixes
+  // PATCH rename, which returns the same shape.
   const row = await db
-    .prepare(`SELECT * FROM my_collections WHERE id = ?1`)
+    .prepare(
+      `SELECT
+         mc.id, mc.name, mc.created_at,
+         COUNT(mci.item_id) AS count,
+         (SELECT i2.id FROM my_collection_items m2
+            JOIN items i2 ON i2.id = m2.item_id
+            WHERE m2.collection_id = mc.id AND i2.thumb_key IS NOT NULL
+            ORDER BY m2.added_at DESC, m2.item_id DESC LIMIT 1) AS cover_item_id
+       FROM my_collections mc
+       LEFT JOIN my_collection_items mci ON mci.collection_id = mc.id
+       WHERE mc.id = ?1
+       GROUP BY mc.id`,
+    )
     .bind(id)
-    .first<MyCollection>();
+    .first<MyCollectionRow>();
   return row ?? null;
 }
 
@@ -603,7 +623,7 @@ export async function renameMyCollection(
   db: D1Database,
   id: string,
   name: string,
-): Promise<MyCollection | null> {
+): Promise<MyCollectionRow | null> {
   await db
     .prepare(`UPDATE my_collections SET name = ?2 WHERE id = ?1`)
     .bind(id, name)
