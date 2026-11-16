@@ -30,18 +30,17 @@ struct PhotoInfoView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Text(authorName)
-                            .font(.title2)
-                            .fontWeight(.semibold)
+                            .font(.system(size: 17, weight: .semibold))
                         if let relative = relativeTimeString {
                             Text("· \(relative)")
-                                .font(.title2)
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
                     }
                     if let caption = item.caption,
                        !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(caption)
-                            .font(.title3)
+                            .font(.system(size: 15))
                     }
                 }
                 .padding(.horizontal, 16)

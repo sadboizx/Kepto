@@ -60,6 +60,11 @@ struct AlbumsView: View {
     /// NavigationLink in the LazyVGrid: inline links in a lazy grid
     /// are flaky on iOS 17 (some cards simply never navigate).
     @State private var selectedSource: AlbumSource?
+    /// Pop-to-root request from the tab bar (KeptoTabView bumps
+    /// this when the already-selected Albums tab is tapped again,
+    /// round 3): the destinations above are driven by state, so
+    /// clearing them pops the whole stack back to the Albums root.
+    @Binding var popToRootRequest: Int
 
     /// 2-column album grid (Photos Albums tab): 12pt gaps.
     private let albumColumns = [
@@ -193,6 +198,17 @@ struct AlbumsView: View {
         // The "+" and "See All" buttons stay blue (explicit
         // .foregroundStyle(.blue)); the selection checkmark stays
         // blue (explicit .blue in PhotosGridCell).
+        // Pop to root on a tab re-tap (round 3, see
+        // popToRootRequest): clearing the destination states pops
+        // the album detail, the See All page and the Recently
+        // Deleted note alike — the viewer overlay inside the
+        // detail unmounts with it.
+        .onChange(of: popToRootRequest) { _, _ in
+            selectedSource = nil
+            seeAllSection = nil
+            showingRecentlyDeleted = nil
+            isEditingSeeAll = false
+        }
         .tint(.primary)
     }
 

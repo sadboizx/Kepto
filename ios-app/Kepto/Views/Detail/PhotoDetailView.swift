@@ -14,10 +14,12 @@ import UIKit
 /// dropped), no Hide / Slideshow / Duplicate in the menu (Q3/Q4
 /// dropped), no `ViewerRoute` — the viewer takes the same
 /// `items: Binding` + `startItemId` + `onNearEnd` shape FeedView had,
-/// so grid load-more appends and delete removals stay live. Videos do
-/// NOT auto-play on paging (Photos behaviour): tap the centre play
-/// button or the toolbar Play button; the player machinery (deferred
-/// play, kept player, loop, scrub) is FeedView's, reused as-is.
+/// so grid load-more appends and delete removals stay live. Videos
+/// auto-play when the viewer opens on one and when paging onto one
+/// (user decision, round 3 — the open auto-play question is now YES);
+/// the centre play button shows only while paused; the player
+/// machinery (deferred play, kept player, loop, scrub) is FeedView's,
+/// reused as-is.
 /// The viewer is presented as a full-screen OVERLAY over the grid
 /// that opened it (not a NavigationStack push): the grid stays in
 /// the same view hierarchy underneath, so it genuinely shows through
@@ -30,6 +32,11 @@ import UIKit
 /// drag-down-to-dismiss is the viewer's only exit — a custom
 /// gesture, added at the user's explicit request (Photos-style: only
 /// the media moves and shrinks, the background + chrome fade).
+/// The status bar is hidden while the viewer is open, and the app
+/// tab bar cross-fades with the viewer toolbar during a dismiss
+/// drag (TabBarFadeHelper fades the real UITabBar with the same
+/// drag progress — no fake tab bar, no binary show/hide snap).
+/// The viewer toolbar is 78pt tall, like Apple Photos (measured).
 /// `NativePopGestureHelper` (same v46 bridge) still lives in this
 /// file for the album detail views.
 struct PhotoDetailView: View {
@@ -120,6 +127,19 @@ struct PhotoDetailView: View {
     private var chromeOpacity: CGFloat {
         dismissing ? 0 : (1 - dragProgress)
     }
+    /// The app tab bar's opacity during a dismiss drag: 0 while the
+    /// viewer is open and idle (the viewer covers it), fading to 1
+    /// with the drag so it cross-fades against the viewer toolbar
+    /// (Photos). 1 while a release-dismiss is running (the grid is
+    /// taking over). Driven by the SAME dragProgress the chrome and
+    /// background use, so the two bars move in sync. The real
+    /// UITabBar is faded by TabBarFadeHelper (below); the tab bar
+    /// is never interactive while the viewer is open (the helper
+    /// keeps hit-testing off and restores it when the viewer goes
+    /// away).
+    private var tabBarAlpha: CGFloat {
+        dismissing ? 1 : dragProgress
+    }
 
     var body: some View {
         GeometryReader { _ in
@@ -156,12 +176,19 @@ struct PhotoDetailView: View {
         // (the viewer is closing anyway).
         .disabled(dismissing)
         // Full-screen viewer: hide the navigation bar (no back
-        // button/title — the custom topBar provides them). The tab
-        // bar is hidden while viewing, but shows again as soon as a
-        // dismiss drag starts, so it stays in place, dimmed, over
-        // the grid behind while the media is dragged down (Photos).
+        // button/title — the custom topBar provides them) and the
+        // status bar (no clock/battery over the media while viewing;
+        // it returns when the viewer closes — the modifier leaves
+        // with the overlay). The tab bar is always rendered while
+        // the viewer is open — TabBarFadeHelper (below) fades the
+        // real UITabBar in with the drag (alpha 0 at rest, so it is
+        // invisible and non-interactive while viewing, and it
+        // cross-fades against the viewer toolbar during a dismiss
+        // drag, like Photos). No binary .toolbar(.hidden/.visible)
+        // toggle here — that snapped instead of fading.
         .toolbar(.hidden, for: .navigationBar)
-        .toolbar(dragOffset.height > 0 || dismissing ? .visible : .hidden, for: .tabBar)
+        .statusBarHidden(true)
+        .background(TabBarFadeHelper(alpha: tabBarAlpha))
         .confirmationDialog(L10n.deleteSavedItemsTitle(1),
                             isPresented: $showDelete,
                             titleVisibility: .visible) {
@@ -333,15 +360,15 @@ struct PhotoDetailView: View {
 }
 
 /// One full-screen page in the viewer: the photo (pinch zoom 1–5x,
-/// double-tap 1 <-> 2.6x) or the video (full-bleed, tap the centre
-/// play button or the toolbar Play button — videos do NOT auto-play,
-/// Photos behaviour), the progress bar with scrub + sprite preview,
-/// and the Photos-style bottom toolbar. Adapted from FeedView's
-/// `FeedVideoPage`: the player machinery (deferred play, kept player,
-/// loop, scrub, mute, speed, share, save) is reused as-is; the
-/// TikTok parts are gone (vertical paging, auto-play on swipe,
-/// restart-from-start, username/caption overlay, top-right "…"
-/// menu). Single tap toggles the chrome (top bar + toolbar +
+/// double-tap 1 <-> 2.6x) or the video (full-bleed, auto-plays on
+/// open / paging onto it — round 3; pause with the centre button or
+/// the toolbar Pause button), the progress bar with scrub + sprite
+/// preview, and the Photos-style bottom toolbar. Adapted from
+/// FeedView's `FeedVideoPage`: the player machinery (deferred play,
+/// kept player, loop, scrub, mute, speed, share, save) is reused
+/// as-is; the TikTok parts are gone (vertical paging, auto-play on
+/// swipe, restart-from-start, username/caption overlay, top-right
+/// "…" menu). Single tap toggles the chrome (top bar + toolbar +
 /// progress bar); swipe up opens the Info sheet.
 private struct PhotoDetailPage: View {
     let item: Item
@@ -394,6 +421,13 @@ private struct PhotoDetailPage: View {
     @State private var fullImage: UIImage?
     /// Playback speed from the running-person button (1.0 = normal).
     @State private var playbackRate: Float = 1.0
+    /// Whether the speed picker popover is open (the running-person
+    /// button). A Button + popover, NOT a Menu: a Menu's dismissal
+    /// tap passed through to this page's full-screen chrome-toggle
+    /// tap gesture and hid the chrome (frames h_08/h_09, round 3) —
+    /// a Button consumes its own tap and a popover consumes outside
+    /// taps, so neither can reach the toggle.
+    @State private var showingSpeedPicker = false
     /// Speeds offered by the running-person button's menu.
     private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     /// Mute state for this page's player (speaker icon in the
@@ -564,19 +598,12 @@ private struct PhotoDetailPage: View {
                                 playerTabButton(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", label: isMuted ? L10n.unmute : L10n.mute) {
                                     toggleMute()
                                 }
-                                // Playback speed (running-person icon).
-                                Menu {
-                                    ForEach(speeds, id: \.self) { rate in
-                                        Button {
-                                            selectRate(rate)
-                                        } label: {
-                                            if rate == playbackRate {
-                                                Label(String(format: "%gx", rate), systemImage: "checkmark")
-                                            } else {
-                                                Text(String(format: "%gx", rate))
-                                            }
-                                        }
-                                    }
+                                // Playback speed (running-person
+                                // icon): a Button + popover, NOT a
+                                // Menu — a Menu's dismissal tap hid
+                                // the chrome (see showingSpeedPicker).
+                                Button {
+                                    showingSpeedPicker = true
                                 } label: {
                                     Image(systemName: "figure.run")
                                         .font(.system(size: 22))
@@ -584,6 +611,29 @@ private struct PhotoDetailPage: View {
                                         .frame(maxWidth: .infinity)
                                         .frame(height: 50)
                                         .accessibilityLabel(L10n.playbackSpeed)
+                                }
+                                .buttonStyle(.plain)
+                                .popover(isPresented: $showingSpeedPicker) {
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        ForEach(speeds, id: \.self) { rate in
+                                            Button {
+                                                selectRate(rate)
+                                                showingSpeedPicker = false
+                                            } label: {
+                                                HStack {
+                                                    Text(String(format: "%gx", rate))
+                                                    Spacer()
+                                                    if rate == playbackRate {
+                                                        Image(systemName: "checkmark")
+                                                    }
+                                                }
+                                                .padding(.horizontal, 16)
+                                                .padding(.vertical, 10)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                    .presentationCompactAdaptation(.popover)
                                 }
                             }
                             playerTabButton(systemName: showingInfo ? "info.circle.fill" : "info.circle", label: L10n.info) {
@@ -597,11 +647,19 @@ private struct PhotoDetailPage: View {
                         // the Photos toolbar (no horizontal inset —
                         // it spans edge to edge, and the blur extends
                         // to the bottom edge under the Home Indicator).
-                        // Taller than the old 44pt bar, like Photos:
-                        // 50pt buttons + 8pt vertical padding.
+                        // Same height as Apple Photos, measured:
+                        // Photos' toolbar is 78pt total (44pt bar +
+                        // 34pt safe area; f_05 frame: icons 56pt
+                        // above the bottom edge). Kepto was 66pt
+                        // (50pt buttons + 8pt vertical padding)
+                        // because geo.safeAreaInsets.bottom is 0 here
+                        // — the pager ignores the safe area — so the
+                        // old bottom padding added nothing. Now: 50pt
+                        // buttons + 28pt bottom padding = 78pt total,
+                        // icons 53pt above the bottom edge (≈ Photos'
+                        // 56pt).
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .padding(.bottom, geo.safeAreaInsets.bottom)
+                        .padding(.bottom, 28)
                         .background(.ultraThinMaterial)
                     }
                 }
@@ -659,6 +717,7 @@ private struct PhotoDetailPage: View {
             setupPlayer()
             if isCurrent {
                 showControlsTemporarily()
+                playIfVideo()
             }
             if isImage, item.status == .ready {
                 Task { await loadFullImage() }
@@ -681,9 +740,10 @@ private struct PhotoDetailPage: View {
         }
         .onChange(of: isCurrent) { _, current in
             if current {
-                // Swipe landed on this page: show the progress bar.
-                // (No auto-play — Photos behaviour; the user taps play.)
+                // Swipe landed on this page: show the progress bar
+                // and auto-play if it is a video (round 3).
                 showControlsTemporarily()
+                playIfVideo()
             } else {
                 player?.pause()
                 isPlaying = false
@@ -910,6 +970,20 @@ private struct PhotoDetailPage: View {
             player?.rate = rate
         }
         isPlaying = true
+    }
+
+    /// Auto-play (user decision, round 3): a video starts playing
+    /// when its page opens or is swiped to. Photos are unaffected.
+    /// Called from onAppear (opening page) and onChange(isCurrent)
+    /// (paging onto a page). `setupPlayer` is a no-op when the
+    /// player already exists; `playCurrent` is a no-op when the
+    /// player is missing or the page is not current. Paging away
+    /// pauses in onChange(isCurrent)'s else branch and in
+    /// onDisappear — unchanged.
+    private func playIfVideo() {
+        guard !isImage, item.status == .ready else { return }
+        setupPlayer()
+        playCurrent()
     }
 
     /// Playback speed from the running-person button. Applies immediately
@@ -1373,6 +1447,92 @@ private struct FeedProgressBar: View {
 /// is created late (e.g. items loaded async). Wiring is scoped to
 /// the hosting view controller's view, so other tabs' scroll views
 /// are untouched.
+/// Fades the REAL UITabBar in/out with the drag-down-to-dismiss
+/// progress (Photos cross-fade): the viewer toolbar fades out with
+/// `chromeOpacity` while the app tab bar fades in with the same
+/// `dragProgress`, so the two bars cross-fade in sync. SwiftUI
+/// cannot fade a tab bar — `.toolbar(.hidden/.visible)` only snaps
+/// it — so this bridge finds the TabView's UITabBarController (the
+/// helper is a child of the hosting controller, so the
+/// `tabBarController` property walks straight to it) and drives
+/// `tabBar.alpha`.
+///
+/// The tab bar is NEVER interactive while the viewer is open (the
+/// viewer owns the screen; the tab bar is only a visual fading in
+/// over the grid) — hit-testing stays off until the viewer goes
+/// away. The alpha is always restored to 1 when the viewer is
+/// removed (`didMove(toParent: nil)` + `dismantleUIViewController`),
+/// so no close path — drag release, delete-last-item, or anything
+/// else — can leave the tab bar invisible. The tab bar is cached
+/// weakly on first use because `tabBarController` no longer
+/// resolves once the helper has left the hierarchy.
+struct TabBarFadeHelper: UIViewControllerRepresentable {
+    /// 0 = tab bar fully transparent, 1 = fully visible.
+    var alpha: CGFloat
+
+    func makeUIViewController(context: Context) -> TabBarFadeController {
+        TabBarFadeController(alpha: alpha)
+    }
+
+    func updateUIViewController(_ uiViewController: TabBarFadeController, context: Context) {
+        uiViewController.alpha = alpha
+        uiViewController.applyAlpha()
+    }
+
+    static func dismantleUIViewController(_ uiViewController: TabBarFadeController, coordinator: ()) {
+        uiViewController.restore()
+    }
+}
+
+private final class TabBarFadeController: UIViewController {
+    var alpha: CGFloat
+    /// The tab bar, cached weakly on first use (see above).
+    private weak var tabBar: UITabBar?
+
+    init(alpha: CGFloat) {
+        self.alpha = alpha
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        // Empty helper view: never intercept touches.
+        view.isUserInteractionEnabled = false
+    }
+
+    override func didMove(toParent parent: UIViewController?) {
+        super.didMove(toParent: parent)
+        if parent == nil {
+            // Removed with the viewer overlay: restore the tab bar
+            // before the next frame renders the grid.
+            restore()
+        } else {
+            applyAlpha()
+        }
+    }
+
+    /// Set the tab bar's alpha (and keep it non-interactive while
+    /// the viewer is open — the viewer owns the screen).
+    func applyAlpha() {
+        if tabBar == nil { tabBar = tabBarController?.tabBar }
+        guard let tabBar else { return }
+        tabBar.alpha = alpha
+        tabBar.isUserInteractionEnabled = false
+    }
+
+    /// Back to normal: fully visible and tappable.
+    func restore() {
+        if tabBar == nil { tabBar = tabBarController?.tabBar }
+        guard let tabBar else { return }
+        tabBar.alpha = 1
+        tabBar.isUserInteractionEnabled = true
+    }
+}
+
 struct NativePopGestureHelper: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         NativePopGestureViewController()

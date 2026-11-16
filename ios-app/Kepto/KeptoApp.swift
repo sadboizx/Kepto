@@ -71,22 +71,38 @@ struct KeptoApp: App {
 struct KeptoTabView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var selectedTab = 0
+    /// Incremented when the already-selected Albums tab is tapped
+    /// again — AlbumsView pops to its root (round 3, standard iOS
+    /// tab behaviour). A counter, not a Bool, so two re-taps in a
+    /// row still register (a Bool toggle would need a reset).
+    @State private var albumsPopToRoot = 0
     /// One-line notice after a Share Extension save (e.g. "already
     /// saved" or a collection summary).
     @State private var shareSaveNotice: String?
 
     var body: some View {
-        // Tab icons are exactly the iOS Photos ones (Q12): one icon
-        // per tab, no filled variant (photo.on.rectangle.angled,
-        // heart.rectangle, rectangle.stack, magnifyingglass).
-        TabView(selection: $selectedTab) {
+        // A re-tap on the already-selected tab does not change
+        // `selectedTab`, so `.onChange` never fires for it. The
+        // custom binding catches the tap (TabView sets the
+        // selection even to its current value) and bumps the
+        // Albums pop-to-root counter when the Albums tab is
+        // re-tapped. Other tabs are unaffected.
+        TabView(selection: Binding(
+            get: { selectedTab },
+            set: { newTab in
+                if newTab == selectedTab, newTab == 2 {
+                    albumsPopToRoot += 1
+                }
+                selectedTab = newTab
+            }
+        )) {
             LibraryView()
                 .tabItem { Label(L10n.library, systemImage: "photo.on.rectangle.angled") }
                 .tag(0)
             ForYouView()
                 .tabItem { Label(L10n.forYou, systemImage: "heart.rectangle") }
                 .tag(1)
-            AlbumsView()
+            AlbumsView(popToRootRequest: $albumsPopToRoot)
                 .tabItem { Label(L10n.albums, systemImage: "rectangle.stack") }
                 .tag(2)
             SearchView()

@@ -232,7 +232,11 @@ struct SearchView: View {
                                 Button {
                                     openResult(meta)
                                 } label: {
-                                    AssetThumbnail(source: meta)
+                                    // Round 3: no time badge on Search
+                                    // thumbnails (duration / view count
+                                    // hidden — the shared cell keeps it
+                                    // for Library / For You).
+                                    AssetThumbnail(source: meta, showBadge: false)
                                 }
                                 .buttonStyle(.plain)
                             }

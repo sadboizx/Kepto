@@ -78,6 +78,10 @@ struct AssetThumbnail: View {
     var selecting = false
     var selected = false
     var cornerRadius: CGFloat = 0
+    /// Show the duration / view-count badge (bottom-leading). The
+    /// Search results grid hides it (round 3 — no time on Search
+    /// thumbnails); Library / For You keep it.
+    var showBadge = true
 
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var image: UIImage?
@@ -93,7 +97,7 @@ struct AssetThumbnail: View {
                 }
             }
             .overlay { pendingOverlay }
-            .overlay(alignment: .bottomLeading) { badgeRow }
+            .overlay(alignment: .bottomLeading) { if showBadge { badgeRow } }
             .overlay(alignment: .topTrailing) { favoriteMark }
             .overlay(alignment: .topTrailing) { selectionMark }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

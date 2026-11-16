@@ -32,7 +32,11 @@ struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @Environment(\.horizontalSizeClass) private var sizeClass
 
-    @State private var zoom: LibraryZoom = .days
+    // Round 3: the Library opens on All Photos by default (launch
+    // value only — the user can switch, and the choice persists
+    // while the app stays alive; it resets to All Photos on the
+    // next launch, since this is @State, not persisted).
+    @State private var zoom: LibraryZoom = .all
     @State private var selecting = false
     @State private var selection: Set<String> = []
     /// The item the Photos detail viewer opens on (nil = closed).
@@ -95,25 +99,52 @@ struct LibraryView: View {
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button(L10n.cancel) { exitSelection() }
+                        Button { exitSelection() } label: {
+                            Text(L10n.cancel)
+                                .font(.footnote)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button(allSelected ? L10n.deselectAll : L10n.selectAll) {
+                        Button {
                             Haptics.select()
                             if allSelected {
                                 selection.removeAll()
                             } else {
                                 selection = Set(allIDs)
                             }
+                        } label: {
+                            Text(allSelected ? L10n.deselectAll : L10n.selectAll)
+                                .font(.footnote)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(.regularMaterial, in: Capsule())
                         }
+                        .buttonStyle(.plain)
                     }
                 } else {
                     ToolbarItem(placement: .topBarTrailing) {
                         HStack(spacing: 16) {
-                            Button(L10n.select) {
+                            Button {
                                 Haptics.tap()
                                 selecting = true
+                            } label: {
+                                Text(L10n.select)
+                                    .font(.footnote)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(.regularMaterial, in: Capsule())
                             }
+                            .buttonStyle(.plain)
                             .disabled(allIDs.isEmpty)
                             Menu {
                                 Button { Task { await saveDirectFromClipboard() } } label: {
@@ -129,8 +160,12 @@ struct LibraryView: View {
                                     Label(L10n.settings, systemImage: "gearshape")
                                 }
                             } label: {
-                                Image(systemName: "ellipsis.circle")
-                                    .font(.system(size: 20))
+                                Image(systemName: "ellipsis")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(.regularMaterial, in: Capsule())
                                     .accessibilityLabel(L10n.moreOptions)
                             }
                         }
