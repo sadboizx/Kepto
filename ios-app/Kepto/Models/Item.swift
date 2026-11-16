@@ -208,6 +208,11 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     /// The posted date as a Date (nil when postedAt is missing or
     /// unparsable). Used by the Player info sheet.
     var postedDate: Date? { postedAt.flatMap { Self.isoFormatter.date(from: $0) } }
+
+    /// Date taken (Apple Photos sort key): the original post date,
+    /// else the save/import date. Items with no parseable date sort
+    /// as the oldest (.distantPast) — they never crash the sort.
+    var sortDate: Date { postedDate ?? savedDate ?? .distantPast }
 }
 
 /// Light metadata for one item (GET /api/listAll). Everything the
@@ -294,6 +299,11 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
     /// The posted date as a Date (nil when missing/unparsable).
     var postedDate: Date? { postedAt.flatMap { Self.isoFormatter.date(from: $0) } }
 
+    /// Date taken (Apple Photos sort key): the original post date,
+    /// else the save/import date. Items with no parseable date sort
+    /// as the oldest (.distantPast) — they never crash the sort.
+    var sortDate: Date { postedDate ?? savedDate ?? .distantPast }
+
     var displayAuthor: String {
         guard let author, !author.isEmpty else { return platform.displayName }
         return author
@@ -336,6 +346,24 @@ struct ItemResponse: Decodable {
 struct FavoriteResponse: Decodable {
     let ok: Bool
     let item: Item
+}
+
+// MARK: - Chronological order (Apple Photos: oldest first, newest last)
+
+/// Shared ascending sort for every chronological grid (Library +
+/// album details): by date taken, oldest first. Equal timestamps
+/// tie-break on the stable id, so the order never shuffles between
+/// renders. Kept here (not scattered per screen) so all grids agree.
+extension Array where Element == Item {
+    func sortedChronologically() -> [Item] {
+        sorted { ($0.sortDate, $0.id) < ($1.sortDate, $1.id) }
+    }
+}
+
+extension Array where Element == ItemMetadata {
+    func sortedChronologically() -> [ItemMetadata] {
+        sorted { ($0.sortDate, $0.id) < ($1.sortDate, $1.id) }
+    }
 }
 
 struct SaveResponse: Decodable {

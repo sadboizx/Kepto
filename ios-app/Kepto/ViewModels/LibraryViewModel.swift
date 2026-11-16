@@ -156,24 +156,23 @@ final class LibraryViewModel: ObservableObject {
     }
 
     /// The full metadata cache grouped by the given calendar
-    /// components (from each row's saved date), newest group first.
+    /// components (from each row's date taken), oldest group first.
     /// Same shape as the Library view's groupItems(by:) — but over
     /// the FULL library, so the sections are complete even before
-    /// the user has scrolled through every page. Rows whose saved
-    /// date does not parse are skipped.
+    /// the user has scrolled through every page. Items inside a
+    /// group are oldest first too (Apple Photos order).
     func groupedMetadata(by components: Set<Calendar.Component>) -> [(key: Date, items: [ItemMetadata])] {
         let calendar = Calendar.current
         var groups: [Date: [ItemMetadata]] = [:]
         for meta in allMetadata {
-            guard let date = meta.savedDate else { continue }
-            let comps = calendar.dateComponents(components, from: date)
+            let comps = calendar.dateComponents(components, from: meta.sortDate)
             guard let key = calendar.date(from: comps) else { continue }
             groups[key, default: []].append(meta)
         }
-        return groups.map { (key: $0.key, items: $0.value) }.sorted { $0.key > $1.key }
+        return groups.map { (key: $0.key, items: $0.value.sortedChronologically()) }.sorted { $0.key < $1.key }
     }
 
-    /// Full-library groupings: days / months / years, newest first.
+    /// Full-library groupings: days / months / years, oldest first.
     var metadataByDay: [(key: Date, items: [ItemMetadata])] { groupedMetadata(by: [.year, .month, .day]) }
     var metadataByMonth: [(key: Date, items: [ItemMetadata])] { groupedMetadata(by: [.year, .month]) }
     var metadataByYear: [(key: Date, items: [ItemMetadata])] { groupedMetadata(by: [.year]) }
@@ -181,9 +180,11 @@ final class LibraryViewModel: ObservableObject {
     /// Memories (For You, Photos rule Q7): one per month with >= 8
     /// items, max 8, newest first. Title is the month only
     /// ("MMMM yyyy") — Kepto items have no location, so there is
-    /// no place part.
+    /// no place part. (metadataByMonth is oldest first now, so the
+    /// newest 8 are the suffix, reversed back to newest first —
+    /// the same 8 months in the same order as before.)
     var memories: [(key: Date, items: [ItemMetadata])] {
-        Array(metadataByMonth.filter { $0.items.count >= 8 }.prefix(8))
+        Array(metadataByMonth.filter { $0.items.count >= 8 }.suffix(8).reversed())
     }
 
     /// Featured Photos (Photos rule): favorites first, up to 24;

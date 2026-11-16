@@ -51,6 +51,12 @@ struct PhotoCollectionScreen: View {
     @State private var notice: String?
     /// The item the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
+    /// Initial scroll to the bottom (newest, Apple Photos): the
+    /// album opens on the newest item. See maybeInitialScroll.
+    @State private var didInitialScroll = false
+    /// True while the last (newest) cell is on screen — i.e. the
+    /// user is at the bottom. Gates the new-item follow scroll.
+    @State private var isAtBottom = false
     /// The global frame of the thumbnail the viewer opened from
     /// (nil = unknown): the viewer's dismiss drag shrinks the media
     /// onto it on release. Read from `cellFrameCache` at tap time.
@@ -157,12 +163,24 @@ struct PhotoCollectionScreen: View {
                         sourceFrame: feedStartFrame,
                         onDismiss: {
                             feedStartItem = nil
-                            // Re-apply the cached favorite flags: a
-                            // heart toggled in the viewer must survive
-                            // the close (the /api/list payloads omit
-                            // is_favorite on the deployed Worker).
-                            items = viewModel.applyingMetadataFavoriteFlags(to: items)
-                        }
+                            // Defer the flag merge past the swap
+                            // frame (round-9): re-rendering the grid
+                            // in the same frame the overlay vanishes
+                            // would pop the target cell's heart on at
+                            // the landing instant. 0.15s later the
+                            // grid is settled and the heart update is
+                            // invisible. The merge is idempotent, so
+                            // a fast re-open in between is harmless.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                items = viewModel.applyingMetadataFavoriteFlags(to: items)
+                            }
+                        },
+                        // Live frame lookup for the close (round-9):
+                        // the viewer re-queries the cell's frame at
+                        // release instead of trusting the tap-time
+                        // capture. The cache is a class, so the
+                        // closure always sees the current frames.
+                        frameLookup: { [cellFrameCache] id in cellFrameCache.frames[id] }
                     )
                     .ignoresSafeArea()
                 }
@@ -369,71 +387,93 @@ struct PhotoCollectionScreen: View {
     /// The grid itself: square cells (Photos style) + the load-more
     /// footer. Extracted so the compiler type-checks the ForEach
     /// (cells + context menu + onAppear) apart from the modifiers.
+    /// The grid renders `sortedItems` (oldest first, Apple Photos);
+    /// the underlying `items` stays in server order (newest first)
+    /// so the viewer, load-more and the favorite merge keep working
+    /// exactly as before.
+    private var sortedItems: [Item] { items.sortedChronologically() }
+
     private var collectionGrid: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                LazyVGrid(columns: columns, spacing: 2) {
-                    ForEach(items) { item in
-                        PhotosGridCell(
-                            item: item,
-                            isSelectionMode: isSelecting,
-                            isSelected: selectedIDs.contains(item.id),
-                            onTap: {
-                                if isSelecting {
-                                    toggleSelection(item)
-                                } else {
-                                    // Capture the tapped cell's frame
-                                    // before opening: the viewer's
-                                    // dismiss drag shrinks the media
-                                    // onto it.
-                                    feedStartFrame = cellFrameCache.frames[item.id]
-                                    feedStartItem = item
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    LazyVGrid(columns: columns, spacing: 2) {
+                        ForEach(sortedItems) { item in
+                            PhotosGridCell(
+                                item: item,
+                                isSelectionMode: isSelecting,
+                                isSelected: selectedIDs.contains(item.id),
+                                onTap: {
+                                    if isSelecting {
+                                        toggleSelection(item)
+                                    } else {
+                                        // Capture the tapped cell's frame
+                                        // before opening: the viewer's
+                                        // dismiss drag shrinks the media
+                                        // onto it.
+                                        feedStartFrame = cellFrameCache.frames[item.id]
+                                        feedStartItem = item
+                                    }
+                                }
+                            )
+                            .contextMenu {
+                                GridItemContextMenu(
+                                    item: item,
+                                    isSelecting: isSelecting,
+                                    onSaveToPhotos: { saveToPhotos($0) },
+                                    onShare: { shareItem($0) },
+                                    onToggleFavorite: { toggleGridFavorite($0) },
+                                    onAddToAlbum: { itemForAlbumPicker = $0 },
+                                    onDelete: { requestGridDelete($0) },
+                                    onRemoveFromCollection: sourceIsMyCollection ? { item in
+                                        Task { await removeFromCollection(item) }
+                                    } : nil
+                                )
+                            }
+                            .onAppear {
+                                // Load-more fires at the OLDEST end
+                                // (top): the server pages go older, so
+                                // the oldest loaded cell appearing
+                                // means the user scrolled up into
+                                // not-yet-loaded items.
+                                if item.id == sortedItems.first?.id {
+                                    Task { await loadMore() }
+                                }
+                                if item.id == sortedItems.last?.id { isAtBottom = true }
+                            }
+                            .onDisappear {
+                                if item.id == sortedItems.last?.id { isAtBottom = false }
+                            }
+                        }
+                    }
+                    if nextCursor != nil {
+                        HStack {
+                            Spacer()
+                            if isLoadingMore {
+                                ProgressView()
+                            } else {
+                                Button(L10n.loadMore) {
+                                    Task { await loadMore() }
                                 }
                             }
-                        )
-                        .contextMenu {
-                            GridItemContextMenu(
-                                item: item,
-                                isSelecting: isSelecting,
-                                onSaveToPhotos: { saveToPhotos($0) },
-                                onShare: { shareItem($0) },
-                                onToggleFavorite: { toggleGridFavorite($0) },
-                                onAddToAlbum: { itemForAlbumPicker = $0 },
-                                onDelete: { requestGridDelete($0) },
-                                onRemoveFromCollection: sourceIsMyCollection ? { item in
-                                    Task { await removeFromCollection(item) }
-                                } : nil
-                            )
+                            Spacer()
                         }
-                        .onAppear {
-                            if item.id == items.last?.id {
-                                Task { await loadMore() }
-                            }
-                        }
+                        .padding(.vertical, 12)
                     }
-                }
-                if nextCursor != nil {
-                    HStack {
-                        Spacer()
-                        if isLoadingMore {
-                            ProgressView()
-                        } else {
-                            Button(L10n.loadMore) {
-                                Task { await loadMore() }
-                            }
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 12)
                 }
             }
-        }
-        // The cells report their global frames (see
-        // `PhotosGridCell`): keep them in the cache so a tap can hand
-        // the tapped cell's frame to the viewer for its
-        // shrink-to-thumbnail dismiss.
-        .onPreferenceChange(CellFramePreferenceKey.self) { frames in
-            cellFrameCache.frames.merge(frames) { _, new in new }
+            // The cells report their global frames (see
+            // `PhotosGridCell`): keep them in the cache so a tap can hand
+            // the tapped cell's frame to the viewer for its
+            // shrink-to-thumbnail dismiss.
+            .onPreferenceChange(CellFramePreferenceKey.self) { frames in
+                cellFrameCache.frames.merge(frames) { _, new in new }
+            }
+            .onAppear { maybeInitialScroll(proxy) }
+            .onChange(of: items) { oldItems, newItems in
+                maybeInitialScroll(proxy)
+                maybeScrollToNewItem(proxy, oldItems: oldItems, newItems: newItems)
+            }
         }
     }
 
@@ -585,10 +625,49 @@ struct PhotoCollectionScreen: View {
     /// (Photos: the slideshow runs over the selected items). The
     /// selection only covers loaded rows, so no fetch is needed.
     private func presentSlideshow() {
-        let resolved = items.filter { selectedIDs.contains($0.id) }
+        let resolved = sortedItems.filter { selectedIDs.contains($0.id) }
         guard !resolved.isEmpty else { return }
         slideshowItems = resolved
         showingSlideshow = true
+    }
+
+    // MARK: - Scroll to bottom (Apple Photos order)
+
+    /// Instant (no-animation) scroll to the bottom (newest item).
+    /// The transaction disables animations outright — a plain
+    /// scrollTo could otherwise visibly slide down on open.
+    private func scrollToBottomInstant(_ proxy: ScrollViewProxy) {
+        guard let id = sortedItems.last?.id else { return }
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { proxy.scrollTo(id, anchor: .bottom) }
+    }
+
+    /// Scroll to the bottom (newest) once, instantly, on first open
+    /// (Apple Photos opens on the newest photo). Fires when the
+    /// first page is in; later pages are older, so the newest item
+    /// stays the last one and no re-anchor is ever needed. Never
+    /// fires while the viewer is open, and never on pull-to-refresh
+    /// (fetch(reset:) leaves the order and the once-flag alone).
+    private func maybeInitialScroll(_ proxy: ScrollViewProxy) {
+        guard !didInitialScroll, !sortedItems.isEmpty, feedStartItem == nil else { return }
+        scrollToBottomInstant(proxy)
+        didInitialScroll = true
+    }
+
+    /// A new item arrived at the end (bottom): if the user is at the
+    /// bottom, follow it down smoothly; if they are mid-list, leave
+    /// their scroll position alone. Only after the initial scroll —
+    /// and never while the viewer or select mode is open. (Load-more
+    /// appends OLDER pages, so the displayed last item does not
+    /// change there and this never fires on paging.)
+    private func maybeScrollToNewItem(_ proxy: ScrollViewProxy, oldItems: [Item], newItems: [Item]) {
+        guard didInitialScroll, isAtBottom, feedStartItem == nil, !isSelecting else { return }
+        let oldLast = oldItems.sortedChronologically().last?.id
+        let newLast = newItems.sortedChronologically().last?.id
+        guard newItems.count > oldItems.count, let newLast, newLast != oldLast else { return }
+        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(newLast, anchor: .bottom) }
     }
 
     // MARK: - Loading

@@ -101,16 +101,27 @@ struct PhotoDetailView: View {
     /// when opened from Search / For You, or when the cell scrolled
     /// away): on a dismissing release the media shrinks onto it.
     var sourceFrame: CGRect? = nil
+    /// Live re-query for the thumbnail frame at RELEASE time
+    /// (round-9): the tap-time `sourceFrame` can go stale if the
+    /// grid re-lays out while the viewer is open (a fetch completing,
+    /// the nav bar hiding). The opener hands in its CellFrameCache
+    /// lookup; the page reads it in `dismissToThumbnail` and lands
+    /// on the frame the cell has NOW, not the one it had at tap
+    /// time. Nil for Search / For You (no cache — the slide-down
+    /// fallback applies).
+    var frameLookup: ((String) -> CGRect?)? = nil
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil, title: String = L10n.library,
-         sourceFrame: CGRect? = nil, onDismiss: (() -> Void)? = nil) {
+         sourceFrame: CGRect? = nil, onDismiss: (() -> Void)? = nil,
+         frameLookup: ((String) -> CGRect?)? = nil) {
         self._items = items
         self.startItemId = startItemId
         self.onNearEnd = onNearEnd
         self.title = title
         self.sourceFrame = sourceFrame
         self.onDismiss = onDismiss
+        self.frameLookup = frameLookup
         self._currentID = State(initialValue: startItemId)
     }
 
@@ -153,9 +164,16 @@ struct PhotoDetailView: View {
             ZStack {
                 // Fades with the drag-down-to-dismiss (and to 0 on a
                 // dismissing release): the album grid behind the
-                // pushed viewer shows through as it fades.
+                // pushed viewer shows through as it fades. The fade
+                // is faster than the media's flight (round-9: 0.25s
+                // ease-out vs the 0.4s spring) — the dim is gone
+                // before the media lands, like Photos. The explicit
+                // .animation only applies when `dismissing` flips;
+                // during the drag the background follows the finger
+                // directly (no animation).
                 Color.black.ignoresSafeArea()
                     .opacity(backgroundOpacity)
+                    .animation(.easeOut(duration: 0.25), value: dismissing)
                 if items.isEmpty {
                     emptyState
                 } else {
@@ -291,7 +309,8 @@ struct PhotoDetailView: View {
             dismissing: $dismissing,
             chromeOpacity: chromeOpacity,
             backgroundOpacity: backgroundOpacity,
-            sourceFrame: sourceFrame
+            sourceFrame: sourceFrame,
+            frameLookup: frameLookup
         )
         .id(item.id)
         .containerRelativeFrame(.horizontal)
@@ -327,6 +346,10 @@ struct PhotoDetailView: View {
     private func scrollToStartItem(proxy: ScrollViewProxy) async {
         try? await Task.sleep(for: .milliseconds(120))
         guard !Task.isCancelled else { return }
+        // Never scroll mid-close (round-9): if the user flicked the
+        // viewer down within 120ms of opening, a scrollTo here
+        // would yank the pager sideways under the landing media.
+        guard !dismissing, dragOffset.height == 0 else { return }
         if items.contains(where: { $0.id == startItemId }) {
             proxy.scrollTo(startItemId, anchor: .leading)
         }
@@ -424,17 +447,36 @@ private struct PhotoDetailPage: View {
     @Binding var dragScale: CGFloat
     @Binding var dismissing: Bool
     /// Release-start snapshot for the mask (round-8): the media's
-    /// scale and rendered rect at the moment a dismissing release
-    /// begins, plus the target scale. `maskSize` lerps from this
-    /// rect to the thumbnail on the release progress — starting
-    /// from the release rect (not the page) is what makes the
-    /// visible rect one smooth function. Set (unanimated) in
-    /// `dismissToThumbnail` before the animation starts; only
-    /// read while `dismissing` is true. Lives on the page (not the
-    /// viewer): both the snapshot and the mask run here.
-    @State private var dismissStartScale: CGFloat = 1
-    @State private var dismissTargetScale: CGFloat = 1
+    /// rendered rect at the moment a dismissing release begins.
+    /// `maskSize` lerps from this rect to the thumbnail on the
+    /// release progress — starting from the release rect (not the
+    /// page) is what makes the visible rect one smooth function.
+    /// Set (unanimated) in `dismissToThumbnail` before the
+    /// animation starts; only read while `dismissing` is true.
+    /// Lives on the page (not the viewer): both the snapshot and
+    /// the mask run here.
     @State private var dismissStartRect: CGSize = .zero
+    /// Release-animation clock (round-9): 0 → 1 in the same spring
+    /// transaction as the media transform. `maskSize` lerps on this
+    /// (clamped) instead of deriving progress from the live
+    /// `dragScale` — a spring can overshoot its target, and a
+    /// dragScale-derived progress would then run backwards and
+    /// pulse the mask below the thumbnail size at the end of the
+    /// flight. A clock-driven mask is monotonic: once it reaches
+    /// the thumbnail it stays there while the media settles.
+    @State private var dismissProgress: CGFloat = 0
+    /// The media's rendered size at release (round-9): `drawnSize`
+    /// reads the async-loaded `fullImage`, so it can change
+    /// mid-flight if the image lands during the animation. The
+    /// snapshot freezes it — mask + target agree on one size for
+    /// the whole flight.
+    @State private var dismissDrawnSize: CGSize? = nil
+    /// The thumbnail frame the close is landing on (round-9):
+    /// resolved at release time from `frameLookup` (or the
+    /// tap-time `sourceFrame`), or nil when the thumbnail is
+    /// unknown / off-screen — the slide-down fallback then
+    /// applies. The mask + target read this while dismissing.
+    @State private var closeTarget: CGRect? = nil
     /// Background + chrome opacity for this page, from the viewer's
     /// drag progress (1 = opaque at rest, fading as the media is
     /// dragged down, 0 once the release-dismiss starts).
@@ -444,6 +486,11 @@ private struct PhotoDetailPage: View {
     /// when opened from Search / For You, or when the cell scrolled
     /// away): on a dismissing release the media shrinks onto it.
     var sourceFrame: CGRect? = nil
+    /// Live re-query for the thumbnail frame at release time (see
+    /// the viewer): handed down from the opener's CellFrameCache.
+    /// (Declared here, next to `sourceFrame`, so the memberwise
+    /// init order of the existing parameters is unchanged.)
+    var frameLookup: ((String) -> CGRect?)? = nil
     /// Whether the video was playing when a scrub started — it resumes
     /// after the scrub only in that case (a paused video stays paused).
     @State private var wasPlayingBeforeScrub = false
@@ -735,6 +782,14 @@ private struct PhotoDetailPage: View {
                 }
             }
             .contentShape(Rectangle())
+            // Rotation mid-close (round-9): the release target was
+            // computed for the old page size — cancel the animation
+            // and close at once instead of landing on a stale frame.
+            // Only fires while dismissing; the page size does not
+            // change otherwise on iPhone.
+            .onChange(of: geo.size) { _, _ in
+                if dismissing { onDismiss?() }
+            }
             // Single tap toggles the chrome (Photos). Play/pause is
             // the centre button / toolbar button, not the tap.
             .onTapGesture {
@@ -750,7 +805,12 @@ private struct PhotoDetailPage: View {
         }
         // Fades with the dismiss drag, like the black inside the
         // ZStack above — either one left opaque would hide the grid.
-        .background(Color.black.opacity(backgroundOpacity))
+        // Faster than the media's flight (round-9, same 0.25s
+        // ease-out as the viewer's black layer).
+        .background(
+            Color.black.opacity(backgroundOpacity)
+                .animation(.easeOut(duration: 0.25), value: dismissing)
+        )
         // Photos-style info sheet (the (i) button in the toolbar).
         // No Save to Photos / Add to Album here any more (user
         // request) — the sheet is info only.
@@ -910,32 +970,61 @@ private struct PhotoDetailPage: View {
     /// the media visibly shrinks onto the thumbnail instead of
     /// vanishing mid-flight — and because the overlay is just
     /// removed (no NavigationStack pop), nothing slides across the
-    /// screen afterwards. Two round-8 details: the release-start
-    /// scale/rect are snapshotted (unanimated) first, so `maskSize`
-    /// can lerp from them; and the overlay is removed 0.05s after
-    /// the animation completes (a settle delay — the completion can
-    /// fire before the final frame is presented, so removing the
-    /// overlay at once cut the media away one frame early and the
-    /// thumbnail visibly jumped: the "jerk after completion").
+    /// screen afterwards.
+    ///
+    /// Round-9 rework (Apple Photos smoothness):
+    /// - The target frame is resolved NOW, from the live cell cache
+    ///   (`frameLookup`), not the tap-time capture — the grid can
+    ///   re-lay out while the viewer is open. An off-screen
+    ///   thumbnail falls back to the slide-down path.
+    /// - The drawn size is snapshotted, so a `fullImage` landing
+    ///   mid-flight cannot move the target.
+    /// - The transform runs on a spring (response 0.4, damping
+    ///   0.85) — the old ease-in-out felt mechanical — and the
+    ///   mask runs on the same spring's clock (`dismissProgress`),
+    ///   not on the live scale (a spring overshoots; a
+    ///   scale-derived mask progress would run backwards and pulse
+    ///   the mask at the end of the flight).
+    /// - The video is paused at release so the landing frame is
+    ///   frozen (a live player would swap to the static cell
+    ///   thumbnail mid-frame).
+    /// - The overlay is removed in the completion with NO settle
+    ///   delay: the round-8 0.05s delay froze the media for a beat
+    ///   and then cut to the grid — that freeze-then-cut IS the
+    ///   "jump after completion". The swap happens in the same
+    ///   render pass the animation ends.
     private func dismissToThumbnail(pageSize: CGSize, pageGlobalFrame: CGRect) {
-        let target = dismissTarget(pageSize: pageSize, pageGlobalFrame: pageGlobalFrame)
+        // Never stack a second release on top of a running one
+        // (rapid open/close taps): the first animation owns the
+        // close.
+        guard !dismissing else { return }
+        // Resolve the target frame NOW, from the live cache.
+        let liveThumb = frameLookup?(item.id) ?? sourceFrame
+        if let liveThumb, liveThumb.width > 0, liveThumb.height > 0,
+           pageGlobalFrame.insetBy(dx: -20, dy: -20).contains(CGPoint(x: liveThumb.midX, y: liveThumb.midY)) {
+            closeTarget = liveThumb
+        } else {
+            // Unknown or scrolled off-screen: slide down.
+            closeTarget = nil
+        }
+        // Freeze the video's frame for the landing.
+        player?.pause()
+        isPlaying = false
         // Snapshot the release-start state BEFORE the animation
         // (plain assignment, not animated): the mask lerps from
         // this rect to the thumbnail (see `maskSize`).
         let drawn = drawnSize(pageSize: pageSize)
-        dismissStartScale = dragScale
-        dismissTargetScale = target.scale
+        dismissDrawnSize = drawn
         dismissStartRect = CGSize(width: drawn.width * dragScale, height: drawn.height * dragScale)
-        withAnimation(.easeInOut(duration: 0.35)) {
+        let target = dismissTarget(pageSize: pageSize, pageGlobalFrame: pageGlobalFrame)
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             dragOffset = target.offset
             dragScale = target.scale
+            dismissProgress = 1
             dismissing = true
         } completion: {
-            // Settle: let the final frame paint before the overlay
-            // is removed, or the thumbnail jumps by a frame.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                onDismiss?()
-            }
+            // Same-frame swap: no settle delay (see above).
+            onDismiss?()
         }
     }
 
@@ -944,31 +1033,29 @@ private struct PhotoDetailPage: View {
     /// mask is a no-op — and, on a dismissing release, a lerp from
     /// the release-start rect to the source thumbnail's size, so
     /// the media is clipped exactly to the thumbnail rect at
-    /// landing. The lerp runs on the release progress (derived
-    /// from the live `dragScale`), the same easing as the scale +
-    /// offset in `dismissToThumbnail`, so the visible rect is one
-    /// smooth function: the round-7 mask lerped from the PAGE
-    /// size, which is larger than the media for most of the
-    /// flight, so the visible rect followed the media until the
-    /// mask crossed it and then followed the mask — a ~3x rate
-    /// jump mid-flight ("not smooth"). Clamped to the live media
-    /// rect, so a lagging mask animation can never expose a jump.
+    /// landing. The lerp runs on the release clock
+    /// (`dismissProgress`, the same spring as the transform), so
+    /// the visible rect is one smooth monotonic function — the
+    /// round-8 mask derived progress from the live `dragScale`,
+    /// which a spring overshoots, pulsing the mask at the end.
+    /// The drawn size is the release snapshot, never recomputed
+    /// mid-flight. No `min(live, …)` clamp any more: the lerped
+    /// rect is always inside the live media rect (both follow the
+    /// same spring from the same start), and the clamp is what let
+    /// a spring overshoot shrink the mask below the thumbnail.
     /// Page-sized when the thumbnail is unknown (Search / For
     /// You): the fallback slides the media down off the bottom,
     /// unchanged.
     private func maskSize(pageSize: CGSize) -> CGSize {
-        guard dismissing, let thumb = sourceFrame, thumb.width > 0, thumb.height > 0 else {
+        guard dismissing, let thumb = closeTarget, thumb.width > 0, thumb.height > 0 else {
             return pageSize
         }
-        let span = dismissStartScale - dismissTargetScale
-        let progress = span > 0.001 ? min(max((dismissStartScale - dragScale) / span, 0), 1) : 1
-        let drawn = drawnSize(pageSize: pageSize)
-        let live = CGSize(width: drawn.width * dragScale, height: drawn.height * dragScale)
-        let lerped = CGSize(
-            width: dismissStartRect.width + (thumb.width - dismissStartRect.width) * progress,
-            height: dismissStartRect.height + (thumb.height - dismissStartRect.height) * progress
+        let progress = min(max(dismissProgress, 0), 1)
+        let start = dismissStartRect
+        return CGSize(
+            width: start.width + (thumb.width - start.width) * progress,
+            height: start.height + (thumb.height - start.height) * progress
         )
-        return CGSize(width: min(live.width, lerped.width), height: min(live.height, lerped.height))
     }
 
     /// The media's RENDERED rect: aspect-fit for photos, aspectFill
@@ -1018,9 +1105,12 @@ private struct PhotoDetailPage: View {
     /// grid cell shows the media cropped to fill the square, so the
     /// landing image lines up with the thumbnail), or — when the
     /// thumbnail is unknown (opened from Search / For You) — down
-    /// off the bottom edge while shrinking + fading.
+    /// off the bottom edge while shrinking + fading. Reads the
+    /// release-time `closeTarget` (not the tap-time capture) and
+    /// the snapshotted drawn size, so the target cannot move
+    /// mid-flight.
     private func dismissTarget(pageSize: CGSize, pageGlobalFrame: CGRect) -> (offset: CGSize, scale: CGFloat) {
-        guard let thumb = sourceFrame, thumb.width > 0, thumb.height > 0 else {
+        guard let thumb = closeTarget, thumb.width > 0, thumb.height > 0 else {
             return (CGSize(width: 0, height: pageSize.height), 0.6)
         }
         // The drawn media size: the RENDERED rect, not the page
@@ -1028,7 +1118,7 @@ private struct PhotoDetailPage: View {
         // the thumbnail's rendered rect, so the content lines up
         // exactly (and the mask in the body clips the rest to the
         // thumbnail rect).
-        let drawn = drawnSize(pageSize: pageSize)
+        let drawn = dismissDrawnSize ?? drawnSize(pageSize: pageSize)
         // Cover the thumbnail (see above): the largest ratio wins.
         let scale = max(thumb.width / drawn.width, thumb.height / drawn.height)
         let pageCenter = CGPoint(x: pageGlobalFrame.midX, y: pageGlobalFrame.midY)
@@ -1645,11 +1735,19 @@ final class TabBarFadeController: UIViewController {
     }
 
     /// Set the tab bar's alpha (and keep it non-interactive while
-    /// the viewer is open — the viewer owns the screen).
+    /// the viewer is open — the viewer owns the screen). Animated
+    /// (round-9): the alpha used to be set directly, so at release
+    /// the tab bar snapped from the drag's partial alpha to 1 in
+    /// one frame — a visible pop at the bottom of the screen. A
+    /// short retargeting animation follows the finger during the
+    /// drag and fades in with the release instead. `restore()`
+    /// stays instant (the viewer is already gone by then).
     func applyAlpha() {
         if tabBar == nil { tabBar = tabBarController?.tabBar }
         guard let tabBar else { return }
-        tabBar.alpha = alpha
+        UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            tabBar.alpha = self.alpha
+        }
         tabBar.isUserInteractionEnabled = false
     }
 

@@ -37,6 +37,18 @@ struct LibraryView: View {
     // while the app stays alive; it resets to All Photos on the
     // next launch, since this is @State, not persisted).
     @State private var zoom: LibraryZoom = .all
+    /// Initial scroll to the bottom (newest, Apple Photos): the
+    /// Library opens on the newest photo. `didInitialScroll` marks
+    /// the one-time scroll with the full list; `didFallbackScroll`
+    /// marks the scroll with only the first page in (the full cache
+    /// re-anchors it when it lands — see maybeInitialScroll).
+    @State private var didInitialScroll = false
+    @State private var didFallbackScroll = false
+    /// True while the last (newest) cell is on screen — i.e. the
+    /// user is at the bottom. Tracked by gridCell's onAppear /
+    /// onDisappear; gates the new-item follow scroll and the
+    /// cache-landing re-anchor.
+    @State private var isAtBottom = false
     @State private var selecting = false
     @State private var selection: Set<String> = []
     /// The item the Photos detail viewer opens on (nil = closed).
@@ -243,7 +255,12 @@ struct LibraryView: View {
                         onNearEnd: { await viewModel.loadMore() },
                         title: L10n.library,
                         sourceFrame: feedStartFrame,
-                        onDismiss: { feedStartItem = nil }
+                        onDismiss: { feedStartItem = nil },
+                        // Live frame lookup for the close (round-9):
+                        // the viewer re-queries the cell's frame at
+                        // release instead of trusting the tap-time
+                        // capture.
+                        frameLookup: { [cellFrameCache] id in cellFrameCache.frames[id] }
                     )
                     .ignoresSafeArea()
                 }
@@ -345,30 +362,40 @@ struct LibraryView: View {
     }
 
     private var scroll: some View {
-        ScrollView {
-            switch zoom {
-            case .years:
-                yearsGrid
-            case .months:
-                monthsGrid
-            case .days:
-                daysGrid
-            case .all:
-                allPhotosGrid
+        ScrollViewReader { proxy in
+            ScrollView {
+                switch zoom {
+                case .years:
+                    yearsGrid
+                case .months:
+                    monthsGrid
+                case .days:
+                    daysGrid
+                case .all:
+                    allPhotosGrid
+                }
+            }
+            // Bottom margin so the last row scrolls clear of the
+            // floating Years/Months/Days/All Photos pill.
+            .contentMargins(.bottom, 64, for: .scrollContent)
+            .background(Color(uiColor: .systemBackground))
+            .simultaneousGesture(pinch)
+            // The cells report their global frames (see `gridCell`):
+            // keep them in the cache so a tap can hand the tapped cell's
+            // frame to the viewer for its shrink-to-thumbnail dismiss.
+            .onPreferenceChange(CellFramePreferenceKey.self) { frames in
+                cellFrameCache.frames.merge(frames) { _, new in new }
+            }
+            .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
+            .onAppear { maybeInitialScroll(proxy) }
+            .onChange(of: allIDs) { oldIDs, newIDs in
+                maybeInitialScroll(proxy)
+                maybeScrollToNewItem(proxy, oldIDs: oldIDs, newIDs: newIDs)
+            }
+            .onChange(of: viewModel.allMetadataLoaded) { _, _ in
+                maybeInitialScroll(proxy)
             }
         }
-        // Bottom margin so the last row scrolls clear of the
-        // floating Years/Months/Days/All Photos pill.
-        .contentMargins(.bottom, 64, for: .scrollContent)
-        .background(Color(uiColor: .systemBackground))
-        .simultaneousGesture(pinch)
-        // The cells report their global frames (see `gridCell`):
-        // keep them in the cache so a tap can hand the tapped cell's
-        // frame to the viewer for its shrink-to-thumbnail dismiss.
-        .onPreferenceChange(CellFramePreferenceKey.self) { frames in
-            cellFrameCache.frames.merge(frames) { _, new in new }
-        }
-        .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
     }
 
     private var yearsGrid: some View {
@@ -503,7 +530,13 @@ struct LibraryView: View {
                 Color.clear.preference(key: CellFramePreferenceKey.self, value: [id: geo.frame(in: .global)])
             }
         )
-        .onAppear { maybeLoadMore(before: id) }
+        .onAppear {
+            if id == allIDs.last { isAtBottom = true }
+            maybeLoadMore(before: id)
+        }
+        .onDisappear {
+            if id == allIDs.last { isAtBottom = false }
+        }
     }
 
     /// Native iOS context menu for a grid cell (long-press), in the
@@ -557,12 +590,15 @@ struct LibraryView: View {
 
     // MARK: - Sections (from the full-metadata cache)
 
-    /// All ids in the Library, newest first. The full metadata cache
-    /// when it is loaded; the loaded pages while listAll is still
-    /// pending or failed (so the Library never goes blank when the
-    /// metadata fetch has not finished yet).
+    /// All ids in the Library, oldest first (Apple Photos). The full
+    /// metadata cache when it is loaded; the loaded pages while listAll
+    /// is still pending or failed (so the Library never goes blank when
+    /// the metadata fetch has not finished yet).
     private var allIDs: [String] {
-        viewModel.allMetadataLoaded ? viewModel.allMetadata.map(\.id) : viewModel.items.map(\.id)
+        let sorted = viewModel.allMetadataLoaded
+            ? viewModel.allMetadata.sortedChronologically()
+            : viewModel.items.sortedChronologically()
+        return sorted.map(\.id)
     }
 
     /// The thumbnail source for one id: light metadata first, the
@@ -580,20 +616,20 @@ struct LibraryView: View {
     /// Grouped ids for one zoom level: the full-metadata groupings
     /// when loaded, else the loaded pages grouped the same way (the
     /// old `groupItems` logic — sections stay correct, just partial
-    /// until listAll lands).
+    /// until listAll lands). Groups and the ids inside them are
+    /// oldest first (Apple Photos order).
     private func groupedIDs(by components: Set<Calendar.Component>) -> [(key: Date, ids: [String])] {
         if viewModel.allMetadataLoaded {
             return viewModel.groupedMetadata(by: components).map { (key: $0.key, ids: $0.items.map(\.id)) }
         }
         let calendar = Calendar.current
-        var groups: [Date: [String]] = [:]
+        var groups: [Date: [Item]] = [:]
         for item in viewModel.items {
-            guard let date = item.savedDate else { continue }
-            let comps = calendar.dateComponents(components, from: date)
+            let comps = calendar.dateComponents(components, from: item.sortDate)
             guard let key = calendar.date(from: comps) else { continue }
-            groups[key, default: []].append(item.id)
+            groups[key, default: []].append(item)
         }
-        return groups.map { (key: $0.key, ids: $0.value) }.sorted { $0.key > $1.key }
+        return groups.map { (key: $0.key, ids: $0.value.sortedChronologically().map(\.id)) }.sorted { $0.key < $1.key }
     }
 
     private var days: [DaySection] {
@@ -604,14 +640,14 @@ struct LibraryView: View {
 
     private var months: [MonthSection] {
         groupedIDs(by: [.year, .month]).map { group in
-            MonthSection(id: Self.monthIDFormatter.string(from: group.key), date: group.key, title: DateLabels.monthTitle(for: group.key), itemIDs: group.ids, coverID: group.ids.first)
+            MonthSection(id: Self.monthIDFormatter.string(from: group.key), date: group.key, title: DateLabels.monthTitle(for: group.key), itemIDs: group.ids, coverID: group.ids.last)
         }
     }
 
     private var years: [YearSection] {
         groupedIDs(by: [.year]).map { group in
             let year = Calendar.current.component(.year, from: group.key)
-            return YearSection(year: year, title: String(year), itemIDs: group.ids, coverIDs: Array(group.ids.prefix(4)))
+            return YearSection(year: year, title: String(year), itemIDs: group.ids, coverIDs: Array(group.ids.suffix(4)))
         }
     }
 
@@ -636,12 +672,78 @@ struct LibraryView: View {
     /// Keep the paged `items` list ahead of what the user can see:
     /// the grid renders the full metadata cache, but the feed viewer
     /// and the item actions need full `Item`s, which only arrive
-    /// page by page. When a cell appears near the end of the loaded
-    /// range, load the next page in the background.
+    /// page by page. The loaded full Items are the NEWEST ones: in
+    /// the ascending allIDs they sit at the END, so the oldest loaded
+    /// item is at index (allIDs.count - items.count). Page ahead when
+    /// a cell appears within 10 of that boundary (the user scrolling
+    /// up into not-yet-loaded older items).
     private func maybeLoadMore(before id: String) {
         guard viewModel.hasMore, !viewModel.items.isEmpty else { return }
-        guard let index = allIDs.firstIndex(of: id), index >= viewModel.items.count - 10 else { return }
+        let oldestLoadedIndex = max(allIDs.count - viewModel.items.count, 0)
+        guard let index = allIDs.firstIndex(of: id), index <= oldestLoadedIndex + 10 else { return }
         Task { await viewModel.loadMore() }
+    }
+
+    // MARK: - Scroll to bottom (Apple Photos order)
+
+    /// The id to scroll to for "the bottom" (newest) in the current
+    /// zoom: the last cell in All Photos / Days, the last card in
+    /// Months / Years.
+    private var scrollTargetID: String? {
+        switch zoom {
+        case .all: allIDs.last
+        case .days: days.last?.itemIDs.last
+        case .months: months.last?.id
+        case .years: years.last?.id
+        }
+    }
+
+    /// Instant (no-animation) scroll to the bottom. The transaction
+    /// disables animations outright — a plain scrollTo inside the
+    /// zoom-animated ScrollView could otherwise visibly slide down.
+    private func scrollToBottomInstant(_ proxy: ScrollViewProxy) {
+        guard let id = scrollTargetID else { return }
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { proxy.scrollTo(id, anchor: .bottom) }
+    }
+
+    /// Scroll to the bottom (newest) once, instantly, on first open
+    /// (Apple Photos opens on the newest photo). Fires when the full
+    /// metadata cache is loaded; if only the first page is in so far,
+    /// scrolls to the bottom of that page and re-anchors when the
+    /// cache lands — but only while the user is still at the bottom
+    /// (isAtBottom), so a user who already scrolled up is never
+    /// yanked back. Never fires while the viewer is open, and never
+    /// on pull-to-refresh / delete (those leave allIDs unchanged or
+    /// shrink it, and the once-flag is already set).
+    private func maybeInitialScroll(_ proxy: ScrollViewProxy) {
+        guard !didInitialScroll, !allIDs.isEmpty, feedStartItem == nil else { return }
+        if viewModel.allMetadataLoaded {
+            // Re-anchoring after a fallback scroll: only if the user
+            // is still at the bottom — the full list grew above them
+            // when the cache landed, and a user who moved off the
+            // bottom must not be yanked back.
+            if didFallbackScroll && !isAtBottom { didInitialScroll = true; return }
+            scrollToBottomInstant(proxy)
+            didInitialScroll = true
+        } else if !didFallbackScroll {
+            scrollToBottomInstant(proxy)
+            didFallbackScroll = true
+        }
+    }
+
+    /// A new item arrived at the end (bottom): if the user is at the
+    /// bottom, follow it down smoothly; if they are mid-list, leave
+    /// their scroll position alone (the item waits at the bottom).
+    /// Only after the initial scroll — and never while the viewer or
+    /// select mode is open.
+    private func maybeScrollToNewItem(_ proxy: ScrollViewProxy, oldIDs: [String], newIDs: [String]) {
+        guard (didInitialScroll || didFallbackScroll), isAtBottom, feedStartItem == nil, !selecting else { return }
+        guard zoom == .all || zoom == .days else { return }
+        guard newIDs.count > oldIDs.count, let newLast = newIDs.last, newLast != oldIDs.last else { return }
+        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(newLast, anchor: .bottom) }
     }
 
     // MARK: - Multi-select
