@@ -37,6 +37,14 @@ struct LibraryView: View {
     @State private var selection: Set<String> = []
     /// The item the Photos detail viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
+    /// The global frame of the thumbnail the viewer opened from
+    /// (nil = unknown): the viewer's dismiss drag shrinks the media
+    /// onto it on release. Read from `cellFrameCache` at tap time.
+    @State private var feedStartFrame: CGRect?
+    /// Live cache of grid-cell global frames (see
+    /// `CellFrameCache`): written by the cells' preference, read
+    /// only when a cell is tapped.
+    @State private var cellFrameCache = CellFrameCache()
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
@@ -175,7 +183,8 @@ struct LibraryView: View {
                     items: Binding(get: { viewModel.items }, set: { _ in }),
                     startItemId: startItem.id,
                     onNearEnd: { await viewModel.loadMore() },
-                    title: L10n.library
+                    title: L10n.library,
+                    sourceFrame: feedStartFrame
                 )
             }
         }
@@ -292,6 +301,12 @@ struct LibraryView: View {
         .contentMargins(.bottom, 64, for: .scrollContent)
         .background(Color(uiColor: .systemBackground))
         .simultaneousGesture(pinch)
+        // The cells report their global frames (see `gridCell`):
+        // keep them in the cache so a tap can hand the tapped cell's
+        // frame to the viewer for its shrink-to-thumbnail dismiss.
+        .onPreferenceChange(CellFramePreferenceKey.self) { frames in
+            cellFrameCache.frames.merge(frames) { _, new in new }
+        }
         .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
     }
 
@@ -418,6 +433,15 @@ struct LibraryView: View {
                     .aspectRatio(1, contentMode: .fit)
             }
         }
+        // Report this cell's global frame for the viewer's
+        // shrink-to-thumbnail dismiss (see `CellFramePreferenceKey`):
+        // the frame is read from the cache at tap time, so the viewer
+        // knows where its media must land on release.
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: CellFramePreferenceKey.self, value: [id: geo.frame(in: .global)])
+            }
+        )
         .onAppear { maybeLoadMore(before: id) }
     }
 
@@ -606,6 +630,9 @@ struct LibraryView: View {
             if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
             Haptics.select()
         } else {
+            // Capture the tapped cell's frame before opening: the
+            // viewer's dismiss drag shrinks the media onto it.
+            feedStartFrame = cellFrameCache.frames[id]
             openItem(id)
         }
     }
@@ -901,6 +928,15 @@ struct PhotosGridCell: View {
         // the cell below. (The thumbnail itself stays square — the
         // ZStack + .aspectRatio in AspectThumbnail is untouched.)
         .contentShape(Rectangle())
+        // Report this cell's global frame for the viewer's
+        // shrink-to-thumbnail dismiss (see `CellFramePreferenceKey`
+        // in PhotoGridComponents): the parent reads it from its
+        // `CellFrameCache` at tap time.
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: CellFramePreferenceKey.self, value: [item.id: geo.frame(in: .global)])
+            }
+        )
         // One accessible element per cell (VoiceOver): the author /
         // title, video duration or photo, favorite state. Dynamic
         // Type scales the badge text automatically (caption2).

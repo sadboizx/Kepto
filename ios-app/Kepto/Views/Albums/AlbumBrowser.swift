@@ -51,6 +51,14 @@ struct PhotoCollectionScreen: View {
     @State private var notice: String?
     /// The item the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
+    /// The global frame of the thumbnail the viewer opened from
+    /// (nil = unknown): the viewer's dismiss drag shrinks the media
+    /// onto it on release. Read from `cellFrameCache` at tap time.
+    @State private var feedStartFrame: CGRect?
+    /// Live cache of grid-cell global frames (see
+    /// `CellFrameCache`): written by the cells' preference, read
+    /// only when a cell is tapped.
+    @State private var cellFrameCache = CellFrameCache()
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
@@ -139,7 +147,8 @@ struct PhotoCollectionScreen: View {
                     items: $items,
                     startItemId: startItem.id,
                     onNearEnd: { await loadMore() },
-                    title: title
+                    title: title,
+                    sourceFrame: feedStartFrame
                 )
             }
             .fullScreenCover(isPresented: $showingSlideshow) {
@@ -311,6 +320,11 @@ struct PhotoCollectionScreen: View {
                                 if isSelecting {
                                     toggleSelection(item)
                                 } else {
+                                    // Capture the tapped cell's frame
+                                    // before opening: the viewer's
+                                    // dismiss drag shrinks the media
+                                    // onto it.
+                                    feedStartFrame = cellFrameCache.frames[item.id]
                                     feedStartItem = item
                                 }
                             }
@@ -351,6 +365,13 @@ struct PhotoCollectionScreen: View {
                     .padding(.vertical, 12)
                 }
             }
+        }
+        // The cells report their global frames (see
+        // `PhotosGridCell`): keep them in the cache so a tap can hand
+        // the tapped cell's frame to the viewer for its
+        // shrink-to-thumbnail dismiss.
+        .onPreferenceChange(CellFramePreferenceKey.self) { frames in
+            cellFrameCache.frames.merge(frames) { _, new in new }
         }
     }
 

@@ -9,6 +9,31 @@ import SwiftUI
 /// `Models/LibraryModels.swift` since step 3 — it was here in step 2
 /// only because the ported Library tab had not landed yet.
 
+/// Live cache of grid-cell global frames, for the viewer's
+/// shrink-to-thumbnail dismiss: when the viewer opens from a cell,
+/// the opener reads that cell's frame from here and hands it to the
+/// viewer, which shrinks the media onto it on a dismissing release.
+/// A plain class, NOT @State: the preference below fires on every
+/// scroll frame (every visible cell's frame changes as it scrolls),
+/// and those writes must not re-render the grid — the viewer only
+/// reads the tapped cell's frame at tap time. Stale entries (cells
+/// scrolled away or deleted) are harmless: they are never read.
+final class CellFrameCache {
+    var frames: [String: CGRect] = [:]
+}
+
+/// One preference per grid cell: its id + its frame in global
+/// (screen) coordinates. The grid merges them into the
+/// `CellFrameCache` above via `.onPreferenceChange`. The viewer's
+/// page is full-screen, so a global frame is directly comparable
+/// with the media's on-screen position.
+struct CellFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
 /// Day section header: large date title + optional subtitle, on a
 /// bar background. Photos' `DayHeader`, unchanged.
 struct DayHeader: View {

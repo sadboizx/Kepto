@@ -20,8 +20,11 @@ import UIKit
 /// play, kept player, loop, scrub) is FeedView's, reused as-is.
 /// The viewer is pushed on a NavigationStack like FeedView was; the
 /// native interactive pop gesture keeps working through
-/// `NativePopGestureHelper` below (same v46 bridge — never a custom
-/// drag imitation).
+/// `NativePopGestureHelper` below (same v46 bridge). The
+/// drag-down-to-dismiss is a custom gesture, added at the user's
+/// explicit request (Photos-style: only the media moves and shrinks,
+/// the background + chrome fade) — it sits alongside the native edge
+/// pop, which is untouched.
 struct PhotoDetailView: View {
     /// The list to page through. A Binding so appends from `onNearEnd`
     /// (the library's loadMore, or a collection's) are visible here.
@@ -52,26 +55,66 @@ struct PhotoDetailView: View {
     /// and turn into a page swipe. Lifted here from the page because
     /// the ScrollView lives in this view.
     @State private var isScrubbing = false
-    /// Drag-down-to-dismiss offset (Photos viewer): how far the user
-    /// has dragged the viewer down with their finger. 0 at rest.
-    @State private var dismissDragOffset: CGFloat = 0
+    /// Drag-down-to-dismiss state (Photos viewer): the current
+    /// page's media follows the finger down and shrinks; the black
+    /// background and the chrome fade with the drag so the album grid
+    /// behind shows through. Owned here (not in the page) so the
+    /// background + chrome — which live outside the page — and the
+    /// page's media move from the same values.
+    /// `dragOffset` is the media's live offset (x stays 0 while
+    /// dragging; on a dismissing release it animates to the source
+    /// thumbnail's centre), `dragScale` its live scale (1 → ~0.65 at
+    /// full drag; on release it animates to the thumbnail's scale),
+    /// `dismissing` is true once the release-dismiss animation has
+    /// started (background + chrome animate to fully transparent).
+    @State private var dragOffset: CGSize = .zero
+    @State private var dragScale: CGFloat = 1
+    @State private var dismissing = false
+    /// The global frame of the thumbnail the viewer opened from (nil
+    /// when opened from Search / For You, or when the cell scrolled
+    /// away): on a dismissing release the media shrinks onto it.
+    var sourceFrame: CGRect? = nil
 
     init(items: Binding<[Item]>, startItemId: String,
-         onNearEnd: (() async -> Void)? = nil, title: String = L10n.library) {
+         onNearEnd: (() async -> Void)? = nil, title: String = L10n.library,
+         sourceFrame: CGRect? = nil) {
         self._items = items
         self.startItemId = startItemId
         self.onNearEnd = onNearEnd
         self.title = title
+        self.sourceFrame = sourceFrame
         self._currentID = State(initialValue: startItemId)
     }
 
     private var currentIndex: Int? { items.firstIndex { $0.id == currentID } }
     private var currentItem: Item? { currentIndex.flatMap { items[$0] } }
 
+    /// How far the drag has faded the viewer: 0 at rest, 1 at ~300pt
+    /// down (the background is fully transparent and the grid behind
+    /// is fully visible).
+    private var dragProgress: CGFloat {
+        min(max(dragOffset.height, 0) / 300, 1)
+    }
+    /// The viewer's black background opacity: fades with the drag,
+    /// and to 0 once the release-dismiss starts (the grid behind
+    /// takes over).
+    private var backgroundOpacity: CGFloat {
+        dismissing ? 0 : (1 - dragProgress)
+    }
+    /// The chrome (top bar + the page's toolbar / progress bar)
+    /// fades with the drag, in place — it never moves.
+    private var chromeOpacity: CGFloat {
+        dismissing ? 0 : (1 - dragProgress)
+    }
+
     var body: some View {
         GeometryReader { _ in
             ZStack {
+                // Fades with the drag-down-to-dismiss (and to 0 on a
+                // dismissing release): the album grid behind the
+                // pushed viewer shows through as it fades.
                 Color.black.ignoresSafeArea()
+                    .opacity(backgroundOpacity)
                 if items.isEmpty {
                     emptyState
                 } else {
@@ -79,12 +122,14 @@ struct PhotoDetailView: View {
                 }
                 // Top bar only — the bottom toolbar lives in the page
                 // (it needs the page's player state: play/pause, mute,
-                // speed). Both hide together with `chrome`.
+                // speed). Both hide together with `chrome`. The bar
+                // stays in place during a dismiss drag and fades.
                 if chrome {
                     VStack(spacing: 0) {
                         topBar
                         Spacer()
                     }
+                    .opacity(chromeOpacity)
                     .transition(.opacity)
                 }
             }
@@ -96,23 +141,21 @@ struct PhotoDetailView: View {
             // swipe from the left edge pops with the NATIVE gesture
             // (interactive transition, follows the finger, cancels
             // mid-swipe) while horizontal swipes still page the viewer.
+            // The drag-down-to-dismiss lives in the page (it moves
+            // only the media, not the whole viewer) — nothing here
+            // moves with the finger any more.
             .background(NativePopGestureHelper())
-            // Drag down to dismiss (Photos viewer): the whole viewer
-            // follows the finger down; past the threshold it pops,
-            // otherwise it springs back. The native edge pop above is
-            // untouched — this is an addition alongside it, not a
-            // replacement. (User request: the viewer dismisses with a
-            // top-to-bottom swipe, like the iOS Photos app.)
-            .offset(y: dismissDragOffset)
-            .scaleEffect(1 - min(dismissDragOffset / 2000, 0.05))
-            .simultaneousGesture(dragDown)
         }
+        // No taps while the release-dismiss animation is running
+        // (the viewer is popping anyway).
+        .disabled(dismissing)
         // Full-screen viewer: hide the navigation bar (no back
-        // button/title — the custom topBar provides them) and the tab
-        // bar, so the media fills the whole screen. The native back
-        // gesture still works with both hidden.
+        // button/title — the custom topBar provides them). The tab
+        // bar is hidden while viewing, but shows again as soon as a
+        // dismiss drag starts, so it stays in place, dimmed, over
+        // the grid behind while the media is dragged down (Photos).
         .toolbar(.hidden, for: .navigationBar)
-        .toolbar(.hidden, for: .tabBar)
+        .toolbar(dragOffset.height > 0 || dismissing ? .visible : .hidden, for: .tabBar)
         .confirmationDialog(L10n.deleteSavedItemsTitle(1),
                             isPresented: $showDelete,
                             titleVisibility: .visible) {
@@ -154,9 +197,11 @@ struct PhotoDetailView: View {
             .scrollTargetBehavior(.paging)
             .scrollPosition(id: $currentID)
             .scrollIndicators(.hidden)
-            // Paging pauses while a photo is zoomed (Photos) or while
-            // a progress-bar scrub is in progress.
-            .scrollDisabled(zoomed || isScrubbing)
+            // Paging pauses while a photo is zoomed (Photos), while
+            // a progress-bar scrub is in progress, or while a
+            // dismiss drag is moving the media down (the page must
+            // not shift sideways mid-drag).
+            .scrollDisabled(zoomed || isScrubbing || dragOffset.height > 0)
             .ignoresSafeArea()
             .onChange(of: currentID) { _, _ in handleCurrentItemChange() }
             .onChange(of: items) { oldItems, newItems in handleItemsChange(old: oldItems, new: newItems) }
@@ -180,41 +225,16 @@ struct PhotoDetailView: View {
                 itemPendingDelete = video
                 showDelete = true
             },
-            isScrubbing: $isScrubbing
+            isScrubbing: $isScrubbing,
+            dragOffset: $dragOffset,
+            dragScale: $dragScale,
+            dismissing: $dismissing,
+            chromeOpacity: chromeOpacity,
+            backgroundOpacity: backgroundOpacity,
+            sourceFrame: sourceFrame
         )
         .id(item.id)
         .containerRelativeFrame(.horizontal)
-    }
-
-    /// Drag down to dismiss (Photos viewer): a predominantly
-    /// vertical downward drag moves the viewer with the finger;
-    /// past ~120pt it pops, otherwise it springs back. Gated off
-    /// while scrubbing or zoomed (those drags belong to the progress
-    /// bar / the photo). Upward drags are not claimed here — the
-    /// page's swipe-up opens the info sheet.
-    private var dragDown: some Gesture {
-        DragGesture(minimumDistance: 10)
-            .onChanged { value in
-                guard !isScrubbing, !zoomed else { return }
-                if value.translation.height > 0,
-                   abs(value.translation.height) > abs(value.translation.width) {
-                    dismissDragOffset = value.translation.height
-                }
-            }
-            .onEnded { value in
-                guard !isScrubbing, !zoomed else {
-                    dismissDragOffset = 0
-                    return
-                }
-                if value.translation.height > 120,
-                   abs(value.translation.height) > abs(value.translation.width) {
-                    dismiss()
-                } else {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        dismissDragOffset = 0
-                    }
-                }
-            }
     }
 
     /// Top bar (Photos): back chevron + title on the left, the
@@ -351,6 +371,24 @@ private struct PhotoDetailPage: View {
     /// progress bar. The viewer disables the paging ScrollView while
     /// it is true, so a scrub cannot be stolen mid-drag.
     @Binding var isScrubbing: Bool
+    /// Drag-down-to-dismiss state, owned by the viewer (shared with
+    /// the background + chrome): the media's live offset/scale, and
+    /// whether the release-dismiss animation is running. Only the
+    /// current page writes these (the gesture is gated on
+    /// `isCurrent`).
+    @Binding var dragOffset: CGSize
+    @Binding var dragScale: CGFloat
+    @Binding var dismissing: Bool
+    /// Background + chrome opacity for this page, from the viewer's
+    /// drag progress (1 = opaque at rest, fading as the media is
+    /// dragged down, 0 once the release-dismiss starts).
+    var chromeOpacity: CGFloat = 1
+    var backgroundOpacity: CGFloat = 1
+    /// The global frame of the thumbnail the viewer opened from (nil
+    /// when opened from Search / For You, or when the cell scrolled
+    /// away): on a dismissing release the media shrinks onto it.
+    var sourceFrame: CGRect? = nil
+    @Environment(\.dismiss) private var dismiss
     /// Whether the video was playing when a scrub started — it resumes
     /// after the scrub only in that case (a paused video stays paused).
     @State private var wasPlayingBeforeScrub = false
@@ -382,53 +420,75 @@ private struct PhotoDetailPage: View {
 
     private var isImage: Bool { item.contentType?.hasPrefix("image/") == true }
 
+    /// The photo / video (or its loading / error state) — the ONLY
+    /// part that moves during a dismiss drag. The centre play button,
+    /// the bottom gradient, the toolbar and the notice are siblings
+    /// of this, so they stay in place and fade instead.
+    private var mediaContent: some View {
+        Group {
+            if item.status == .ready, !isImage {
+                if let player {
+                    // Full-bleed (Photos): the video fills the
+                    // frame edge to edge, under the status bar and
+                    // to the bottom edge — the sides crop slightly
+                    // instead of letterboxing.
+                    PlayerView(player: player, videoGravity: .resizeAspectFill)
+                } else {
+                    ProgressView().tint(.white)
+                }
+            } else if item.status == .ready, isImage {
+                if let fullImage {
+                    Image(uiImage: fullImage)
+                        .resizable()
+                        .scaledToFit()
+                        .scaleEffect(max(scale, 1) * magnify)
+                        .gesture(magnification)
+                        .onTapGesture(count: 2, perform: doubleTap)
+                } else {
+                    ProgressView().tint(.white)
+                }
+            } else if item.status == .pending {
+                VStack(spacing: 12) {
+                    ProgressView().tint(.white)
+                    Text(L10n.processing)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                        .foregroundStyle(.red)
+                    Text(item.friendlyIngestError)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                }
+            }
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                // Fades with the dismiss drag (see the viewer): the
+                // album grid behind the pushed viewer shows through
+                // as it fades.
                 Color.black
-                if item.status == .ready, !isImage {
-                    if let player {
-                        // Full-bleed (Photos): the video fills the
-                        // frame edge to edge, under the status bar and
-                        // to the bottom edge — the sides crop slightly
-                        // instead of letterboxing.
-                        PlayerView(player: player, videoGravity: .resizeAspectFill)
-                    } else {
-                        ProgressView().tint(.white)
-                    }
-                } else if item.status == .ready, isImage {
-                    if let fullImage {
-                        Image(uiImage: fullImage)
-                            .resizable()
-                            .scaledToFit()
-                            .scaleEffect(max(scale, 1) * magnify)
-                            .gesture(magnification)
-                            .onTapGesture(count: 2, perform: doubleTap)
-                    } else {
-                        ProgressView().tint(.white)
-                    }
-                } else if item.status == .pending {
-                    VStack(spacing: 12) {
-                        ProgressView().tint(.white)
-                        Text(L10n.processing)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.8))
-                    }
-                } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.title2)
-                            .foregroundStyle(.red)
-                        Text(item.friendlyIngestError)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.8))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                    }
-                }
+                    .opacity(backgroundOpacity)
+                // The media ONLY — the centre play button, the bottom
+                // gradient, the toolbar and the notice stay in place
+                // and fade instead of moving. Scale BEFORE offset:
+                // scaling first keeps the offset unscaled, so the
+                // media's centre lands exactly on the thumbnail.
+                mediaContent
+                    .scaleEffect(dragScale)
+                    .offset(dragOffset)
                 // Centre play button for paused videos (Photos) —
                 // the ONLY centre pause/play indicator. (The old
                 // tap-flash icon that showed a second one is gone.)
+                // Fades with the dismiss drag, in place.
                 if item.status == .ready, !isImage, !isPlaying, player != nil {
                     Button {
                         togglePlay()
@@ -440,9 +500,11 @@ private struct PhotoDetailPage: View {
                             .background(.ultraThinMaterial, in: Circle())
                     }
                     .accessibilityLabel(L10n.play)
+                    .opacity(chromeOpacity)
                 }
                 // Bottom gradient so the toolbar icons stay legible
-                // over the media (Photos-style).
+                // over the media (Photos-style). Fades with the
+                // dismiss drag, in place.
                 if item.status == .ready, chromeVisible {
                     VStack {
                         Spacer()
@@ -453,11 +515,13 @@ private struct PhotoDetailPage: View {
                         )
                         .frame(height: 180)
                     }
+                    .opacity(chromeOpacity)
                 }
                 // Progress bar + Photos-style bottom toolbar. The
                 // toolbar sits at the very bottom, just above the
                 // Home Indicator, and the progress bar is right above
-                // it. Both hide with the chrome.
+                // it. Both hide with the chrome — and fade, in place,
+                // with the dismiss drag.
                 VStack(spacing: 0) {
                     Spacer()
                     if item.status == .ready, !isImage {
@@ -545,9 +609,12 @@ private struct PhotoDetailPage: View {
                         .background(.ultraThinMaterial)
                     }
                 }
+                .opacity(chromeOpacity)
                 .animation(.easeInOut(duration: 0.2), value: chromeVisible)
                 // Transient notice (e.g. "Đã lưu vào Photos"). Sits
                 // above the progress bar so it never covers it.
+                // Fades with the dismiss drag, like the rest of the
+                // chrome.
                 if let notice {
                     VStack {
                         Spacer()
@@ -561,6 +628,7 @@ private struct PhotoDetailPage: View {
                             .clipShape(Capsule())
                             .padding(.bottom, 160)
                     }
+                    .opacity(chromeOpacity)
                 }
             }
             .contentShape(Rectangle())
@@ -571,8 +639,15 @@ private struct PhotoDetailPage: View {
                 showControlsTemporarily()
             }
             .simultaneousGesture(swipeUp)
+            // Drag down to dismiss (Photos viewer): moves only the
+            // media (see `dismissDrag` below). Simultaneous so the
+            // tap, the swipe-up and the paging ScrollView keep
+            // working alongside it.
+            .simultaneousGesture(dismissDrag(pageSize: geo.size, pageGlobalFrame: geo.frame(in: .global)))
         }
-        .background(Color.black)
+        // Fades with the dismiss drag, like the black inside the
+        // ZStack above — either one left opaque would hide the grid.
+        .background(Color.black.opacity(backgroundOpacity))
         // Photos-style info sheet (the (i) button in the toolbar).
         // No Save to Photos / Add to Album here any more (user
         // request) — the sheet is info only.
@@ -654,6 +729,131 @@ private struct PhotoDetailPage: View {
                     Haptics.tap()
                 }
             }
+    }
+
+    // MARK: - Drag down to dismiss (Photos viewer)
+
+    /// A predominantly vertical downward drag on the media moves
+    /// ONLY the media down with the finger and shrinks it; the black
+    /// background and the chrome fade so the album grid behind shows
+    /// through. The drag state lives in the viewer (`dragOffset` /
+    /// `dragScale` / `dismissing` bindings) so the background and
+    /// chrome move from the same values. The transform is a pure
+    /// function of the live gesture value — no animation on
+    /// `.onChanged` — so the media follows the finger with no jumps.
+    ///
+    /// Gated off while zoomed, while scrubbing, while a pinch is in
+    /// progress, and for drags that start on the bottom chrome
+    /// (progress bar / toolbar). Upward drags are not claimed here —
+    /// the swipe-up above opens the info sheet. Horizontal paging is
+    /// unaffected: the gesture is simultaneous, it ignores
+    /// predominantly-horizontal drags, and the viewer disables the
+    /// paging ScrollView once the drag has claimed the touch.
+    /// `pageSize` / `pageGlobalFrame` are plain values captured at
+    /// body-evaluation time (the page does not move or resize during
+    /// a drag, so they stay valid for the whole gesture).
+    private func dismissDrag(pageSize: CGSize, pageGlobalFrame: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard isCurrent, !isScrubbing, !dismissing, !zoomed, magnify == 1 else { return }
+                // Drags must start on the media, not on the bottom
+                // chrome (progress bar + toolbar when the chrome is
+                // shown; only the Home Indicator strip when hidden).
+                let chromeZone: CGFloat = chromeVisible ? 140 : 40
+                guard value.startLocation.y < pageSize.height - chromeZone else { return }
+                let dy = value.translation.height
+                // Direction lock: once the drag has claimed the touch
+                // (the media is already moving down), keep following
+                // the vertical component even if the finger drifts
+                // sideways.
+                let claimed = dragOffset.height > 0
+                guard dy > 0, claimed || abs(dy) > abs(value.translation.width) else { return }
+                dragOffset = CGSize(width: 0, height: dy)
+                dragScale = 1 - 0.35 * min(dy / 300, 1)
+            }
+            .onEnded { value in
+                guard isCurrent, !isScrubbing, !dismissing, !zoomed, magnify == 1 else {
+                    resetDismissDrag()
+                    return
+                }
+                let dy = value.translation.height
+                let vertical = dy > 0 && (dragOffset.height > 0 || abs(dy) > abs(value.translation.width))
+                // Distance OR flick: a fast downward flick dismisses
+                // even from a short drag. `predictedEndTranslation`
+                // is the flick proxy (it extrapolates from the
+                // finger's velocity): > 300pt down means the finger
+                // was heading well past the threshold. (`velocity`
+                // itself is not used — its public availability on
+                // DragGesture.Value is contested; predicted-end is
+                // public since iOS 13.)
+                let flick = value.predictedEndTranslation.height > 300
+                if vertical && (dy > 120 || flick) {
+                    dismissToThumbnail(pageSize: pageSize, pageGlobalFrame: pageGlobalFrame)
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        dragOffset = .zero
+                        dragScale = 1
+                    }
+                }
+            }
+    }
+
+    /// Release past the threshold: animate the media onto its source
+    /// thumbnail (or down off the screen when the thumbnail is
+    /// unknown), fade the background + chrome out, then pop. The pop
+    /// happens in the animation's completion, so the media visibly
+    /// shrinks onto the thumbnail instead of vanishing mid-flight.
+    private func dismissToThumbnail(pageSize: CGSize, pageGlobalFrame: CGRect) {
+        let target = dismissTarget(pageSize: pageSize, pageGlobalFrame: pageGlobalFrame)
+        withAnimation(.easeInOut(duration: 0.35)) {
+            dragOffset = target.offset
+            dragScale = target.scale
+            dismissing = true
+        } completion: {
+            dismiss()
+        }
+    }
+
+    /// Where the media flies to on a dismissing release: its source
+    /// thumbnail (the media scales to cover it, centred on it — the
+    /// grid cell shows the media cropped to fill the square, so the
+    /// landing image lines up with the thumbnail), or — when the
+    /// thumbnail is unknown (opened from Search / For You) — down
+    /// off the bottom edge while shrinking + fading.
+    private func dismissTarget(pageSize: CGSize, pageGlobalFrame: CGRect) -> (offset: CGSize, scale: CGFloat) {
+        guard let thumb = sourceFrame, thumb.width > 0, thumb.height > 0 else {
+            return (CGSize(width: 0, height: pageSize.height), 0.6)
+        }
+        // The drawn media size: a video fills the page (aspectFill);
+        // a photo is aspect-fit inside it.
+        let drawn: CGSize
+        if isImage {
+            let imageSize: CGSize
+            if let fullImage {
+                imageSize = fullImage.size
+            } else if let w = item.width, let h = item.height, w > 0, h > 0 {
+                imageSize = CGSize(width: w, height: h)
+            } else {
+                imageSize = pageSize
+            }
+            let fitted = AVMakeRect(aspectRatio: imageSize, insideRect: CGRect(origin: .zero, size: pageSize)).size
+            drawn = (fitted.width > 0 && fitted.height > 0) ? fitted : pageSize
+        } else {
+            drawn = pageSize
+        }
+        // Cover the thumbnail (see above): the largest ratio wins.
+        let scale = max(thumb.width / drawn.width, thumb.height / drawn.height)
+        let pageCenter = CGPoint(x: pageGlobalFrame.midX, y: pageGlobalFrame.midY)
+        let offset = CGSize(width: thumb.midX - pageCenter.x, height: thumb.midY - pageCenter.y)
+        return (offset, max(scale, 0.05))
+    }
+
+    /// Instantly clear a half-started dismiss drag (the gesture
+    /// ended while gated off — zoomed, scrubbing, or a pinch in
+    /// progress). No animation: the media never visibly moved.
+    private func resetDismissDrag() {
+        dragOffset = .zero
+        dragScale = 1
     }
 
     private func doubleTap() {
