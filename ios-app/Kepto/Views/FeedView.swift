@@ -25,9 +25,9 @@ import UIKit
 /// with the sprite preview popup). The background is black throughout.
 /// Photo posts show the full image instead of a player.
 ///
-/// There is NO "..." button on the video: all video actions live in
-/// the long-press menu (Copy link, Download, Playback speed, Add to
-/// collection, Delete) plus the video's username + caption. No
+/// Video actions live in the bottom-right rail: a "…" button
+/// (Save to Photos, Share, Favorite, Add to Album, Delete) and a
+/// speedometer button (playback speed). No long-press menu. No
 /// Share-with / Repost / friends list.
 struct FeedView: View {
     /// The list to page through. A Binding so appends from `onNearEnd`
@@ -45,7 +45,7 @@ struct FeedView: View {
     @State private var currentItemId: String?
     @State private var showingDeleteConfirmation = false
     @State private var deleteError: String?
-    /// The video a long-press Delete is about to delete (captured when
+    /// The video a "…" menu Delete is about to delete (captured when
     /// the user taps Delete, so a swipe in between cannot retarget it).
     @State private var itemPendingDelete: Item?
     /// True while the user is dragging a page's progress bar. The
@@ -240,14 +240,15 @@ struct FeedView: View {
 /// The player is created on appear and kept (paused)
 /// when the page scrolls away — see the note on `schedulePlay`
 /// for why it is not destroyed. It plays only while this page is
-/// the current one, and loops. Long-press opens the native iOS
-/// context menu (Save to Photos, Share, Favorite, Playback speed,
-/// Add to Album, Delete). The username and caption are overlaid on
+/// the current one, and loops. There is no long-press menu: the
+/// bottom-right rail has a "…" button (Save to Photos, Share,
+/// Favorite, Add to Album, Delete) and a speedometer button
+/// (playback speed). The username and caption are overlaid on
 /// the video itself, not repeated in the menu.
 private struct FeedVideoPage: View {
     let item: Item
     let isCurrent: Bool
-    /// Called when the user taps Delete in the context menu (the
+    /// Called when the user taps Delete in the "…" menu (the
     /// feed shows the delete confirmation for this video).
     var onDeleteRequest: ((Item) -> Void)? = nil
     @EnvironmentObject private var viewModel: LibraryViewModel
@@ -269,11 +270,11 @@ private struct FeedVideoPage: View {
     /// stops being current or disappears.
     @State private var playTask: Task<Void, Never>?
     @State private var fullImage: UIImage?
-    /// Playback speed from the context menu (1.0 = normal).
+    /// Playback speed from the speedometer button (1.0 = normal).
     @State private var playbackRate: Float = 1.0
-    /// Speeds offered by the context menu's Playback speed submenu.
+    /// Speeds offered by the speedometer button's menu.
     private let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-    /// The context menu's "Add to Album" picker (nil = closed).
+    /// The "…" menu's "Add to Album" picker (nil = closed).
     @State private var showingAlbumPicker = false
     /// A downloaded file ready for the iOS share sheet (nil = closed).
     @State private var shareFile: ShareFile?
@@ -358,8 +359,8 @@ private struct FeedVideoPage: View {
                 }
                 // Username + caption, overlaid bottom-left on the
                 // video (TikTok-style), directly above the progress
-                // bar. There is no "…" button on the video any more,
-                // so nothing covers this text.
+                // bar. The "…" and speedometer buttons sit to the
+                // right of this text, so nothing covers it.
                 // Progress bar sits ABOVE the username (not at the
                 // very bottom): the username is at the bottom edge,
                 // just above the Home Indicator, and the progress bar
@@ -381,20 +382,87 @@ private struct FeedVideoPage: View {
                         .padding(.bottom, 10)
                     }
                     if item.status == .ready {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.collectionName)
-                                .font(.headline)
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                            if let caption = item.caption,
-                               !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                Text(caption)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .lineLimit(2)
+                        HStack(alignment: .bottom, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.collectionName)
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                if let caption = item.caption,
+                                   !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(caption)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.white.opacity(0.85))
+                                        .lineLimit(2)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            // Right-side action rail (Facebook-style),
+                            // bottom-right next to the username:
+                            // "…" opens the menu (Save to Photos,
+                            // Share, Favorite, Add to Album, Delete —
+                            // no Playback speed in it any more), and
+                            // the speed button at the very bottom-right
+                            // corner opens the playback speed menu.
+                            // (The long-press context menu is gone —
+                            // these two buttons replace it.)
+                            VStack(spacing: 12) {
+                                Menu {
+                                    Button { Task { await downloadVideo() } } label: {
+                                        Label("Save to Photos", systemImage: "arrow.down.to.line")
+                                    }
+                                    Button { shareItem() } label: {
+                                        Label("Share", systemImage: "square.and.arrow.up")
+                                    }
+                                    Button {
+                                        Task {
+                                            if let updated = await viewModel.toggleFavorite(item: item) {
+                                                showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
+                                            }
+                                        }
+                                    } label: {
+                                        Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
+                                    }
+                                    Button { showingAlbumPicker = true } label: {
+                                        Label("Add to Album", systemImage: "folder.badge.plus")
+                                    }
+                                    Button(role: .destructive) {
+                                        onDeleteRequest?(item)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 44, height: 44)
+                                        .background(.ultraThinMaterial, in: Circle())
+                                        .accessibilityLabel("More options")
+                                }
+                                if !isImage {
+                                    Menu {
+                                        ForEach(speeds, id: \.self) { rate in
+                                            Button {
+                                                selectRate(rate)
+                                            } label: {
+                                                if rate == playbackRate {
+                                                    Label(String(format: "%gx", rate), systemImage: "checkmark")
+                                                } else {
+                                                    Text(String(format: "%gx", rate))
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        Image(systemName: "speedometer")
+                                            .font(.system(size: 18, weight: .semibold))
+                                            .foregroundStyle(.white)
+                                            .frame(width: 44, height: 44)
+                                            .background(.ultraThinMaterial, in: Circle())
+                                            .accessibilityLabel("Playback speed")
+                                    }
+                                }
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         // At the very bottom, just above the Home
                         // Indicator (a small gap, not touching it).
@@ -427,55 +495,9 @@ private struct FeedVideoPage: View {
                 // again, then hide it after a while idle.
                 showControlsTemporarily()
             }
-            .contextMenu {
-                // Native iOS context menu (long-press on the video):
-                // Save to Photos, Share, Favorite, Playback speed
-                // (submenu), Add to Album, Delete — same dark, large
-                // radius, right-side icons, red Delete as the grid
-                // menu. The video keeps playing while the menu is up
-                // (native context-menu behaviour); the old bottom
-                // sheet paused it, this one does not.
-                if item.status == .ready {
-                    Button { Task { await downloadVideo() } } label: {
-                        Label("Save to Photos", systemImage: "arrow.down.to.line")
-                    }
-                    Button { shareItem() } label: {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
-                    Button {
-                        Task {
-                            if let updated = await viewModel.toggleFavorite(item: item) {
-                                showNotice(updated.isFavorite ? "Đã thêm vào Favorite" : "Đã bỏ Favorite")
-                            }
-                        }
-                    } label: {
-                        Label("Favorite", systemImage: item.isFavorite ? "heart.fill" : "heart")
-                    }
-                    Menu {
-                        ForEach(speeds, id: \.self) { rate in
-                            Button {
-                                selectRate(rate)
-                            } label: {
-                                if rate == playbackRate {
-                                    Label(String(format: "%gx", rate), systemImage: "checkmark")
-                                } else {
-                                    Text(String(format: "%gx", rate))
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("Playback speed", systemImage: "gauge")
-                    }
-                    Button { showingAlbumPicker = true } label: {
-                        Label("Add to Album", systemImage: "folder.badge.plus")
-                    }
-                    Button(role: .destructive) {
-                        onDeleteRequest?(item)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                }
-            }
+            // No long-press context menu any more — the "…" button
+            // (bottom-right) opens the menu, and the speedometer
+            // button opens the playback speed menu.
         }
         .background(Color.black)
         .sheet(isPresented: $showingAlbumPicker) {
@@ -631,7 +653,7 @@ private struct FeedVideoPage: View {
         isPlaying = true
     }
 
-    /// Playback speed from the context menu. Applies immediately
+    /// Playback speed from the speedometer button. Applies immediately
     /// when the video is playing; otherwise it applies on resume.
     private func selectRate(_ rate: Float) {
         playbackRate = rate
@@ -640,7 +662,7 @@ private struct FeedVideoPage: View {
         }
     }
 
-    /// Context menu "Save to Photos": download the video (or image)
+    /// "…" menu "Save to Photos": download the video (or image)
     /// and save it to the Photos library, like TikTok's Download.
     private func downloadVideo() async {
         do {
@@ -651,7 +673,7 @@ private struct FeedVideoPage: View {
         }
     }
 
-    /// Context menu "Share": download the video (or image) file, then
+    /// "…" menu "Share": download the video (or image) file, then
     /// open the iOS share sheet with it.
     private func shareItem() {
         Task {
