@@ -238,10 +238,11 @@ final class LibraryViewModel: ObservableObject {
     }
 
     /// Copy of `item` with the favorite flag replaced. `Item` is all
-    /// `let`, so a toggle / merge needs a fresh value; the memberwise
-    /// init is used (declaration order).
+    /// `let` except `isFavorite` (a `var` — the synthesized memberwise
+    /// init omits defaulted properties, so `isFavorite` cannot be
+    /// passed to it; it is assigned on the fresh copy instead).
     private func withFavorite(_ item: Item, _ favorite: Bool) -> Item {
-        Item(
+        var copy = Item(
             id: item.id, userId: item.userId, platform: item.platform,
             originalUrl: item.originalUrl, r2Key: item.r2Key,
             thumbKey: item.thumbKey, previewKey: item.previewKey,
@@ -257,9 +258,11 @@ final class LibraryViewModel: ObservableObject {
             previewInterval: item.previewInterval,
             previewCount: item.previewCount,
             viewCount: item.viewCount,
-            isFavorite: favorite, status: item.status,
+            status: item.status,
             ingestError: item.ingestError, createdAt: item.createdAt
         )
+        copy.isFavorite = favorite
+        return copy
     }
 
     /// Overlay the favorite flags from the allMetadata cache onto

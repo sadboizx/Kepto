@@ -86,7 +86,7 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     /// True when the item is favorited (heart). Defaults to false when
     /// the key is missing (the backend only sends it after migration
     /// 0005) — a missing key must never fail decoding the whole item.
-    let isFavorite: Bool = false
+    var isFavorite: Bool = false
     let status: ItemStatus
     let ingestError: String?
     let createdAt: String
