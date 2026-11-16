@@ -747,8 +747,11 @@ struct LibraryView: View {
             }
             return
         }
-        // Photo: load as a UIImage and re-encode as JPEG (HEIC -> JPEG).
-        guard let image = try? await item.loadTransferable(type: UIImage.self),
+        // Photo: load the raw bytes (Data conforms to Transferable;
+        // UIImage does not), decode them, and re-encode as JPEG
+        // (HEIC -> JPEG — the ingest cannot convert HEIC).
+        guard let rawData = try? await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: rawData),
               let data = image.jpegData(compressionQuality: 0.9) else {
             viewModel.errorMessage = "Không đọc được ảnh đã chọn."
             return
