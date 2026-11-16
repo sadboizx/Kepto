@@ -8,6 +8,7 @@ export type Platform =
   | "facebook"
   | "douyin"
   | "youtube"
+  | "album"
   | "other";
 
 export interface Item {

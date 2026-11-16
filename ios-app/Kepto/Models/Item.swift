@@ -11,6 +11,7 @@ enum Platform: String, Codable, CaseIterable, Identifiable {
     case facebook
     case douyin
     case youtube
+    case album
     case other
 
     var id: String { rawValue }
@@ -24,6 +25,7 @@ enum Platform: String, Codable, CaseIterable, Identifiable {
         case .facebook: return "Facebook"
         case .douyin: return "Douyin"
         case .youtube: return "YouTube"
+        case .album: return "Albums"
         case .other: return "Other"
         }
     }

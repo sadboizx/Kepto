@@ -1,5 +1,7 @@
+import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Library view mode: the Photos-style Years / Months / Days /
 /// All Photos switcher (a pill segmented control above the tab bar,
@@ -45,6 +47,11 @@ struct LibraryView: View {
     @State private var clipboardAlert = false
     /// One-line notice after a direct save (e.g. "already saved").
     @State private var saveNotice: String?
+    /// PhotosPicker for uploading a photo/video from the device Albums.
+    @State private var showingPhotoPicker = false
+    @State private var selectedPhoto: PhotosPickerItem?
+    /// True while an Albums upload is in flight (shows a spinner pill).
+    @State private var isUploading = false
     /// The video the full-screen feed viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
     /// The video the context menu's "Add to Album" opened the picker
@@ -101,6 +108,19 @@ struct LibraryView: View {
                         bottomBar
                     }
                 }
+                // Spinner pill while an Albums upload is in flight.
+                if isUploading {
+                    HStack(spacing: 10) {
+                        ProgressView().tint(.white)
+                        Text("Đang tải lên…")
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.7), in: Capsule())
+                    .padding(.bottom, 100)
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -123,6 +143,9 @@ struct LibraryView: View {
                             }
                             .buttonStyle(.plain)
                             Menu {
+                                Button { showingPhotoPicker = true } label: {
+                                    Label("Upload from Albums", systemImage: "photo.on.rectangle")
+                                }
                                 Button { Task { await saveDirectFromClipboard() } } label: {
                                     Label("Clipboard", systemImage: "doc.on.clipboard")
                                 }
@@ -149,6 +172,12 @@ struct LibraryView: View {
             .task {
                 await viewModel.fetch()
                 await viewModel.fetchStats()
+            }
+            .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .any(of: [.images, .videos]))
+            .onChange(of: selectedPhoto) { _, newValue in
+                guard let newValue else { return }
+                selectedPhoto = nil
+                Task { await uploadPickedPhoto(newValue) }
             }
             .alert("Lưu link", isPresented: $showingURLInput) {
             TextField(
@@ -691,6 +720,60 @@ struct LibraryView: View {
             saveNotice = notice
         } else {
             clipboardAlert = true
+        }
+    }
+
+    /// Upload the photo/video the user just picked in the PhotosPicker.
+    /// Photos are converted to JPEG first (iPhone photos are HEIC and
+    /// the ingest cannot convert HEIC); videos are uploaded as-is.
+    /// While uploading, a spinner pill shows; on success the Library
+    /// refreshes (via viewModel.upload) and a notice appears; on
+    /// failure the view model's error alert shows the reason.
+    private func uploadPickedPhoto(_ item: PhotosPickerItem) async {
+        isUploading = true
+        defer { isUploading = false }
+        // Video: the picker hands back a file URL (a temp copy).
+        let types = item.supportedContentTypes
+        let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
+        if isVideo {
+            guard let fileURL = try? await item.loadTransferable(type: URL.self) else {
+                viewModel.errorMessage = "Không đọc được video đã chọn."
+                return
+            }
+            let filename = fileURL.lastPathComponent
+            let mimeType = mimeType(for: fileURL.pathExtension)
+            if await viewModel.upload(fileURL: fileURL, filename: filename, mimeType: mimeType) != nil {
+                saveNotice = "Đã tải lên."
+            }
+            return
+        }
+        // Photo: load as a UIImage and re-encode as JPEG (HEIC -> JPEG).
+        guard let image = try? await item.loadTransferable(type: UIImage.self),
+              let data = image.jpegData(compressionQuality: 0.9) else {
+            viewModel.errorMessage = "Không đọc được ảnh đã chọn."
+            return
+        }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kepto-upload-\(UUID().uuidString).jpg")
+        do {
+            try data.write(to: tempURL)
+        } catch {
+            viewModel.errorMessage = "Không chuẩn bị được ảnh để tải lên."
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        if await viewModel.upload(fileURL: tempURL, filename: "photo.jpg", mimeType: "image/jpeg") != nil {
+            saveNotice = "Đã tải lên."
+        }
+    }
+
+    /// MIME type for a video file extension (used for the upload body).
+    private func mimeType(for pathExtension: String) -> String {
+        switch pathExtension.lowercased() {
+        case "mov": return "video/quicktime"
+        case "m4v": return "video/x-m4v"
+        case "mp4": return "video/mp4"
+        default: return "video/mp4"
         }
     }
 }

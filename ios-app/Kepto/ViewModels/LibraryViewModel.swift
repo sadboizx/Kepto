@@ -349,6 +349,27 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    /// Upload a photo/video from the device Albums. The file is sent to
+    /// the Worker, which forwards it to the ingest service. Returns the
+    /// finished item on success (nil + errorMessage on failure). After
+    /// an upload the Library and the Albums tab both refresh, so the
+    /// new item shows up.
+    func upload(fileURL: URL, filename: String, mimeType: String) async -> Item? {
+        guard let api else {
+            errorMessage = KeptoAPIError.notConfigured.errorDescription
+            return nil
+        }
+        do {
+            let item = try await api.uploadFile(fileURL: fileURL, filename: filename, mimeType: mimeType)
+            await fetch()
+            await fetchCollections()
+            return item
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return nil
+        }
+    }
+
     /// Reads the first http(s) URL on the clipboard and saves it
     /// (single video or whole collection, via save(url:)). Returns a
     /// short notice string for the caller to display, or nil when

@@ -40,6 +40,12 @@
  * - GET  /api/thumb/:id       streams the thumbnail from R2
  * - GET  /api/preview/:id     streams the scrub-preview sprite from R2
  * - DELETE /api/items/:id     deletes R2 objects + D1 row
+ * - POST /api/upload          the app uploads a photo/video from the
+ *   device Albums (raw file body, ?filename=); the Worker creates a
+ *   pending "album" item and streams the body to the ingest /upload
+ *   endpoint, which finishes it like a link ingest. The "app never
+ *   uploads" rule below applies to LINK saves only — a local file is
+ *   already on the device, so uploading it once is the only way in.
  * - POST /api/ingest-complete Bearer <INGEST_TOKEN>, called by the ingest service
  * - GET  /api/health          liveness probe, no auth
  *
@@ -268,6 +274,57 @@ app.post("/api/save", async (c) => {
 });
 
 const MAX_COLLECTION_VIDEOS = 100;
+
+/**
+ * POST /api/upload — upload a photo/video straight from the device
+ * Albums (PhotosPicker). The app sends the raw file bytes as the body
+ * (Content-Type = the file's MIME type, filename in ?filename=). The
+ * Worker creates a pending item (platform "album", original_url
+ * "album://<uuid>") and streams the body through to the ingest service,
+ * which probes it, builds a thumbnail (+ a scrub sprite for videos),
+ * uploads it to R2, and calls back /api/ingest-complete. The Worker
+ * waits for the ingest to finish and returns the finished item.
+ *
+ * The app uploads through the Worker (not directly to the ingest)
+ * because the ingest needs INGEST_TOKEN, which the app never holds.
+ * Files over ~100 MB hit the Workers request limit — the app shows
+ * that error instead of a silent failure.
+ */
+app.post("/api/upload", async (c) => {
+  const filename = c.req.query("filename") || "upload";
+  const contentType = c.req.header("Content-Type") || "application/octet-stream";
+  const id = crypto.randomUUID();
+  await insertItem(c.env.DB, { id, user_id: "me", platform: "album", original_url: `album://${id}` });
+  if (!c.env.INGEST_URL || !c.env.INGEST_TOKEN) {
+    await markFailed(c.env.DB, id, "ingest_not_configured");
+    return c.json({ ok: false, error: "Ingest chưa được cấu hình." }, 500);
+  }
+  const uploadUrl = c.env.INGEST_URL.replace(/\/ingest\/?$/, "") + "/upload";
+  let ingestRes: Response;
+  try {
+    ingestRes = await fetch(
+      `${uploadUrl}?item_id=${id}&filename=${encodeURIComponent(filename)}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${c.env.INGEST_TOKEN}`,
+          "Content-Type": contentType,
+        },
+        body: c.req.raw.body,
+      },
+    );
+  } catch (e) {
+    await markFailed(c.env.DB, id, String(e).slice(0, 500));
+    return c.json({ ok: false, error: "Không gọi được ingest service." }, 502);
+  }
+  if (!ingestRes.ok) {
+    const errText = await ingestRes.text().catch(() => "");
+    await markFailed(c.env.DB, id, errText.slice(0, 500) || `upload_failed_${ingestRes.status}`);
+    return c.json({ ok: false, error: errText || "Tải lên thất bại." }, 502);
+  }
+  const item = await getItem(c.env.DB, id);
+  return c.json({ ok: true, item }, 201);
+});
 
 /**
  * Save every video in a TikTok Collection (or any playlist URL yt-dlp

@@ -229,6 +229,24 @@ final class KeptoAPI {
         ))
     }
 
+    /// POST /api/upload — upload a photo/video from the device Albums.
+    /// The file is sent as the raw request body (Content-Type = the
+    /// file's MIME type, filename in ?filename=); the Worker creates a
+    /// pending "album" item, streams the body to the ingest service for
+    /// processing, and returns the finished item. The request gets a
+    /// 600s timeout because a large video upload + processing takes a
+    /// while. Photos are converted to JPEG by the caller before this
+    /// (the ingest cannot convert HEIC — iPhone photos are HEIC).
+    func uploadFile(fileURL: URL, filename: String, mimeType: String) async throws -> Item {
+        let query = [URLQueryItem(name: "filename", value: filename)]
+        var request = authorizedRequest(url: url(path: "/api/upload", queryItems: query), method: "POST")
+        request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 600
+        let (data, response) = try await session.upload(for: request, fromFile: fileURL)
+        let decoded = try handle(data, response, as: ItemResponse.self)
+        return decoded.item
+    }
+
     /// DELETE /api/items/:id
     func delete(id: String) async throws {
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/items/\(id)"), method: "DELETE"))
