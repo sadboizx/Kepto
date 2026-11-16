@@ -37,12 +37,19 @@ export interface Item {
   preview_interval: number | null;
   preview_count: number | null;
   view_count: number | null;
-  /** 1 = favorited (heart), 0 = not. Added by migration 0005. */
-  is_favorite: number | null;
+  /** True when favorited (heart). D1 stores 0/1/null — normalized
+      to a real boolean at the read boundary (listItems / getItem);
+      the app also tolerates numbers (see KeptoAPI). Added by
+      migration 0005. */
+  is_favorite: boolean;
   status: "pending" | "ready" | "failed";
   ingest_error: string | null;
   created_at: string;
 }
+
+/** A raw D1 row for an item: same shape, but is_favorite is still
+    the stored 0/1/null. Read sites use this, then map to Item. */
+type ItemRow = Omit<Item, "is_favorite"> & { is_favorite: number | null };
 
 export function detectPlatform(rawUrl: string): Platform {
   let host = "";
@@ -93,8 +100,11 @@ export async function getItem(db: D1Database, id: string): Promise<Item | null> 
   const row = await db
     .prepare(`SELECT * FROM items WHERE id = ?1`)
     .bind(id)
-    .first<Item>();
-  return row ?? null;
+    .first<ItemRow>();
+  if (!row) return null;
+  // D1 returns is_favorite as a number (0/1/null); the app decodes
+  // it as Bool — normalize here (same as listAllItems).
+  return { ...row, is_favorite: row.is_favorite === 1 };
 }
 
 /** Dedupe lookup for POST /api/save: the row for this exact (normalized) URL, if any. */
@@ -253,8 +263,14 @@ export async function listItems(
        ORDER BY saved_at DESC, id DESC LIMIT ${next()}`,
     )
     .bind(...binds, p.limit + 1);
-  const { results } = await stmt.all<Item>();
-  return results ?? [];
+  const { results } = await stmt.all<ItemRow>();
+  // D1 returns is_favorite as a number (0/1/null); the app decodes
+  // it as Bool — normalize here (same as listAllItems). Without
+  // this the app decoded album items as not-favorited.
+  return (results ?? []).map((r) => ({
+    ...r,
+    is_favorite: r.is_favorite === 1,
+  }));
 }
 
 export interface ItemMetadataRow {

@@ -155,7 +155,14 @@ struct PhotoCollectionScreen: View {
                         onNearEnd: { await loadMore() },
                         title: title,
                         sourceFrame: feedStartFrame,
-                        onDismiss: { feedStartItem = nil }
+                        onDismiss: {
+                            feedStartItem = nil
+                            // Re-apply the cached favorite flags: a
+                            // heart toggled in the viewer must survive
+                            // the close (the /api/list payloads omit
+                            // is_favorite on the deployed Worker).
+                            items = viewModel.applyingMetadataFavoriteFlags(to: items)
+                        }
                     )
                     .ignoresSafeArea()
                 }
@@ -333,7 +340,18 @@ struct PhotoCollectionScreen: View {
                 await fetch(reset: true)
             }
             .task {
+                // Kick the full-metadata fetch off in parallel: the
+                // flag merge needs the cache, and the user may open
+                // Albums before the Library tab ever loads it.
+                Task { await viewModel.fetchAllMetadata() }
                 await fetch(reset: true)
+            }
+            .onChange(of: viewModel.allMetadataLoaded) { _, loaded in
+                // The cache arrived after the grid loaded — overlay
+                // its favorite flags now (the merge is idempotent).
+                if loaded {
+                    items = viewModel.applyingMetadataFavoriteFlags(to: items)
+                }
             }
             .overlay {
                 if isLoading && items.isEmpty {
@@ -612,7 +630,9 @@ struct PhotoCollectionScreen: View {
                     limit: 50, cursor: reset ? nil : nextCursor
                 )
             }
-            items = reset ? page : items + page
+            // The /api/list payloads omit is_favorite on the deployed
+            // Worker — overlay the flags from the listAll cache.
+            items = viewModel.applyingMetadataFavoriteFlags(to: reset ? page : items + page)
             nextCursor = cursor
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -645,7 +665,8 @@ struct PhotoCollectionScreen: View {
                     media == .video ? "video" : "image", limit: 50, cursor: nextCursor
                 )
             }
-            items.append(contentsOf: page)
+            // Same is_favorite overlay as fetch().
+            items = viewModel.applyingMetadataFavoriteFlags(to: items + page)
             nextCursor = cursor
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

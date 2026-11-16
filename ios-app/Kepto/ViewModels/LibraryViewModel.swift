@@ -237,6 +237,49 @@ final class LibraryViewModel: ObservableObject {
         )
     }
 
+    /// Copy of `item` with the favorite flag replaced. `Item` is all
+    /// `let`, so a toggle / merge needs a fresh value; the memberwise
+    /// init is used (declaration order).
+    private func withFavorite(_ item: Item, _ favorite: Bool) -> Item {
+        Item(
+            id: item.id, userId: item.userId, platform: item.platform,
+            originalUrl: item.originalUrl, r2Key: item.r2Key,
+            thumbKey: item.thumbKey, previewKey: item.previewKey,
+            contentType: item.contentType, title: item.title,
+            caption: item.caption, author: item.author,
+            authorUsername: item.authorUsername,
+            authorAvatarUrl: item.authorAvatarUrl,
+            postedAt: item.postedAt, savedAt: item.savedAt,
+            duration: item.duration, width: item.width,
+            height: item.height, fileSize: item.fileSize,
+            sha256: item.sha256, previewCols: item.previewCols,
+            previewRows: item.previewRows,
+            previewInterval: item.previewInterval,
+            previewCount: item.previewCount,
+            viewCount: item.viewCount,
+            isFavorite: favorite, status: item.status,
+            ingestError: item.ingestError, createdAt: item.createdAt
+        )
+    }
+
+    /// Overlay the favorite flags from the allMetadata cache onto
+    /// `items` (matched by id). GET /api/list as served by the
+    /// deployed Worker omits `is_favorite`, so album items decode
+    /// isFavorite=false even when favorited; the /api/listAll cache
+    /// is the source of truth (Library hearts render from it).
+    /// No-op until the cache has loaded — callers should re-apply
+    /// when allMetadataLoaded flips.
+    func applyingMetadataFavoriteFlags(to items: [Item]) -> [Item] {
+        guard allMetadataLoaded else { return items }
+        var flags: [String: Bool] = [:]
+        flags.reserveCapacity(allMetadata.count)
+        for meta in allMetadata { flags[meta.id] = meta.isFavorite }
+        return items.map { item in
+            guard let flag = flags[item.id], flag != item.isFavorite else { return item }
+            return withFavorite(item, flag)
+        }
+    }
+
     /// Collections for the home screen. Called on appear and on
     /// pull-to-refresh, and after a save (a new username may appear).
     /// Fetches the per-creator collections and the user-created ("My")
@@ -1128,20 +1171,27 @@ final class LibraryViewModel: ObservableObject {
             return nil
         }
         do {
-            let updated = try await api.setFavorite(id: item.id, favorite: !item.isFavorite)
+            // The value being set. The server confirms the write,
+            // but its returned item omits is_favorite (deployed
+            // Worker lags), so it always decodes false — trust the
+            // request, or the toast, the heart and the cache all
+            // go wrong.
+            let requested = !item.isFavorite
+            let updated = try await api.setFavorite(id: item.id, favorite: requested)
+            let fixed = withFavorite(updated, requested)
             if let index = items.firstIndex(where: { $0.id == item.id }) {
-                items[index] = updated
+                items[index] = fixed
             }
             if let index = searchResults.firstIndex(where: { $0.id == item.id }) {
-                searchResults[index] = updated
+                searchResults[index] = fixed
             }
-            resolvedItemsById[updated.id] = updated
+            resolvedItemsById[fixed.id] = fixed
             // Keep the full-metadata cache in sync too — the Library
             // grid reads its favorite hearts from there (step 3), so
             // without this the heart would not flip until the next
             // listAll refetch.
-            upsertMetadata(for: updated)
-            return updated
+            upsertMetadata(for: fixed)
+            return fixed
         } catch {
             if error is CancellationError { return nil }
             if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
@@ -1155,11 +1205,15 @@ final class LibraryViewModel: ObservableObject {
     func refreshItem(_ item: Item) async {
         guard let api else { return }
         guard let updated = try? await api.getItem(id: item.id) else { return }
+        // The fetched item may omit is_favorite (deployed Worker);
+        // keep the cached flag when the cache knows it, or a
+        // refresh would un-heart the item and poison the cache.
+        let merged = applyingMetadataFavoriteFlags(to: [updated]).first ?? updated
         if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index] = updated
+            items[index] = merged
         }
-        resolvedItemsById[updated.id] = updated
-        upsertMetadata(for: updated)
+        resolvedItemsById[merged.id] = merged
+        upsertMetadata(for: merged)
     }
 
     /// Fetch one item fresh from the server (used by the detail view so
@@ -1167,6 +1221,9 @@ final class LibraryViewModel: ObservableObject {
     /// after ingest finished). Returns nil on failure.
     func fetchItem(id: String) async -> Item? {
         guard let api else { return nil }
-        return try? await api.getItem(id: id)
+        guard let item = try? await api.getItem(id: id) else { return nil }
+        // Same is_favorite caveat as refreshItem: overlay the cached
+        // flag so a single-item fetch never un-hearts it.
+        return applyingMetadataFavoriteFlags(to: [item]).first ?? item
     }
 }

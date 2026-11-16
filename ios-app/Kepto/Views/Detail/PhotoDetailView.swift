@@ -97,6 +97,17 @@ struct PhotoDetailView: View {
     @State private var dragOffset: CGSize = .zero
     @State private var dragScale: CGFloat = 1
     @State private var dismissing = false
+    /// Release-start snapshot for the mask (round-8): the media's
+    /// scale and rendered rect at the moment a dismissing release
+    /// begins, plus the target scale. `maskSize` lerps from this
+    /// rect to the thumbnail on the release progress — starting
+    /// from the release rect (not the page) is what makes the
+    /// visible rect one smooth function. Set (unanimated) in
+    /// `dismissToThumbnail` before the animation starts; only
+    /// read while `dismissing` is true.
+    @State private var dismissStartScale: CGFloat = 1
+    @State private var dismissTargetScale: CGFloat = 1
+    @State private var dismissStartRect: CGSize = .zero
     /// The global frame of the thumbnail the viewer opened from (nil
     /// when opened from Search / For You, or when the cell scrolled
     /// away): on a dismissing release the media shrinks onto it.
@@ -168,8 +179,10 @@ struct PhotoDetailView: View {
                 if chrome {
                     VStack(spacing: 0) {
                         // Below the top safe area (notch / status
-                        // bar): the centred date used to sit at y≈0
-                        // and overlap the status bar (frame i_02).
+                        // bar). The centred date used to live here
+                        // (it sat at y≈0 and overlapped the status
+                        // bar, frame i_02); round-8 removed it —
+                        // topBar is gradient-only now.
                         // topBar itself still adds its small +8pt.
                         topBar
                             .padding(.top, geo.safeAreaInsets.top)
@@ -221,6 +234,14 @@ struct PhotoDetailView: View {
             Text(deleteError ?? "")
         }
         .animation(.easeInOut(duration: 0.2), value: chrome)
+        // Swipe-back gate (round-8): while this viewer is open, a
+        // left-edge swipe must not pop the album detail underneath
+        // it. The pop delegate (below, shared by every screen's
+        // helper) reads this flag; it clears the moment the viewer
+        // goes away, so the album detail's own edge-pop is
+        // untouched when the viewer is closed.
+        .onAppear { PopGestureDelegate.viewerOpen = true }
+        .onDisappear { PopGestureDelegate.viewerOpen = false }
     }
 
     /// Empty state when there is nothing to page through.
@@ -293,26 +314,20 @@ struct PhotoDetailView: View {
     /// drag-down-to-dismiss is the viewer's only exit). White text
     /// over a top gradient, like Photos.
     private var topBar: some View {
-        ZStack {
-            // Centred date (posted, else saved).
-            VStack(spacing: 1) {
-                if let date = currentItem?.postedDate ?? currentItem?.savedDate {
-                    Text(DateLabels.dayTitle(for: date))
-                        .font(.subheadline.weight(.semibold))
-                    Text(DateLabels.timeString(for: date))
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.75))
-                }
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-        .background(
-            LinearGradient(colors: [.black.opacity(0.72), .black.opacity(0)], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .top)
-        )
+        // No date any more (user request, round-8): the centred
+        // date + time label is gone entirely. The top gradient
+        // stays, over a clear spacer that keeps the bar's height
+        // so the fade still reads as top chrome.
+        Color.clear
+            .frame(height: 36)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            .background(
+                LinearGradient(colors: [.black.opacity(0.72), .black.opacity(0)], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea(edges: .top)
+            )
     }
 
     /// The viewer must open on the item the user tapped, not the first
@@ -894,32 +909,107 @@ private struct PhotoDetailPage: View {
     /// the media visibly shrinks onto the thumbnail instead of
     /// vanishing mid-flight — and because the overlay is just
     /// removed (no NavigationStack pop), nothing slides across the
-    /// screen afterwards.
+    /// screen afterwards. Two round-8 details: the release-start
+    /// scale/rect are snapshotted (unanimated) first, so `maskSize`
+    /// can lerp from them; and the overlay is removed 0.05s after
+    /// the animation completes (a settle delay — the completion can
+    /// fire before the final frame is presented, so removing the
+    /// overlay at once cut the media away one frame early and the
+    /// thumbnail visibly jumped: the "jerk after completion").
     private func dismissToThumbnail(pageSize: CGSize, pageGlobalFrame: CGRect) {
         let target = dismissTarget(pageSize: pageSize, pageGlobalFrame: pageGlobalFrame)
+        // Snapshot the release-start state BEFORE the animation
+        // (plain assignment, not animated): the mask lerps from
+        // this rect to the thumbnail (see `maskSize`).
+        let drawn = drawnSize(pageSize: pageSize)
+        dismissStartScale = dragScale
+        dismissTargetScale = target.scale
+        dismissStartRect = CGSize(width: drawn.width * dragScale, height: drawn.height * dragScale)
         withAnimation(.easeInOut(duration: 0.35)) {
             dragOffset = target.offset
             dragScale = target.scale
             dismissing = true
         } completion: {
-            onDismiss?()
+            // Settle: let the final frame paint before the overlay
+            // is removed, or the thumbnail jumps by a frame.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                onDismiss?()
+            }
         }
     }
 
     /// The mask rect for the media (see the body): the full page
     /// while idle or dragging — the media never exceeds it, so the
-    /// mask is a no-op — and the source thumbnail's size on a
-    /// dismissing release, so the media is clipped exactly to the
-    /// thumbnail rect at landing. Driven by `dismissing`, so it
-    /// animates in the same easeInOut(0.35) transaction as the
-    /// scale + offset in `dismissToThumbnail`. Page-sized when the
-    /// thumbnail is unknown (Search / For You): the fallback slides
-    /// the media down off the bottom, unchanged.
+    /// mask is a no-op — and, on a dismissing release, a lerp from
+    /// the release-start rect to the source thumbnail's size, so
+    /// the media is clipped exactly to the thumbnail rect at
+    /// landing. The lerp runs on the release progress (derived
+    /// from the live `dragScale`), the same easing as the scale +
+    /// offset in `dismissToThumbnail`, so the visible rect is one
+    /// smooth function: the round-7 mask lerped from the PAGE
+    /// size, which is larger than the media for most of the
+    /// flight, so the visible rect followed the media until the
+    /// mask crossed it and then followed the mask — a ~3x rate
+    /// jump mid-flight ("not smooth"). Clamped to the live media
+    /// rect, so a lagging mask animation can never expose a jump.
+    /// Page-sized when the thumbnail is unknown (Search / For
+    /// You): the fallback slides the media down off the bottom,
+    /// unchanged.
     private func maskSize(pageSize: CGSize) -> CGSize {
         guard dismissing, let thumb = sourceFrame, thumb.width > 0, thumb.height > 0 else {
             return pageSize
         }
-        return thumb.size
+        let span = dismissStartScale - dismissTargetScale
+        let progress = span > 0.001 ? min(max((dismissStartScale - dragScale) / span, 0), 1) : 1
+        let drawn = drawnSize(pageSize: pageSize)
+        let live = CGSize(width: drawn.width * dragScale, height: drawn.height * dragScale)
+        let lerped = CGSize(
+            width: dismissStartRect.width + (thumb.width - dismissStartRect.width) * progress,
+            height: dismissStartRect.height + (thumb.height - dismissStartRect.height) * progress
+        )
+        return CGSize(width: min(live.width, lerped.width), height: min(live.height, lerped.height))
+    }
+
+    /// The media's RENDERED rect: aspect-fit for photos, aspectFill
+    /// for videos (larger than the page in one dimension). The
+    /// landing scale maps this rect onto the thumbnail's rendered
+    /// rect, so the content lines up exactly. Shared by
+    /// `dismissTarget`, `maskSize` and the release snapshot in
+    /// `dismissToThumbnail`, so all three agree on one size.
+    private func drawnSize(pageSize: CGSize) -> CGSize {
+        if isImage {
+            let imageSize: CGSize
+            if let fullImage {
+                imageSize = fullImage.size
+            } else if let w = item.width, let h = item.height, w > 0, h > 0 {
+                imageSize = CGSize(width: w, height: h)
+            } else {
+                imageSize = pageSize
+            }
+            let fitted = AVMakeRect(aspectRatio: imageSize, insideRect: CGRect(origin: .zero, size: pageSize)).size
+            return (fitted.width > 0 && fitted.height > 0) ? fitted : pageSize
+        } else {
+            // Video: aspectFill — the rendered video is LARGER than
+            // the page in one dimension (it crops to fill it), so
+            // the page size is NOT the drawn size. Using the page
+            // size made the landing scale too big: a 9:16 video on
+            // a 428×926 page renders 521×926 (old scale 0.329 vs
+            // the content-aligned 0.271), and a 16:9 video renders
+            // 1646×926 (old 0.329 vs 0.152 — over 2× too big), so
+            // the media landed as a tall/wide strip over the
+            // thumbnail instead of on it (frames i_05/i_06). The
+            // video's aspect gives the rendered rect; the max()
+            // in `dismissTarget` then yields the scale that maps
+            // it onto the thumbnail's rendered rect.
+            let videoSize: CGSize
+            if let w = item.width, let h = item.height, w > 0, h > 0 {
+                videoSize = CGSize(width: w, height: h)
+            } else {
+                videoSize = pageSize
+            }
+            let cover = max(pageSize.width / videoSize.width, pageSize.height / videoSize.height)
+            return CGSize(width: videoSize.width * cover, height: videoSize.height * cover)
+        }
     }
 
     /// Where the media flies to on a dismissing release: its source
@@ -932,46 +1022,12 @@ private struct PhotoDetailPage: View {
         guard let thumb = sourceFrame, thumb.width > 0, thumb.height > 0 else {
             return (CGSize(width: 0, height: pageSize.height), 0.6)
         }
-        // The drawn media size: the RENDERED rect, not the page — a
-        // photo is aspect-fit inside the page, a video is aspectFill
-        // (larger than the page in one dimension). The landing scale
-        // maps this rect onto the thumbnail's rendered rect, so the
-        // content lines up exactly (and the mask in the body clips
-        // the rest to the thumbnail rect).
-        let drawn: CGSize
-        if isImage {
-            let imageSize: CGSize
-            if let fullImage {
-                imageSize = fullImage.size
-            } else if let w = item.width, let h = item.height, w > 0, h > 0 {
-                imageSize = CGSize(width: w, height: h)
-            } else {
-                imageSize = pageSize
-            }
-            let fitted = AVMakeRect(aspectRatio: imageSize, insideRect: CGRect(origin: .zero, size: pageSize)).size
-            drawn = (fitted.width > 0 && fitted.height > 0) ? fitted : pageSize
-        } else {
-            // Video: aspectFill — the rendered video is LARGER than
-            // the page in one dimension (it crops to fill it), so
-            // the page size is NOT the drawn size. Using the page
-            // size made the landing scale too big: a 9:16 video on
-            // a 428×926 page renders 521×926 (old scale 0.329 vs
-            // the content-aligned 0.271), and a 16:9 video renders
-            // 1646×926 (old 0.329 vs 0.152 — over 2× too big), so
-            // the media landed as a tall/wide strip over the
-            // thumbnail instead of on it (frames i_05/i_06). The
-            // video's aspect gives the rendered rect; the max()
-            // below then yields the scale that maps it onto the
-            // thumbnail's rendered rect.
-            let videoSize: CGSize
-            if let w = item.width, let h = item.height, w > 0, h > 0 {
-                videoSize = CGSize(width: w, height: h)
-            } else {
-                videoSize = pageSize
-            }
-            let cover = max(pageSize.width / videoSize.width, pageSize.height / videoSize.height)
-            drawn = CGSize(width: videoSize.width * cover, height: videoSize.height * cover)
-        }
+        // The drawn media size: the RENDERED rect, not the page
+        // (see `drawnSize`). The landing scale maps this rect onto
+        // the thumbnail's rendered rect, so the content lines up
+        // exactly (and the mask in the body clips the rest to the
+        // thumbnail rect).
+        let drawn = drawnSize(pageSize: pageSize)
         // Cover the thumbnail (see above): the largest ratio wins.
         let scale = max(thumb.width / drawn.width, thumb.height / drawn.height)
         let pageCenter = CGPoint(x: pageGlobalFrame.midX, y: pageGlobalFrame.midY)
@@ -1687,8 +1743,17 @@ private final class NativePopGestureViewController: UIViewController {
 private final class PopGestureDelegate: NSObject, UIGestureRecognizerDelegate {
     weak var navigationController: UINavigationController?
 
+    /// Round-8: true while the photo viewer overlay is open. The
+    /// viewer sets/clears it in onAppear/onDisappear; while set,
+    /// no edge-pop may begin anywhere (the viewer is an overlay,
+    /// not a push, so a left-edge swipe could otherwise pop the
+    /// album detail underneath it). Shared by every screen's
+    /// helper — the album detail's own edge-pop resumes the
+    /// moment the viewer closes.
+    static var viewerOpen = false
+
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard let nav = navigationController else { return false }
+        guard !Self.viewerOpen, let nav = navigationController else { return false }
         return nav.viewControllers.count > 1
     }
 
