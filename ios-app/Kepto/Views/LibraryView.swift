@@ -912,10 +912,17 @@ struct LibraryView: View {
         for item in viewModel.items { byID[item.id] = item }
         var photos = 0, videos = 0, unknown = 0
         for id in selection {
-            switch byID[id]?.contentType?.hasPrefix("image/") {
-            case true: photos += 1
-            case false: videos += 1
-            case nil: unknown += 1
+            // `contentType` is optional, so the chain is Bool?? — a
+            // switch over it is not exhaustive (the missing case is
+            // a loaded item with a nil contentType). Flatten first:
+            // unloaded id or nil type = unknown kind.
+            guard let item = byID[id] else { unknown += 1; continue }
+            if item.contentType?.hasPrefix("image/") == true {
+                photos += 1
+            } else if item.contentType == nil {
+                unknown += 1
+            } else {
+                videos += 1
             }
         }
         return (photos, videos, unknown)
