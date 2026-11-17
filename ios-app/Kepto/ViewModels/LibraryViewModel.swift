@@ -180,6 +180,15 @@ final class LibraryViewModel: ObservableObject {
         // Render from the disk cache before the first network call
         // (round-22): the grid is up on launch, no waiting.
         loadAllMetadataFromDisk()
+        // Round-25: start the background refresh at once, in
+        // parallel with the first page fetch — it used to wait for
+        // fetch()'s list to return, so the cache (and the album
+        // seeds that read it) landed a full round trip late.
+        // Guarded: a second call from fetch() is a no-op.
+        Task { await fetchAllMetadata() }
+        // Round-26: prefetch thumbnails missing from the cache
+        // (disk-warm case) — the pipeline skips cached ids.
+        prefetchMissingThumbnails()
     }
 
     /// Re-read the Worker URL (UserDefaults) and API key (Keychain).
@@ -220,11 +229,37 @@ final class LibraryViewModel: ObservableObject {
             allMetadataLoaded = true
             allMetadataNetworkLoaded = true
             saveAllMetadataToDisk()
+            // Round-26: the refresh may have brought new items —
+            // prefetch their thumbnails (delta load).
+            prefetchMissingThumbnails()
         } catch {
             if error is CancellationError { return }
             if let urlError = error as? URLError, urlError.code == .cancelled { return }
             // Quiet — see above.
         }
+    }
+
+    /// Round-26: prefetch thumbnails for items missing them (delta
+    /// load). nil = whole library newest-first (cachedAllIDs is
+    /// ascending, so reversed); given ids = those in order.
+    /// Fire-and-forget — the pipeline skips cached/in-flight ids,
+    /// so re-calling is a cheap scan. No cancellation: the pipeline
+    /// call is idempotent.
+    func prefetchMissingThumbnails(ids: [String]? = nil) {
+        guard let api else { return }
+        let list: [String]
+        if let ids {
+            list = Array(ids.prefix(400))
+        } else {
+            list = Array(cachedAllIDs.reversed().prefix(400))
+        }
+        guard !list.isEmpty else { return }
+        // Parent fix at merge: pass the list's own count, not 120 —
+        // the pipeline works in order (newest first) in chunks of 4,
+        // so the visible ones still land first and the rest follow
+        // in the SAME background pass instead of waiting for the
+        // next trigger to pick them up.
+        ThumbnailPipeline.shared.prefetch(ids: list, api: api, limit: list.count)
     }
 
     // MARK: - listAll disk cache (round-22)
@@ -242,14 +277,31 @@ final class LibraryViewModel: ObservableObject {
         return dir.appendingPathComponent("listAll-cache.json")
     }
 
+    /// Round-26: versioned envelope for the metadata disk cache.
+    /// v1 carries the same [ItemMetadata] payload round-22 wrote
+    /// as a bare array — the loader still accepts that old shape.
+    private struct MetadataCacheFile: Codable {
+        var v: Int
+        var items: [ItemMetadata]
+    }
+
     /// Load the persisted metadata cache, if any. Called from init:
     /// the grid renders from disk before the first network call.
     /// Corrupt or outdated files are ignored (the network fetch
     /// replaces them) — a bad cache must never block the library.
     private func loadAllMetadataFromDisk() {
         guard let url = Self.allMetadataCacheURL,
-              let data = try? Data(contentsOf: url),
-              let cached = try? JSONDecoder().decode([ItemMetadata].self, from: data),
+              let data = try? Data(contentsOf: url) else { return }
+        // Round-26: the v1 envelope first, then the bare array
+        // round-22 wrote — the user's device may already have
+        // that file, and it must keep loading.
+        if let envelope = try? JSONDecoder().decode(MetadataCacheFile.self, from: data),
+           !envelope.items.isEmpty {
+            allMetadata = envelope.items
+            allMetadataLoaded = true
+            return
+        }
+        guard let cached = try? JSONDecoder().decode([ItemMetadata].self, from: data),
               !cached.isEmpty else { return }
         allMetadata = cached
         allMetadataLoaded = true
@@ -259,8 +311,18 @@ final class LibraryViewModel: ObservableObject {
     /// Best-effort and silent: a failed write only costs the next
     /// launch its instant render, never the library itself.
     private func saveAllMetadataToDisk() {
+        // Round-26: versioned envelope (v1 = the same payload
+        // round-22 wrote as a bare array), so a future schema
+        // change can migrate instead of silently dropping the cache.
+        let envelope = MetadataCacheFile(v: 1, items: allMetadata)
         guard let url = Self.allMetadataCacheURL,
-              let data = try? JSONEncoder().encode(allMetadata) else { return }
+              let data = try? JSONEncoder().encode(envelope) else { return }
+        // Round-25: the thumbnail cache already creates its
+        // directory before writing; this one did not — if the
+        // Application Support dir ever goes missing, the atomic
+        // write fails silently and the cache never persists, so
+        // every launch shows the loading screen again.
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
     }
 
@@ -533,6 +595,21 @@ final class LibraryViewModel: ObservableObject {
     func removeItemFromMyCollection(collectionId: String, item: Item) async throws {
         guard let api else { throw KeptoAPIError.notConfigured }
         try await api.removeItemFromMyCollection(collectionId: collectionId, itemId: item.id)
+        // Round-27: the item still exists in the Library — only its
+        // membership in this collection ends. Drop the id (and the
+        // parallel name) from the cached metadata entry, or the
+        // album reappears from the disk cache until the next
+        // network refresh. Rebuild the derived cache: an in-place
+        // element mutation does not fire the array's didSet.
+        if let idx = allMetadata.firstIndex(where: { $0.id == item.id }),
+           let idIdx = allMetadata[idx].myCollectionIds.firstIndex(of: collectionId) {
+            allMetadata[idx].myCollectionIds.remove(at: idIdx)
+            if allMetadata[idx].myCollectionNames.indices.contains(idIdx) {
+                allMetadata[idx].myCollectionNames.remove(at: idIdx)
+            }
+            rebuildDerivedCache()
+            saveAllMetadataToDisk()
+        }
     }
 
     /// Delete a user-created collection. When deleteItems is true, the
@@ -547,6 +624,10 @@ final class LibraryViewModel: ObservableObject {
         if deleteItems {
             await fetch()
             await fetchCollections()
+            // Round-27: the deleted items are gone server-side, but
+            // allMetadata (and its disk cache) still lists them —
+            // force a full refresh so no ghost survives the delete.
+            await fetchAllMetadata(force: true)
         }
     }
 
@@ -679,6 +760,9 @@ final class LibraryViewModel: ObservableObject {
             // read it. fetch() itself returns as soon as the first
             // page is in.
             Task { await fetchAllMetadata() }
+            // Round-26: prefetch thumbnails for items newly ready
+            // (the pending poll lands them here).
+            prefetchMissingThumbnails()
         } catch {
             // Cancellation is not an error — the task was superseded
             // (view gone, refresh re-triggered). Never show it as an
@@ -850,11 +934,21 @@ final class LibraryViewModel: ObservableObject {
                 // (item is non-optional here — uploadFile returns Item,
                 // not Item? — so no `if let`.)
                 justImportedIDs.insert(item.id)
+                // Round-26: insert into the caches NOW instead of
+                // re-downloading all metadata — the next launch and
+                // the next album open already have this item. The
+                // didSet on allMetadata/items rebuilds the derived
+                // cache; fetch() below refreshes the page in place.
+                if !allMetadata.contains(where: { $0.id == item.id }) {
+                    allMetadata.append(ItemMetadata(from: item))
+                    saveAllMetadataToDisk()
+                }
+                if !items.contains(where: { $0.id == item.id }) {
+                    items.insert(item, at: 0)
+                }
+                resolvedItemsById[item.id] = item
                 await fetch()
                 await fetchCollections()
-                // The library just changed — refresh the full
-                // metadata cache too (see save(url:)).
-                await fetchAllMetadata(force: true)
                 // The new item is pending (ingesting) — start the poll
                 // so its thumbnail appears when the ingest finishes.
                 startPendingPoll()
@@ -1183,8 +1277,16 @@ final class LibraryViewModel: ObservableObject {
                     defer { try? FileManager.default.removeItem(at: dest) }
                     let mimeType = mimeType(for: dest.pathExtension)
                     let hash = sha256Hex(ofFile: dest)
+                    // Round-26: start the first-frame capture now,
+                    // while the file still exists — the upload takes
+                    // seconds and the defer above deletes the file
+                    // at return.
+                    let thumbTask = Task.detached { Self.videoThumbnail(from: dest) }
                     let (uploaded, duplicate) = await upload(fileURL: dest, filename: pickedURL.lastPathComponent, mimeType: mimeType, sha256: hash)
                     if let uploaded {
+                        if !duplicate, let thumb = await thumbTask.value {
+                            KeptoAPI.storeThumbnail(id: uploaded.id, image: thumb)
+                        }
                         return duplicate ? .duplicate : .uploaded(uploaded)
                     }
                     return .failed
@@ -1205,8 +1307,15 @@ final class LibraryViewModel: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(at: tempURL) }
             let hash = sha256Hex(of: videoData)
+            // Round-26: first-frame capture starts before the upload
+            // (same reason as the URL path above — the file is gone
+            // at return).
+            let thumbTask = Task.detached { Self.videoThumbnail(from: tempURL) }
             let (uploaded, duplicate) = await upload(fileURL: tempURL, filename: "video.\(ext)", mimeType: mimeType(for: ext), sha256: hash)
             if let uploaded {
+                if !duplicate, let thumb = await thumbTask.value {
+                    KeptoAPI.storeThumbnail(id: uploaded.id, image: thumb)
+                }
                 return duplicate ? .duplicate : .uploaded(uploaded)
             }
             return .failed
@@ -1232,9 +1341,31 @@ final class LibraryViewModel: ObservableObject {
         let hash = sha256Hex(of: data)
         let (uploaded, duplicate) = await upload(fileURL: tempURL, filename: "photo.jpg", mimeType: "image/jpeg", sha256: hash)
         if let uploaded {
+            if !duplicate {
+                // Round-26: cache the thumbnail now from the JPEG
+                // already in memory — off-main, fire-and-forget,
+                // never blocks the return.
+                Task.detached {
+                    if let img = UIImage(data: data) {
+                        KeptoAPI.storeThumbnail(id: uploaded.id, image: img)
+                    }
+                }
+            }
             return duplicate ? .duplicate : .uploaded(uploaded)
         }
         return .failed
+    }
+
+    /// Round-26: first frame of a video file as a UIImage (for the
+    /// save-time thumbnail cache). Synchronous — callers run it off
+    /// the main actor. Nil when the frame cannot be read.
+    private static func videoThumbnail(from fileURL: URL) -> UIImage? {
+        let asset = AVAsset(url: fileURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 400, height: 400)
+        guard let cgImage = try? generator.copyCGImage(at: .zero, actualTime: nil) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 
     /// SHA-256 of data, as a lowercase hex string (for content-hash dedupe).
@@ -1313,6 +1444,12 @@ final class LibraryViewModel: ObservableObject {
         searchResults.removeAll { $0.id == item.id }
         allMetadata.removeAll { $0.id == item.id }
         resolvedItemsById.removeValue(forKey: item.id)
+        // Round-27: persist the removal — without this the disk
+        // cache still holds the deleted item and the next launch
+        // renders a ghost until the network refresh replaces it.
+        // Its thumbnail goes too, from both cache layers.
+        saveAllMetadataToDisk()
+        KeptoAPI.removeCachedThumbnail(id: item.id)
     }
 
     /// Heart / unheart an item. Updates the item in place (so the grid

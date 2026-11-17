@@ -115,7 +115,20 @@ struct LibraryView: View {
                 if !viewModel.isConfigured {
                     setupView
                 } else if viewModel.isLoading && viewModel.items.isEmpty && viewModel.allMetadata.isEmpty {
-                    LoadingLibraryView()
+                    // Round-27: cold cache (first-ever launch) shows
+                    // the grid layout with gray placeholder cells —
+                    // never a full-screen spinner. Same columns as
+                    // the All Photos grid, so the real cells land
+                    // without a layout flash. The floating zoom pill
+                    // is part of `scroll`, so it appears with it.
+                    ScrollView {
+                        LazyVGrid(columns: allColumns, spacing: 2) {
+                            ForEach(0..<12, id: \.self) { _ in
+                                Color(.systemGray5)
+                                    .aspectRatio(1, contentMode: .fit)
+                            }
+                        }
+                    }
                 } else if viewModel.items.isEmpty && viewModel.allMetadata.isEmpty {
                     emptyView
                 } else {
@@ -1332,7 +1345,7 @@ struct AuthenticatedThumbnail: View {
         }
         .task(id: itemId) {
             guard image == nil, let api = viewModel.api else { return }
-            image = try? await api.fetchThumbnail(id: itemId)
+            image = await ThumbnailPipeline.shared.thumbnail(id: itemId, api: api)
         }
     }
 }

@@ -1354,7 +1354,7 @@ private struct PhotoDetailPage: View {
     /// ingest saves one full frame, unscaled), so it is the image to show.
     private func loadFullImage() async {
         guard fullImage == nil, let api = viewModel.api else { return }
-        fullImage = try? await api.fetchThumbnail(id: item.id)
+        fullImage = await ThumbnailPipeline.shared.thumbnail(id: item.id, api: api)
     }
 }
 

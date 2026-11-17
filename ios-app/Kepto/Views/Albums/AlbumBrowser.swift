@@ -392,6 +392,9 @@ struct PhotoCollectionScreen: View {
                 // Albums before the Library tab ever loads it.
                 Task { await viewModel.fetchAllMetadata() }
                 await fetch(reset: true)
+                // Round-26: prefetch this album's thumbnails now
+                // that the page is in (visible items first).
+                viewModel.prefetchMissingThumbnails(ids: items.map(\.id))
             }
             .onChange(of: viewModel.allMetadataLoaded) { _, loaded in
                 // The cache arrived after the grid opened: if the
@@ -446,13 +449,29 @@ struct PhotoCollectionScreen: View {
     /// Items (same ids, same order), in place — no flash, no jump.
     /// No-op when items are already loaded or the cache is cold.
     private func seedItemsFromCache() {
-        guard items.isEmpty, !viewModel.allMetadata.isEmpty else { return }
-        let matching = viewModel.allMetadata.filter { matchesSource($0) }
+        guard items.isEmpty else { return }
+        // Metadata cache first (round-21): newest 50 in server order.
+        if !viewModel.allMetadata.isEmpty {
+            let matching = viewModel.allMetadata.filter { matchesSource($0) }
+            if !matching.isEmpty {
+                // Server order (newest first): the display sort is ascending,
+                // so reverse it — same ids and order the first page returns.
+                let newest = matching.sortedChronologically().reversed().prefix(50)
+                items = newest.map { Item(seededFrom: $0) }
+                refreshSortedItems()
+                return
+            }
+        }
+        // Round-25: the metadata cache may still be downloading
+        // (first launch, or the user tapped fast) — seed from the
+        // Library's already-loaded first page instead (newest 50,
+        // same server order). Item carries contentType/isFavorite/
+        // authorUsername, so Recents / Favorites / Media / Creator
+        // seed exactly; My Collection has no ids on Item, so it
+        // waits for the page fetch as before.
+        let matching = viewModel.items.filter { matchesSource($0) }
         guard !matching.isEmpty else { return }
-        // Server order (newest first): the display sort is ascending,
-        // so reverse it — same ids and order the first page returns.
-        let newest = matching.sortedChronologically().reversed().prefix(50)
-        items = newest.map { Item(seededFrom: $0) }
+        items = Array(matching.prefix(50))
         refreshSortedItems()
     }
 
@@ -474,6 +493,30 @@ struct PhotoCollectionScreen: View {
             return m.contentType?.hasPrefix("video/") == true
         case .media(.photo):
             return m.contentType?.hasPrefix("image/") == true
+        }
+    }
+
+    /// Round-25: same filter over a real `Item` (the Library's
+    /// loaded first page) — used when the metadata cache has not
+    /// landed yet. My Collection cannot seed from Items (no
+    /// collection ids on Item), so it returns false here.
+    private func matchesSource(_ item: Item) -> Bool {
+        switch source {
+        case .kind(.recents):
+            return true
+        case .kind(.favorites):
+            return item.isFavorite
+        case .kind(.user), .kind(.people), .kind(.media), .kind(.deleted):
+            // Section kinds, never a browser source — nothing to seed.
+            return false
+        case .myCollection:
+            return false
+        case .creator(let collection):
+            return item.authorUsername == collection.id
+        case .media(.video):
+            return item.contentType?.hasPrefix("video/") == true
+        case .media(.photo):
+            return item.contentType?.hasPrefix("image/") == true
         }
     }
 
@@ -607,6 +650,9 @@ struct PhotoCollectionScreen: View {
                 // up before the first page returns.
                 seedItemsFromCache()
                 refreshSortedItems()
+                // Round-26: prefetch thumbnails for this album's
+                // items (delta load — cached ones are skipped).
+                viewModel.prefetchMissingThumbnails(ids: items.map(\.id))
                 maybeInitialScroll(proxy)
             }
             .onChange(of: items) { oldItems, newItems in

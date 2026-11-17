@@ -45,11 +45,37 @@ final class KeptoAPI {
     /// equivalent: a grid cell that scrolls off-screen and back does
     /// NOT re-download its thumbnail, and thousands of items stay
     /// smooth because only decoded UIImages are kept (NSCache evicts
-    /// under memory pressure). Keyed by item id.
-    private static let thumbnailCache = NSCache<NSString, UIImage>()
+    /// under memory pressure). Keyed by the size-qualified key
+    /// `thumbnail_<id>_400` (round-26), with a cost of pixel bytes
+    /// per image. Bounded: 300 images / 100 MB — the disk layer
+    /// underneath (round-23) re-serves anything evicted.
+    private static let thumbnailCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 300
+        cache.totalCostLimit = 100 * 1024 * 1024
+        return cache
+    }()
+
+    /// Size-qualified cache key (round-26): one entry per item id at
+    /// the grid size (400px max side). The same key names the NSCache
+    /// entry and the disk file, so the two layers can never disagree
+    /// about what is cached.
+    private static func thumbnailCacheKey(for id: String) -> NSString {
+        "thumbnail_\(id)_400" as NSString
+    }
+
+    /// Pixel bytes of a decoded image (width * height * scale^2 * 4),
+    /// used as the NSCache cost so totalCostLimit tracks real RAM.
+    private static func thumbnailCost(_ image: UIImage) -> Int {
+        let pixelWidth = image.size.width * image.scale
+        let pixelHeight = image.size.height * image.scale
+        return Int(pixelWidth * pixelHeight * 4)
+    }
 
     /// Disk thumbnail cache (round-23): one JPEG per item id under
-    /// Caches/thumbnails. Layered under the NSCache above — a
+    /// Caches/thumbnails, named `thumbnail_<id>_400.jpg` (round-26;
+    /// round-23 files were plain "<id>.jpg" and are migrated on
+    /// read). Layered under the NSCache above — a
     /// thumbnail survives app restarts, so the grid renders with
     /// real images on launch instead of gray placeholders waiting
     /// on the network. Caches (not Application Support): the bytes
@@ -69,16 +95,80 @@ final class KeptoAPI {
     }
 
     private static func thumbnailDiskURL(for id: String) -> URL? {
+        thumbnailDiskDirectory?.appendingPathComponent("thumbnail_\(id)_400.jpg")
+    }
+
+    /// Legacy disk filename (round-23): plain "<id>.jpg". Only used
+    /// to read + migrate old files — new writes always use the
+    /// size-qualified name above.
+    private static func thumbnailLegacyDiskURL(for id: String) -> URL? {
         thumbnailDiskDirectory?.appendingPathComponent("\(id).jpg")
     }
 
     /// Read a thumbnail from disk, if present. Nil when missing or
     /// undecodable — the caller falls through to the network.
+    /// A legacy "<id>.jpg" file (round-23) is read as a fallback
+    /// and MIGRATED to the new name on hit, so old files are not
+    /// re-downloaded and the legacy name disappears over time.
     private static func thumbnailFromDisk(id: String) -> UIImage? {
-        guard let url = thumbnailDiskURL(for: id),
-              let data = try? Data(contentsOf: url),
+        guard let url = thumbnailDiskURL(for: id) else { return nil }
+        if let data = try? Data(contentsOf: url),
+           let image = UIImage(data: data) {
+            return image
+        }
+        guard let legacyURL = thumbnailLegacyDiskURL(for: id),
+              let data = try? Data(contentsOf: legacyURL),
               let image = UIImage(data: data) else { return nil }
+        try? FileManager.default.moveItem(at: legacyURL, to: url)
         return image
+    }
+
+    /// True when a thumbnail is already cached for this id — in
+    /// memory or on disk (new name or legacy). Sync, no network:
+    /// the prefetch layer uses it to fetch only what is missing.
+    static func hasCachedThumbnail(id: String) -> Bool {
+        if thumbnailCache.object(forKey: thumbnailCacheKey(for: id)) != nil {
+            return true
+        }
+        let fm = FileManager.default
+        if let url = thumbnailDiskURL(for: id), fm.fileExists(atPath: url.path) {
+            return true
+        }
+        if let legacyURL = thumbnailLegacyDiskURL(for: id), fm.fileExists(atPath: legacyURL.path) {
+            return true
+        }
+        return false
+    }
+
+    /// Save-time write API (round-26): store a freshly saved item's
+    /// thumbnail at once so the next Library/Album open already has
+    /// it — no waiting for the grid to request it. The image is
+    /// downscaled to the 400px grid size and stored as JPEG 0.8 in
+    /// both layers (NSCache with cost + disk). Best-effort and
+    /// silent on failure.
+    static func storeThumbnail(id: String, image: UIImage) {
+        guard let downscaled = downscaledThumbnail(image),
+              let data = downscaled.jpegData(compressionQuality: 0.8) else { return }
+        thumbnailCache.setObject(downscaled, forKey: thumbnailCacheKey(for: id), cost: thumbnailCost(downscaled))
+        saveThumbnailToDisk(id: id, data: data)
+    }
+
+    /// Downscale to the 400px grid size (aspect-fit, longest side
+    /// 400). Images already at or below that size pass through
+    /// untouched. Rendered at scale 1 so the result is 400 real
+    /// pixels, not 400 points.
+    private static func downscaledThumbnail(_ image: UIImage) -> UIImage? {
+        let maxSide: CGFloat = 400
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        guard max(size.width, size.height) > maxSide else { return image }
+        let scale = maxSide / max(size.width, size.height)
+        let target = CGSize(width: size.width * scale, height: size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
     }
 
     /// Persist freshly downloaded thumbnail bytes, then evict the
@@ -88,6 +178,20 @@ final class KeptoAPI {
         guard let url = thumbnailDiskURL(for: id) else { return }
         try? data.write(to: url, options: .atomic)
         evictThumbnailsIfNeeded()
+    }
+
+    /// Drop a thumbnail from both cache layers (memory + disk).
+    /// Called when its item is deleted, so a later launch never
+    /// renders a ghost image from the disk cache (round-27).
+    /// Best-effort and silent — a missing file is not an error.
+    static func removeCachedThumbnail(id: String) {
+        thumbnailCache.removeObject(forKey: thumbnailCacheKey(for: id))
+        if let url = thumbnailDiskURL(for: id) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if let legacyURL = thumbnailLegacyDiskURL(for: id) {
+            try? FileManager.default.removeItem(at: legacyURL)
+        }
     }
 
     private static func evictThumbnailsIfNeeded() {
@@ -513,13 +617,13 @@ final class KeptoAPI {
     func fetchThumbnail(id: String) async throws -> UIImage? {
         // Layer 1: memory (smooth scrolling with thousands of items
         // — no re-download on scroll-back).
-        if let cached = Self.thumbnailCache.object(forKey: id as NSString) {
+        if let cached = Self.thumbnailCache.object(forKey: Self.thumbnailCacheKey(for: id)) {
             return cached
         }
         // Layer 2: disk (survives app restarts — the grid opens with
         // real thumbnails instead of gray placeholders).
         if let disk = Self.thumbnailFromDisk(id: id) {
-            Self.thumbnailCache.setObject(disk, forKey: id as NSString)
+            Self.thumbnailCache.setObject(disk, forKey: Self.thumbnailCacheKey(for: id), cost: Self.thumbnailCost(disk))
             return disk
         }
         // Layer 3: network.
@@ -527,15 +631,16 @@ final class KeptoAPI {
         guard let http = response as? HTTPURLResponse,
               (200...299).contains(http.statusCode) else { return nil }
         guard let image = UIImage(data: data) else { return nil }
-        Self.thumbnailCache.setObject(image, forKey: id as NSString)
+        Self.thumbnailCache.setObject(image, forKey: Self.thumbnailCacheKey(for: id), cost: Self.thumbnailCost(image))
         Self.saveThumbnailToDisk(id: id, data: data)
         return image
     }
 
     /// GET /api/preview/:id — the scrub-preview sprite (tile grid of
-    /// thumbnails). Same auth + memory-only handling as thumbnails.
-    /// Returns nil when the item has no sprite (older saves, or the
-    /// sprite step failed during ingest).
+    /// thumbnails). Same auth as thumbnails; unlike thumbnails,
+    /// sprites are NOT persisted to disk. Returns nil when the item
+    /// has no sprite (older saves, or the sprite step failed during
+    /// ingest).
     func fetchSprite(for item: Item) async throws -> UIImage? {
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/preview/\(item.id)")))
         guard let http = response as? HTTPURLResponse,

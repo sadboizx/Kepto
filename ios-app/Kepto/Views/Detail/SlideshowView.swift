@@ -195,7 +195,7 @@ struct SlideshowView: View {
         } else if current.status == .ready {
             Task {
                 guard let api = viewModel.api else { return }
-                if let loaded = try? await api.fetchThumbnail(id: current.id) {
+                if let loaded = await ThumbnailPipeline.shared.thumbnail(id: current.id, api: api) {
                     // Only keep it if we are still on this slide.
                     if items.indices.contains(index), items[index].id == current.id {
                         image = loaded

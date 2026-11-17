@@ -307,6 +307,29 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
         self.myCollectionNames = myCollectionNames
     }
 
+    /// Round-26: build metadata straight from a freshly uploaded
+    /// Item, so the caches gain the new item immediately (no listAll
+    /// round trip). Collection membership is unknown at upload time
+    /// — empty until the next listAll refresh fills it in.
+    init(from item: Item) {
+        self.init(
+            id: item.id,
+            platform: item.platform,
+            title: item.title,
+            caption: item.caption,
+            author: item.author,
+            authorUsername: item.authorUsername,
+            postedAt: item.postedAt,
+            savedAt: item.savedAt,
+            contentType: item.contentType,
+            duration: item.duration,
+            width: item.width,
+            height: item.height,
+            fileSize: item.fileSize,
+            isFavorite: item.isFavorite
+        )
+    }
+
     // D1 stores saved_at with fractional seconds
     // (strftime '%Y-%m-%dT%H:%M:%fZ'), and the default
     // ISO8601DateFormatter does NOT parse those — savedDate came back
