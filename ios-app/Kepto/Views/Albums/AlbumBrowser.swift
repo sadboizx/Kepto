@@ -74,6 +74,10 @@ struct PhotoCollectionScreen: View {
     /// `onCurrentItemChange` can scroll the grid to the current
     /// thumbnail (same pattern as LibraryView's `scrollProxy`).
     @State private var scrollProxy: ScrollViewProxy?
+    /// The grid's visible viewport (same pattern as LibraryView):
+    /// the viewer-follow check scrolls unless the current cell is
+    /// fully inside it.
+    @State private var scrollViewport: CGRect = .zero
     /// Height of the top chrome (status bar + nav bar), measured
     /// live while it is visible and latched at its max (same pattern
     /// as LibraryView's `topChromeHeight`, round-17): the grid
@@ -137,8 +141,48 @@ struct PhotoCollectionScreen: View {
         }
     }
 
+    /// Round-31: re-tap counter from the tab bar (shared with the
+    /// Albums list) + a pop callback. While inside an album a
+    /// re-tap scrolls to the bottom, or pops to the Albums list
+    /// when already at the bottom.
+    @Binding var retapRequest: Int
+    var onRequestPop: (() -> Void)? = nil
+
+    /// Pre-seeded items (round-30): the parent computes the seed
+    /// from the caches at tap time, so the FIRST frame already shows
+    /// real cells. Without this the grid opened empty and only
+    /// filled in onAppear — in short albums that late layout left
+    /// taps dead until the first scroll forced a pass. The seed is
+    /// pure and cheap (round-29 sort), so computing it here costs
+    /// no more than the onAppear seed it replaces.
+    init(source: AlbumSource, initialItems: [Item] = [], retapRequest: Binding<Int> = .constant(0), onRequestPop: (() -> Void)? = nil) {
+        self.source = source
+        _items = State(initialValue: initialItems)
+        _cachedSortedItems = State(initialValue: initialItems.sortedChronologically())
+        _retapRequest = retapRequest
+        self.onRequestPop = onRequestPop
+    }
+
     var body: some View {
         collectionWithNavigation
+            // Round-31: re-tap on the Albums tab while inside an
+            // album — case B scrolls to the bottom, case C (already
+            // at the bottom) pops to the Albums list. The list's
+            // own handler (AlbumsView) does nothing while this
+            // detail is open.
+            .onChange(of: retapRequest) { _, _ in
+                // The tab bar is invisible while the viewer is open,
+                // so a real tap cannot land then — this is
+                // belt-and-braces (and matches scrollToBottomAnimated's
+                // own guard): never pop the detail from behind the
+                // viewer.
+                guard feedStartItem == nil else { return }
+                if isAtBottom {
+                    onRequestPop?()
+                } else {
+                    scrollToBottomAnimated()
+                }
+            }
             .confirmationDialog(L10n.deleteSavedItemsTitle(1),
                                 isPresented: $showingDeleteConfirmation,
                                 titleVisibility: .visible) {
@@ -448,18 +492,21 @@ struct PhotoCollectionScreen: View {
     /// The background fetch() replaces these seeds with the real
     /// Items (same ids, same order), in place — no flash, no jump.
     /// No-op when items are already loaded or the cache is cold.
-    private func seedItemsFromCache() {
-        guard items.isEmpty else { return }
+    /// Pure seed (round-30): the newest 50 for this source from the
+    /// metadata cache, else from the Library's loaded first page.
+    /// Static so the parent can pre-seed before the first frame —
+    /// the grid then opens with real cells instead of an empty grid
+    /// that only fills in onAppear (whose late layout left taps dead
+    /// in short albums until the first scroll forced a pass).
+    static func seedItems(source: AlbumSource, allMetadata: [ItemMetadata], libraryItems: [Item]) -> [Item] {
         // Metadata cache first (round-21): newest 50 in server order.
-        if !viewModel.allMetadata.isEmpty {
-            let matching = viewModel.allMetadata.filter { matchesSource($0) }
+        if !allMetadata.isEmpty {
+            let matching = allMetadata.filter { matchesSource($0, source: source) }
             if !matching.isEmpty {
                 // Server order (newest first): the display sort is ascending,
                 // so reverse it — same ids and order the first page returns.
                 let newest = matching.sortedChronologically().reversed().prefix(50)
-                items = newest.map { Item(seededFrom: $0) }
-                refreshSortedItems()
-                return
+                return newest.map { Item(seededFrom: $0) }
             }
         }
         // Round-25: the metadata cache may still be downloading
@@ -469,14 +516,21 @@ struct PhotoCollectionScreen: View {
         // authorUsername, so Recents / Favorites / Media / Creator
         // seed exactly; My Collection has no ids on Item, so it
         // waits for the page fetch as before.
-        let matching = viewModel.items.filter { matchesSource($0) }
-        guard !matching.isEmpty else { return }
-        items = Array(matching.prefix(50))
+        let matching = libraryItems.filter { matchesSource($0, source: source) }
+        guard !matching.isEmpty else { return [] }
+        return Array(matching.prefix(50))
+    }
+
+    private func seedItemsFromCache() {
+        guard items.isEmpty else { return }
+        let seeded = Self.seedItems(source: source, allMetadata: viewModel.allMetadata, libraryItems: viewModel.items)
+        guard !seeded.isEmpty else { return }
+        items = seeded
         refreshSortedItems()
     }
 
     /// True when a cached metadata row belongs to this album.
-    private func matchesSource(_ m: ItemMetadata) -> Bool {
+    private static func matchesSource(_ m: ItemMetadata, source: AlbumSource) -> Bool {
         switch source {
         case .kind(.recents):
             return true
@@ -500,7 +554,7 @@ struct PhotoCollectionScreen: View {
     /// loaded first page) — used when the metadata cache has not
     /// landed yet. My Collection cannot seed from Items (no
     /// collection ids on Item), so it returns false here.
-    private func matchesSource(_ item: Item) -> Bool {
+    private static func matchesSource(_ item: Item, source: AlbumSource) -> Bool {
         switch source {
         case .kind(.recents):
             return true
@@ -637,6 +691,7 @@ struct PhotoCollectionScreen: View {
             .ignoresSafeArea(edges: .top)
             .defaultScrollAnchor(.bottom)
             .contentMargins(.top, topChromeHeight, for: .scrollContent)
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
             // The cells report their global frames (see
             // `PhotosGridCell`): keep them in the cache so a tap can hand
             // the tapped cell's frame to the viewer for its
@@ -832,10 +887,15 @@ struct PhotoCollectionScreen: View {
     private func scrollGridToCurrentItem(id: String) {
         guard let proxy = scrollProxy else { return }
         guard sortedItems.contains(where: { $0.id == id }) else { return }
+        // Round-30: match LibraryView — scroll unless the cell is
+        // FULLY inside the viewport. The old `intersects` test
+        // skipped whenever any part showed, so paging to an adjacent
+        // cell never re-centered and the grid lagged a page behind
+        // (the "out of order" follow). An unknown frame still
+        // scrolls: `scrollTo` lays it out.
         if let frame = cellFrameCache.frames[id] {
-            let screen = UIScreen.main.bounds
-            let visible = CGRect(x: 0, y: 0, width: screen.width, height: screen.height - 83)
-            if visible.intersects(frame) { return }
+            let visible = scrollViewport.insetBy(dx: 0, dy: 8)
+            if visible.contains(frame) { return }
         }
         var transaction = Transaction()
         transaction.animation = nil
@@ -846,6 +906,15 @@ struct PhotoCollectionScreen: View {
     /// Instant (no-animation) scroll to the bottom (newest item).
     /// The transaction disables animations outright — a plain
     /// scrollTo could otherwise visibly slide down on open.
+    /// Round-31: animated scroll to the bottom (re-tap on the
+    /// Albums tab while inside this album). Same guards as the
+    /// Library's: no-op when already at the bottom, when the
+    /// viewer is open, or when there is no target (empty album).
+    private func scrollToBottomAnimated() {
+        guard let proxy = scrollProxy, let id = sortedItems.last?.id, !isAtBottom, feedStartItem == nil else { return }
+        withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(id, anchor: .bottom) }
+    }
+
     private func scrollToBottomInstant(_ proxy: ScrollViewProxy) {
         guard let id = sortedItems.last?.id else { return }
         var transaction = Transaction()
@@ -921,6 +990,19 @@ struct PhotoCollectionScreen: View {
             // Worker — overlay the flags from the listAll cache.
             items = viewModel.applyingMetadataFavoriteFlags(to: reset ? page : items + page)
             nextCursor = cursor
+            // Round-30 (issue 1): My Collection pages arrive in ADDED
+            // order (added_at DESC), but the grid sorts by SAVED date
+            // and the viewer pages items.reversed() — so viewer and
+            // grid disagreed whenever add order differed from save
+            // order, and the grid jumped out of order while paging
+            // (Library / Recents / Creators all arrive in saved
+            // order, so only My Collection was affected). Normalize
+            // the page to saved order (newest first) so viewer and
+            // grid agree; load-more just re-sorts the accumulated
+            // set, the server cursor is untouched.
+            if case .myCollection = source {
+                items = Array(items.sortedChronologically().reversed())
+            }
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }

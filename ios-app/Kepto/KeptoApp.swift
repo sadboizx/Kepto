@@ -71,11 +71,17 @@ struct KeptoApp: App {
 struct KeptoTabView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
     @State private var selectedTab = 0
-    /// Incremented when the already-selected Albums tab is tapped
-    /// again — AlbumsView pops to its root (round 3, standard iOS
-    /// tab behaviour). A counter, not a Bool, so two re-taps in a
-    /// row still register (a Bool toggle would need a reset).
-    @State private var albumsPopToRoot = 0
+    /// Round-31: one re-tap counter per tab — bumped when the
+    /// already-selected tab is tapped again (standard iOS tab
+    /// behaviour: Library scrolls to the bottom, For You to the
+    /// top, Albums to the top / album bottom / pop, Search focuses
+    /// its field). Counters, not Bools, so two re-taps in a row
+    /// still register (a Bool toggle would need a reset). Each tab
+    /// owns its counter via a Binding and decides what to do.
+    @State private var libraryRetap = 0
+    @State private var forYouRetap = 0
+    @State private var albumsRetap = 0
+    @State private var searchRetap = 0
     /// One-line notice after a Share Extension save (e.g. "already
     /// saved" or a collection summary).
     @State private var shareSaveNotice: String?
@@ -84,28 +90,34 @@ struct KeptoTabView: View {
         // A re-tap on the already-selected tab does not change
         // `selectedTab`, so `.onChange` never fires for it. The
         // custom binding catches the tap (TabView sets the
-        // selection even to its current value) and bumps the
-        // Albums pop-to-root counter when the Albums tab is
-        // re-tapped. Other tabs are unaffected.
+        // selection even to its current value) and bumps that
+        // tab's re-tap counter (round-31); each tab decides what
+        // a re-tap does. A tap on a DIFFERENT tab just switches.
         TabView(selection: Binding(
             get: { selectedTab },
             set: { newTab in
-                if newTab == selectedTab, newTab == 2 {
-                    albumsPopToRoot += 1
+                if newTab == selectedTab {
+                    switch newTab {
+                    case 0: libraryRetap += 1
+                    case 1: forYouRetap += 1
+                    case 2: albumsRetap += 1
+                    case 3: searchRetap += 1
+                    default: break
+                    }
                 }
                 selectedTab = newTab
             }
         )) {
-            LibraryView()
+            LibraryView(retapRequest: $libraryRetap)
                 .tabItem { Label(L10n.library, systemImage: "photo.on.rectangle.angled") }
                 .tag(0)
-            ForYouView()
+            ForYouView(retapRequest: $forYouRetap)
                 .tabItem { Label(L10n.forYou, systemImage: "heart.rectangle") }
                 .tag(1)
-            AlbumsView(popToRootRequest: $albumsPopToRoot)
+            AlbumsView(retapRequest: $albumsRetap)
                 .tabItem { Label(L10n.albums, systemImage: "rectangle.stack") }
                 .tag(2)
-            SearchView()
+            SearchView(retapRequest: $searchRetap)
                 .tabItem { Label(L10n.search, systemImage: "magnifyingglass") }
                 .tag(3)
         }

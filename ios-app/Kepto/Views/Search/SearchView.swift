@@ -58,6 +58,20 @@ struct SearchView: View {
         viewModel.searchLocal(query: trimmedQuery.isEmpty ? nil : trimmedQuery, platform: selectedPlatform)
     }
 
+    /// Round-31: re-tap counter from the tab bar (KeptoTabView
+    /// bumps it when the already-selected Search tab is tapped).
+    @Binding var retapRequest: Int
+
+    init(retapRequest: Binding<Int> = .constant(0)) {
+        _retapRequest = retapRequest
+    }
+
+    /// Whether the native search field is active/focused
+    /// (round-31): a re-tap on the Search tab sets this, which
+    /// focuses the field and opens the keyboard. The query text
+    /// is untouched — only focus changes.
+    @State private var isSearchPresented = false
+
     var body: some View {
         NavigationStack {
             Group {
@@ -69,7 +83,7 @@ struct SearchView: View {
             }
             .navigationTitle(L10n.search)
             .navigationBarTitleDisplayMode(.large)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Photos, People, Places…")
+            .searchable(text: $query, isPresented: $isSearchPresented, placement: .navigationBarDrawer(displayMode: .always), prompt: "Photos, People, Places…")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     // The "…" menu lives on every tab except the
@@ -110,6 +124,13 @@ struct SearchView: View {
             // the viewer closes (feedStartItem = nil).
             .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
             .statusBarHidden(feedStartItem != nil)
+            // Round-31: re-tap on the Search tab — focus the search
+            // field (keyboard opens, text untouched). Guarded while
+            // the viewer is open: the nav bar (and its search field)
+            // is hidden then, so focusing would do nothing visible.
+            .onChange(of: retapRequest) { _, _ in
+                if feedStartItem == nil { isSearchPresented = true }
+            }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }

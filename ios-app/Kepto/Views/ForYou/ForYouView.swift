@@ -34,6 +34,20 @@ struct ForYouView: View {
     /// Notice after a "…" Clipboard save (nil = no notice showing).
     @State private var saveNotice: String?
 
+    /// Round-31: re-tap counter from the tab bar (KeptoTabView
+    /// bumps it when the already-selected For You tab is tapped).
+    @Binding var retapRequest: Int
+
+    init(retapRequest: Binding<Int> = .constant(0)) {
+        _retapRequest = retapRequest
+    }
+
+    /// The content ScrollView's proxy + whether it is at the top
+    /// (round-31): a re-tap scrolls to the top only when not
+    /// already there.
+    @State private var scrollProxy: ScrollViewProxy?
+    @State private var isAtTop = true
+
     var body: some View {
         NavigationStack {
             Group {
@@ -58,6 +72,10 @@ struct ForYouView: View {
             // viewer closes (feedStartItem = nil).
             .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
             .statusBarHidden(feedStartItem != nil)
+            // Round-31: re-tap on the For You tab — scroll to the
+            // top. scrollToTopAnimated guards itself (already at
+            // top / viewer open / empty list).
+            .onChange(of: retapRequest) { _, _ in scrollToTopAnimated() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     // The "…" menu lives on every tab except the
@@ -124,14 +142,27 @@ struct ForYouView: View {
     }
 
     private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                memoriesSection
-                featuredSection
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    memoriesSection
+                    featuredSection
+                }
+                .padding(.vertical, 12)
+                .id("forYouTop")
+                // Round-31: track whether the list is at the top —
+                // the VStack's top edge in the scroll coordinate
+                // space is 0 at the top, negative once scrolled.
+                // 5pt epsilon (spec) so float rounding never
+                // counts as "not at top".
+                .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .named("forYouScroll")).minY }) { minY in
+                    isAtTop = minY >= -5
+                }
             }
-            .padding(.vertical, 12)
+            .coordinateSpace(name: "forYouScroll")
+            .background(Color(uiColor: .systemGroupedBackground))
+            .onAppear { scrollProxy = proxy }
         }
-        .background(Color(uiColor: .systemGroupedBackground))
     }
 
     private var memoriesSection: some View {
@@ -211,6 +242,16 @@ struct ForYouView: View {
                 }
             }
         }
+    }
+
+    /// Round-31: animated scroll to the top (re-tap on the For You
+    /// tab). No-op when already at the top, when the viewer is
+    /// open (it covers the tab), or when the list is empty (no
+    /// proxy). withAnimation retargets, so rapid re-taps never
+    /// stack animations — they just re-aim the same one.
+    private func scrollToTopAnimated() {
+        guard let proxy = scrollProxy, !isAtTop, feedStartItem == nil else { return }
+        withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo("forYouTop", anchor: .top) }
     }
 
     /// Open a memory in the current feed viewer: resolve the

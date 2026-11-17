@@ -60,11 +60,16 @@ struct AlbumsView: View {
     /// NavigationLink in the LazyVGrid: inline links in a lazy grid
     /// are flaky on iOS 17 (some cards simply never navigate).
     @State private var selectedSource: AlbumSource?
-    /// Pop-to-root request from the tab bar (KeptoTabView bumps
-    /// this when the already-selected Albums tab is tapped again,
-    /// round 3): the destinations above are driven by state, so
-    /// clearing them pops the whole stack back to the Albums root.
-    @Binding var popToRootRequest: Int
+    /// Round-31: re-tap counter from the tab bar (KeptoTabView
+    /// bumps it when the already-selected Albums tab is tapped
+    /// again). The list handles case A (scroll to top); the album
+    /// detail handles cases B/C (scroll to bottom / pop) via its
+    /// own binding to this counter.
+    @Binding var retapRequest: Int
+    /// The Albums list's ScrollView proxy + whether it is at the
+    /// top (round-31, case A).
+    @State private var albumsListProxy: ScrollViewProxy?
+    @State private var albumsListIsAtTop = true
 
     /// 2-column album grid (Photos Albums tab): 12pt gaps.
     private let albumColumns = [
@@ -79,7 +84,20 @@ struct AlbumsView: View {
                 SettingsView()
             }
             .navigationDestination(item: $selectedSource) { source in
-                PhotoCollectionScreen(source: source)
+                PhotoCollectionScreen(
+                    source: source,
+                    // Round-30: pre-seed from the caches at tap time —
+                    // the grid's first frame already has real cells.
+                    initialItems: PhotoCollectionScreen.seedItems(
+                        source: source,
+                        allMetadata: viewModel.allMetadata,
+                        libraryItems: viewModel.items
+                    ),
+                    // Round-31: the detail owns the Albums re-tap
+                    // while open (scroll to the bottom / pop).
+                    retapRequest: $retapRequest,
+                    onRequestPop: { selectedSource = nil }
+                )
             }
             .navigationDestination(item: $seeAllSection) { section in
                 seeAllView(for: section)
@@ -203,18 +221,31 @@ struct AlbumsView: View {
         // The "+" and "See All" buttons stay blue (explicit
         // .foregroundStyle(.blue)); the selection checkmark stays
         // blue (explicit .blue in PhotosGridCell).
-        // Pop to root on a tab re-tap (round 3, see
-        // popToRootRequest): clearing the destination states pops
-        // the album detail, the See All page and the Recently
-        // Deleted note alike — the viewer overlay inside the
-        // detail unmounts with it.
-        .onChange(of: popToRootRequest) { _, _ in
-            selectedSource = nil
-            seeAllSection = nil
-            showingRecentlyDeleted = false
-            isEditingSeeAll = false
+        // Round-31: re-tap on the Albums tab (replaces the round-3
+        // always-pop). Case A — on the Albums list: scroll to the
+        // top. Inside an album the detail owns the tap (its own
+        // retap handler scrolls to the bottom or pops), so this
+        // does nothing while selectedSource != nil. A See All page
+        // or the Recently Deleted note still pops, as before.
+        .onChange(of: retapRequest) { _, _ in
+            guard selectedSource == nil else { return }
+            if seeAllSection != nil || showingRecentlyDeleted {
+                seeAllSection = nil
+                showingRecentlyDeleted = false
+                isEditingSeeAll = false
+            } else {
+                scrollAlbumsListToTop()
+            }
         }
         .tint(.primary)
+    }
+
+    /// Round-31, case A: animated scroll to the top of the Albums
+    /// list. No-op when already at the top (5pt epsilon) or when
+    /// there is no proxy yet.
+    private func scrollAlbumsListToTop() {
+        guard let proxy = albumsListProxy, !albumsListIsAtTop else { return }
+        withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo("albumsTop", anchor: .top) }
     }
 
     /// The Albums root list: the four sections (My Albums, Creators,
@@ -222,6 +253,7 @@ struct AlbumsView: View {
     /// whole body was too large for the compiler to type-check in
     /// reasonable time.
     private func mainScrollView() -> some View {
+        ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     albumSection(title: L10n.myAlbums, items: myAlbumItems) {
@@ -235,7 +267,17 @@ struct AlbumsView: View {
                 }
                 .padding(.top, 8)
                 .padding(.bottom, 16)
+                .id("albumsTop")
+                // Round-31: track whether the list is at the top —
+                // the VStack's top edge in the scroll coordinate
+                // space is 0 at the top, negative once scrolled.
+                // 5pt epsilon (spec).
+                .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .named("albumsScroll")).minY }) { minY in
+                    albumsListIsAtTop = minY >= -5
+                }
             }
+            .coordinateSpace(name: "albumsScroll")
+            .onAppear { albumsListProxy = proxy }
             .navigationTitle(L10n.albums)
             // Transparent status bar / nav bar: the sections show
             // through under the status bar and the title, no solid
@@ -297,6 +339,7 @@ struct AlbumsView: View {
                     }
                 }
             }
+        }
     }
 
     /// The See All page for one section: the whole section as a

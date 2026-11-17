@@ -109,6 +109,14 @@ struct LibraryView: View {
     /// One-line notice after an action (e.g. "already saved").
     @State private var saveNotice: String?
 
+    /// Round-31: re-tap counter from the tab bar (KeptoTabView
+    /// bumps it when the already-selected Library tab is tapped).
+    @Binding var retapRequest: Int
+
+    init(retapRequest: Binding<Int> = .constant(0)) {
+        _retapRequest = retapRequest
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -164,6 +172,10 @@ struct LibraryView: View {
             .onGeometryChange(for: CGFloat.self, of: { $0.safeAreaInsets.top }) { newTop in
                 if newTop > topChromeHeight { topChromeHeight = newTop }
             }
+            // Round-31: re-tap on the Library tab — scroll to the
+            // bottom (newest). scrollToBottomAnimated guards
+            // itself (already at bottom / viewer open / empty).
+            .onChange(of: retapRequest) { _, _ in scrollToBottomAnimated() }
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .cancellationAction) {
