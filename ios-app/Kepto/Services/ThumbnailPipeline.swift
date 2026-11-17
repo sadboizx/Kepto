@@ -13,8 +13,9 @@ import UIKit
 /// Photos' `ImagePipeline` is deliberately NOT ported: it is PhotoKit
 /// throughout (`PHCachingImageManager`, `PHAsset`, `PHImageRequestID`)
 /// and has no Kepto equivalent. The prefetch here mirrors Photos'
-/// `startCaching` — and like Photos, there is no stop call: these are
-/// small thumbnail fetches and the results land in the shared cache.
+/// `startCaching` — and unlike Photos, a newer prefetch run supersedes
+/// an older one (round-32 generation counter), so fast scrolling does
+/// not keep fetching rows the user has already passed.
 @MainActor
 final class ThumbnailPipeline {
     static let shared = ThumbnailPipeline()
@@ -23,7 +24,24 @@ final class ThumbnailPipeline {
     /// same id awaits the same Task instead of starting a new fetch.
     private var inFlight: [String: FetchBox] = [:]
 
+    /// Generation counter for prefetch runs (round-32, fast-scroll
+    /// degrade): every prefetch() call bumps it, and a running
+    /// prefetch stops at the next chunk boundary when a newer run
+    /// has started — so a stale prefetch for rows the user has
+    /// already scrolled past does not keep starting network fetches
+    /// for off-screen cells. Per-cell fetches are NOT cancelled:
+    /// in-flight dedup means one fetch per id at most, and its
+    /// result lands in the shared cache, so scroll-back reuses it.
+    private var prefetchGeneration = 0
+
     private init() {}
+
+    /// Cancel any prefetch run in progress (its in-flight chunk
+    /// finishes, later chunks are skipped). Per-cell thumbnail()
+    /// fetches are unaffected.
+    func cancelPrefetch() {
+        prefetchGeneration += 1
+    }
 
     /// The thumbnail for one item id, via the shared KeptoAPI cache
     /// when possible. Returns nil when the Worker has no thumbnail
@@ -57,6 +75,12 @@ final class ThumbnailPipeline {
         let missing = ids.filter { !KeptoAPI.hasCachedThumbnail(id: $0) && inFlight[$0] == nil }
             .prefix(limit)
         guard !missing.isEmpty else { return }
+        // Round-32: this run supersedes any older prefetch still
+        // in flight (fast scroll / album switch) — the older run
+        // stops at its next chunk boundary instead of fetching
+        // rows that are no longer ahead of the user.
+        prefetchGeneration += 1
+        let generation = prefetchGeneration
         Task {
             // Bounded concurrency, in caller order: each chunk of 8
             // runs together, the next chunk starts when it finishes. (Round-28
@@ -66,6 +90,7 @@ final class ThumbnailPipeline {
             // dedup still applies if another caller asks mid-flight.
             var start = missing.startIndex
             while start < missing.endIndex {
+                guard generation == self.prefetchGeneration else { return }
                 let end = missing.index(start, offsetBy: 8, limitedBy: missing.endIndex) ?? missing.endIndex
                 let chunk = missing[start..<end]
                 await withTaskGroup(of: Void.self) { group in

@@ -383,8 +383,13 @@ struct PhotoDetailView: View {
     /// background grid to the current thumbnail), and near the
     /// OLDEST end of the paging order load the next page so swiping
     /// right never hits a dead end while there is more to show.
+    /// Light haptic on the page change (round-32, spec: page
+    /// change / dismiss success / long-press only).
     private func handleCurrentItemChange() {
-        if let id = currentID { onCurrentItemChange?(id) }
+        if let id = currentID {
+            Haptics.tap()
+            onCurrentItemChange?(id)
+        }
         if let idx = currentIndex, idx <= 2 {
             Task { await onNearEnd?() }
         }
@@ -558,6 +563,18 @@ private struct PhotoDetailPage: View {
     /// Pinch zoom for photos (Photos: 1–5x).
     @State private var scale: CGFloat = 1
     @GestureState private var magnify: CGFloat = 1
+    /// Zoom pan for photos (round-32): the committed pan offset
+    /// plus the live drag translation. A photo could be pinched /
+    /// double-tapped to 2.6x but never panned, so a zoomed photo
+    /// was stuck centred and its edges were unreachable. Pan
+    /// follows the finger 1:1 (no animation in onChanged); it is
+    /// clamped to the scaled image so the photo cannot be dragged
+    /// off screen, and it collapses to zero whenever the scale
+    /// returns to 1x. Gated to zoomed photos only — paging is
+    /// disabled and the dismiss drag is gated while zoomed, so the
+    /// pan cannot fight either.
+    @State private var panOffset: CGSize = .zero
+    @State private var panLive: CGSize = .zero
 
     private var isImage: Bool { item.contentType?.hasPrefix("image/") == true }
 
@@ -565,7 +582,9 @@ private struct PhotoDetailPage: View {
     /// part that moves during a dismiss drag. The centre play button,
     /// the bottom gradient, the toolbar and the notice are siblings
     /// of this, so they stay in place and fade instead.
-    private var mediaContent: some View {
+    /// A function (not a var) since round-32: the zoom pan needs
+    /// the page size for clamping.
+    private func mediaContent(pageSize: CGSize) -> some View {
         Group {
             if item.status == .ready, !isImage {
                 if let player {
@@ -583,7 +602,9 @@ private struct PhotoDetailPage: View {
                         .resizable()
                         .scaledToFit()
                         .scaleEffect(max(scale, 1) * magnify)
+                        .offset(zoomPanOffset(pageSize: pageSize))
                         .gesture(magnification)
+                        .simultaneousGesture(zoomPan(pageSize: pageSize))
                         .onTapGesture(count: 2, perform: doubleTap)
                 } else {
                     ProgressView().tint(.white)
@@ -636,7 +657,7 @@ private struct PhotoDetailPage: View {
                 // i_05/i_06). The mask is a no-op while idle or
                 // dragging (full-page rect), and it does not change
                 // the media's layout — it only clips the rendering.
-                mediaContent
+                mediaContent(pageSize: geo.size)
                     .scaleEffect(dragScale)
                     .mask {
                         Rectangle()
@@ -876,6 +897,8 @@ private struct PhotoDetailPage: View {
             isPlaying = false
             // A zoomed photo resets when the page scrolls away.
             scale = 1
+            panOffset = .zero
+            panLive = .zero
             if zoomed { zoomed = false }
         }
         .onChange(of: isCurrent) { _, current in
@@ -914,17 +937,67 @@ private struct PhotoDetailPage: View {
             .onEnded { value in
                 scale = min(max(scale * value, 1), 5)
                 zoomed = scale > 1.02
+                // Pinched back to 1x: the pan has nowhere to go
+                // (the clamp is zero at 1x), so drop it instead of
+                // letting it reappear on the next zoom.
+                if scale <= 1.02 { panOffset = .zero; panLive = .zero }
             }
     }
 
     private var swipeUp: some Gesture {
         DragGesture(minimumDistance: 30)
             .onEnded { value in
+                // Never while zoomed (round-32): an upward pan of a
+                // zoomed photo must move the photo, not open the
+                // Info sheet. No haptic here — spec allows haptics
+                // on page change / dismiss success / long-press
+                // only, and opening Info is none of those.
+                guard !zoomed, magnify == 1 else { return }
                 if value.translation.height < -70, abs(value.translation.width) < 90 {
                     showingInfo = true
-                    Haptics.tap()
                 }
             }
+    }
+
+    /// The zoomed photo's live pan offset, clamped to the scaled
+    /// image (see `clampZoomPan`).
+    private func zoomPanOffset(pageSize: CGSize) -> CGSize {
+        clampZoomPan(CGSize(width: panOffset.width + panLive.width, height: panOffset.height + panLive.height), pageSize: pageSize)
+    }
+
+    /// Pan a zoomed photo with the finger (round-32). Inactive at
+    /// 1x: the guard returns before touching state, so ordinary
+    /// vertical drags still reach the dismiss drag and horizontal
+    /// drags still page. While zoomed the paging ScrollView is
+    /// disabled and the dismiss drag is gated off, so this is the
+    /// only gesture that can claim the touch. No animation in
+    /// onChanged — the photo follows the finger 1:1.
+    private func zoomPan(pageSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                guard scale > 1.02 || magnify > 1.02 else { return }
+                panLive = value.translation
+            }
+            .onEnded { value in
+                guard scale > 1.02 || magnify > 1.02 else {
+                    panLive = .zero
+                    return
+                }
+                panOffset = clampZoomPan(CGSize(width: panOffset.width + value.translation.width, height: panOffset.height + value.translation.height), pageSize: pageSize)
+                panLive = .zero
+            }
+    }
+
+    /// Clamp a zoom pan so the scaled photo always covers the page:
+    /// the most it can move in each axis is half the overhang of
+    /// the scaled drawn rect over the page. At 1x the overhang is
+    /// zero, so any retained pan collapses to zero.
+    private func clampZoomPan(_ offset: CGSize, pageSize: CGSize) -> CGSize {
+        let effectiveScale = max(scale, 1) * max(magnify, 1)
+        let drawn = drawnSize(pageSize: pageSize)
+        let maxX = max(0, (drawn.width * effectiveScale - pageSize.width) / 2)
+        let maxY = max(0, (drawn.height * effectiveScale - pageSize.height) / 2)
+        return CGSize(width: min(max(offset.width, -maxX), maxX), height: min(max(offset.height, -maxY), maxY))
     }
 
     // MARK: - Drag down to dismiss (Photos viewer)
@@ -1048,6 +1121,10 @@ private struct PhotoDetailPage: View {
         dismissDrawnSize = drawn
         dismissStartRect = CGSize(width: drawn.width * dragScale, height: drawn.height * dragScale)
         let target = dismissTarget(pageSize: pageSize, pageGlobalFrame: pageGlobalFrame)
+        // Dismiss confirmed (round-32): light haptic on the
+        // release, at the moment the close is decided — not in the
+        // completion 0.4s later, where it would feel detached.
+        Haptics.tap()
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             dragOffset = target.offset
             dragScale = target.scale
@@ -1169,8 +1246,11 @@ private struct PhotoDetailPage: View {
         withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
             scale = scale > 1.05 ? 1 : 2.6
             zoomed = scale > 1.05
+            // Zooming back out recentres the photo (round-32).
+            // No haptic here — spec allows haptics on page change
+            // / dismiss success / long-press only.
+            if scale <= 1.05 { panOffset = .zero; panLive = .zero }
         }
-        Haptics.tap()
     }
 
     // MARK: - Player (FeedView's setup, reused as-is)

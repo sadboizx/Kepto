@@ -1288,6 +1288,35 @@ struct PhotosGridCell: View {
     }
 }
 
+/// Round-32 (grid P0): memoize the album cell. Without this, every
+/// parent body evaluation (selection toggle, window growth, data
+/// publish) rebuilt every visible cell's body, including its
+/// AspectThumbnail subtree — the whole-grid re-render on scroll.
+/// SwiftUI skips the body of an Equatable view when the new value
+/// equals the old one, so `==` compares exactly the data this body
+/// reads (id, status, favorite, author/title, duration/view count,
+/// content type, selection state). `onTap` is deliberately NOT
+/// compared: a fresh closure is created per render, and everything
+/// it closes over is covered — `isSelecting` by isSelectionMode,
+/// `item` by the fields above, and the frame cache is a class, so
+/// the closure always reads live frames. Only used by
+/// PhotoCollectionScreen (AlbumBrowser.swift).
+extension PhotosGridCell: Equatable {
+    static func == (lhs: PhotosGridCell, rhs: PhotosGridCell) -> Bool {
+        lhs.isSelectionMode == rhs.isSelectionMode
+            && lhs.isSelected == rhs.isSelected
+            && lhs.item.id == rhs.item.id
+            && lhs.item.status == rhs.item.status
+            && lhs.item.isFavorite == rhs.item.isFavorite
+            && lhs.item.authorUsername == rhs.item.authorUsername
+            && lhs.item.author == rhs.item.author
+            && lhs.item.title == rhs.item.title
+            && lhs.item.formattedDuration == rhs.item.formattedDuration
+            && lhs.item.formattedViewCount == rhs.item.formattedViewCount
+            && lhs.item.contentType == rhs.item.contentType
+    }
+}
+
 /// Status badge: pending shows a spinner (ingest still running), ready is
 /// green, failed is red with the ingest error visible in the detail view.
 struct StatusBadge: View {

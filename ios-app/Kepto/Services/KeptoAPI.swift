@@ -631,9 +631,16 @@ final class KeptoAPI {
         guard let http = response as? HTTPURLResponse,
               (200...299).contains(http.statusCode) else { return nil }
         guard let image = UIImage(data: data) else { return nil }
-        Self.thumbnailCache.setObject(image, forKey: Self.thumbnailCacheKey(for: id), cost: Self.thumbnailCost(image))
-        Self.saveThumbnailToDisk(id: id, data: data)
-        return image
+        // Round-32: downscale to the 400px grid size + JPEG 0.8 before
+        // caching, exactly like storeThumbnail does at save time. The
+        // old code cached the raw Worker bytes and the raw decoded
+        // image, so an oversized Worker thumbnail landed full-size in
+        // the NSCache (inflated cost) and on disk (unbounded bytes)
+        // and was decoded at full size for every grid cell.
+        let thumb = Self.downscaledThumbnail(image) ?? image
+        Self.thumbnailCache.setObject(thumb, forKey: Self.thumbnailCacheKey(for: id), cost: Self.thumbnailCost(thumb))
+        Self.saveThumbnailToDisk(id: id, data: thumb.jpegData(compressionQuality: 0.8) ?? data)
+        return thumb
     }
 
     /// GET /api/preview/:id — the scrub-preview sprite (tile grid of
