@@ -20,6 +20,9 @@ protocol GridItemSource {
     var isFailed: Bool { get }
     /// True for still images — they show no duration/view-count badge.
     var isPhoto: Bool { get }
+    /// Upload progress (0...1) of a LOCAL placeholder item while its
+    /// file uploads from the device. Nil for every server item.
+    var uploadProgress: Double? { get }
 }
 
 extension GridItemSource {
@@ -28,6 +31,29 @@ extension GridItemSource {
     var badgeText: String? {
         guard !isPhoto else { return nil }
         return durationText ?? viewCountText
+    }
+
+    /// No upload in progress (server items never upload).
+    var uploadProgress: Double? { nil }
+}
+
+/// Progress ring for a cell whose file is uploading from the device:
+/// a white arc over a dimmed disc, top-right corner of the cell.
+/// The cell itself is NOT dimmed — the file already exists on the
+/// device, only the upload is in flight.
+struct UploadProgressRing: View {
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color.black.opacity(0.55))
+            Circle().stroke(Color.white.opacity(0.35), lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: CGFloat(min(max(progress, 0), 1)))
+                .stroke(Color.white, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 26, height: 26)
     }
 }
 
@@ -106,6 +132,7 @@ struct AssetThumbnail: View {
             .overlay(alignment: .bottomLeading) { if showBadge { badgeRow } }
             .overlay(alignment: .bottomLeading) { favoriteMark }
             .overlay(alignment: .topTrailing) { selectionMark }
+            .overlay(alignment: .topTrailing) { uploadRing }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .task(id: source.id) {
@@ -116,7 +143,10 @@ struct AssetThumbnail: View {
 
     @ViewBuilder
     private var pendingOverlay: some View {
-        if source.isPending {
+        // An uploading placeholder is NOT dimmed — the file already
+        // exists on the device, only the upload is in flight; the
+        // progress ring (above) is its only affordance.
+        if source.isPending && source.uploadProgress == nil {
             ZStack {
                 Color.black.opacity(0.35)
                 ProgressView()
@@ -153,6 +183,18 @@ struct AssetThumbnail: View {
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
                 .padding(6)
+        }
+    }
+
+    /// Upload progress ring (top-right). Hidden while selecting —
+    /// the selection checkmark owns that corner then. Placeholders
+    /// are never pending-dimmed (metadata has no status), so the
+    /// ring is the only upload affordance on Library cells.
+    @ViewBuilder
+    private var uploadRing: some View {
+        if let progress = source.uploadProgress, progress < 1, !selecting {
+            UploadProgressRing(progress: progress)
+                .padding(5)
         }
     }
 

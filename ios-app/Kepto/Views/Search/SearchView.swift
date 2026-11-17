@@ -32,8 +32,6 @@ struct SearchView: View {
     @State private var feedStartItem: Item?
     /// Presents the Settings sheet from the "…" menu.
     @State private var showingSettings = false
-    /// Notice after a "…" Clipboard save (nil = no notice showing).
-    @State private var saveNotice: String?
 
     /// 3-column square grid (Photos style): 2pt gaps.
     private let gridColumns = [
@@ -93,9 +91,9 @@ struct SearchView: View {
                         Button {
                             Task {
                                 if let notice = await viewModel.saveFromClipboard() {
-                                    saveNotice = notice
+                                    viewModel.showToast(notice)
                                 } else {
-                                    saveNotice = "Không có link trên clipboard."
+                                    viewModel.showToast("Không có link trên clipboard.", isError: true)
                                 }
                             }
                         } label: {
@@ -141,11 +139,6 @@ struct SearchView: View {
                     PhotoDetailView(items: $feedItems, startItemId: startItem.id, title: L10n.search, onDismiss: { feedStartItem = nil })
                         .ignoresSafeArea()
                 }
-            }
-            .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
-                Button("OK") { saveNotice = nil }
-            } message: {
-                Text(saveNotice ?? "")
             }
             .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") { viewModel.errorMessage = nil }

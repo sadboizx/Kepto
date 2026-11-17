@@ -90,6 +90,13 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     let status: ItemStatus
     let ingestError: String?
     let createdAt: String
+    /// Upload progress of a LOCAL placeholder item (0...1) while a
+    /// file is uploading from the device. Nil for every server item.
+    /// `var` with a default, like isFavorite: the synthesized
+    /// memberwise init omits it (assign on the copy after init), and
+    /// the synthesized Codable decode treats a missing key as nil.
+    /// The grid ring reads it via `GridItemSource.uploadProgress`.
+    var uploadProgress: Double? = nil
 
     /// Best human-readable title: title, else caption, else the URL itself.
     var displayTitle: String {
@@ -263,6 +270,12 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
     /// `var` for the same reason as isFavorite above.
     var myCollectionIds: [String] = []
     var myCollectionNames: [String] = []
+    /// Upload progress of a LOCAL placeholder item (0...1) — the
+    /// metadata twin of `Item.uploadProgress`, so the Library grid
+    /// (which renders from metadata) can show the same ring. Nil
+    /// for every server item; never persisted (placeholders are
+    /// filtered out of the disk cache).
+    var uploadProgress: Double? = nil
 
     /// Full memberwise initializer. The synthesized one only takes
     /// the 13 properties without defaults, so a call site that must

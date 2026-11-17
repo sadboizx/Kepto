@@ -31,8 +31,6 @@ struct ForYouView: View {
     @State private var feedStartItem: Item?
     /// Presents the Settings sheet from the "…" menu.
     @State private var showingSettings = false
-    /// Notice after a "…" Clipboard save (nil = no notice showing).
-    @State private var saveNotice: String?
 
     /// Round-31: re-tap counter from the tab bar (KeptoTabView
     /// bumps it when the already-selected For You tab is tapped).
@@ -85,9 +83,9 @@ struct ForYouView: View {
                         Button {
                             Task {
                                 if let notice = await viewModel.saveFromClipboard() {
-                                    saveNotice = notice
+                                    viewModel.showToast(notice)
                                 } else {
-                                    saveNotice = L10n.clipboardNoLink
+                                    viewModel.showToast(L10n.clipboardNoLink, isError: true)
                                 }
                             }
                         } label: {
@@ -119,11 +117,6 @@ struct ForYouView: View {
                     PhotoDetailView(items: $feedItems, startItemId: startItem.id, title: L10n.forYou, onDismiss: { feedStartItem = nil })
                         .ignoresSafeArea()
                 }
-            }
-            .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
-                Button("OK") { saveNotice = nil }
-            } message: {
-                Text(saveNotice ?? "")
             }
             .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") { viewModel.errorMessage = nil }

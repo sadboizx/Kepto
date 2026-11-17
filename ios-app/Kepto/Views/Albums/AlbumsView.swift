@@ -38,7 +38,6 @@ struct AlbumsView: View {
     /// Rename alert (from an album card's long-press menu).
     @State private var renamingCollection: MyCollection?
     @State private var renameText = ""
-    @State private var saveNotice: String?
     /// Presents the Settings sheet from the "…" menu.
     @State private var showingSettings = false
     /// Edit mode lives ONLY on the See All page (Photos behavior):
@@ -132,7 +131,7 @@ struct AlbumsView: View {
                     newCollectionName = ""
                     Task {
                         if let created = await viewModel.createMyCollection(name: name) {
-                            saveNotice = L10n.createdCollection(created.name)
+                            viewModel.showToast(L10n.createdCollection(created.name))
                         }
                     }
                 }
@@ -162,11 +161,6 @@ struct AlbumsView: View {
                     renamingCollection = nil
                     renameText = ""
                 }
-            }
-            .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
-                Button("OK") { saveNotice = nil }
-            } message: {
-                Text(saveNotice ?? "")
             }
             .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
                 Button("OK") { viewModel.errorMessage = nil }
@@ -312,9 +306,9 @@ struct AlbumsView: View {
                         Button {
                             Task {
                                 if let notice = await viewModel.saveFromClipboard() {
-                                    saveNotice = notice
+                                    viewModel.showToast(notice)
                                 } else {
-                                    saveNotice = L10n.clipboardNoLink
+                                    viewModel.showToast(L10n.clipboardNoLink, isError: true)
                                 }
                             }
                         } label: {

@@ -52,8 +52,6 @@ struct PhotoCollectionScreen: View {
     @State private var isLoading = false
     @State private var isLoadingMore = false
     @State private var errorMessage: String?
-    /// Short notice from a bulk action ("Đã lưu 3 vào Photos.").
-    @State private var notice: String?
     /// The item the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
     /// Initial scroll to the bottom (newest, Apple Photos): the
@@ -284,11 +282,7 @@ struct PhotoCollectionScreen: View {
             } message: {
                 Text(errorMessage ?? "")
             }
-            .alert("Kepto", isPresented: .constant(notice != nil)) {
-                Button("OK") { notice = nil }
-            } message: {
-                Text(notice ?? "")
-            }
+            // (Bulk-action notices are toasts now — no local alert.)
             .alert(L10n.removeFailed, isPresented: .constant(removeError != nil)) {
                 Button("OK") { removeError = nil }
             } message: {
@@ -1045,14 +1039,11 @@ struct PhotoCollectionScreen: View {
     // MARK: - Single-item actions (context menu)
 
     /// Context menu "Save to Photos": download the item and save it
-    /// to the Photos library. Failures show in the error alert.
+    /// to the Photos library, with a toast + haptic on success and a
+    /// toast with Retry on failure.
     private func saveToPhotos(_ item: Item) {
         Task {
-            do {
-                try await viewModel.saveToPhotos(item: item)
-            } catch {
-                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
+            await viewModel.saveToPhotosWithFeedback(item: item)
         }
     }
 
@@ -1165,7 +1156,7 @@ struct PhotoCollectionScreen: View {
             if let url = try? await viewModel.shareFileURL(for: item) { urls.append(url) }
         }
         guard !urls.isEmpty else {
-            notice = L10n.shareDownloadFailed
+            viewModel.showToast(L10n.shareDownloadFailed, isError: true)
             return
         }
         shareURLs = urls
@@ -1193,9 +1184,9 @@ struct PhotoCollectionScreen: View {
             } catch { failed += 1 }
         }
         if failed == 0 {
-            notice = L10n.savedToPhotos(saved)
+            viewModel.showToast(L10n.savedToPhotos(saved))
         } else {
-            notice = L10n.savedToPhotosPartial(saved, failed)
+            viewModel.showToast(L10n.savedToPhotosPartial(saved, failed), isError: true)
         }
     }
 }

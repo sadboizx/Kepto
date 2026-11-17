@@ -233,6 +233,22 @@ enum L10n {
     static var addFromFeedMenu: String { isVI ? "Thêm video từ menu long-press trong trình xem." : "Add a video from the feed's long-press menu." }
     static var photosWillAppearHere: String { isVI ? "Ảnh bạn lưu sẽ hiện ở đây." : "Photos you save will appear here." }
     static var clipboardNoLink: String { isVI ? "Không có link trên clipboard." : "No link on the clipboard." }
+
+    /// Task Manager ("Hoạt động") + toast + upload placeholders.
+    static var activity: String { isVI ? "Hoạt động" : "Activity" }
+    static var activityRunning: String { isVI ? "Đang chạy" : "Running" }
+    static var activityWaiting: String { isVI ? "Chờ mạng" : "Waiting for Network" }
+    static var activityFailed: String { isVI ? "Lỗi" : "Failed" }
+    static var activityDone: String { isVI ? "Xong gần đây" : "Recently Done" }
+    static var activityEmpty: String { isVI ? "Không có tác vụ nào." : "No activity." }
+    static var retry: String { isVI ? "Thử lại" : "Retry" }
+    static var waitingForNetwork: String { isVI ? "Chờ mạng — sẽ tự tiếp tục khi có mạng." : "Waiting for network — resumes automatically." }
+    static var resumeWhenOnline: String { isVI ? "Tự tiếp tục khi có mạng" : "Resumes when you're back online" }
+    static var savedToPhotosSingle: String { isVI ? "Đã lưu vào Photos." : "Saved to Photos." }
+    static var couldNotLoadItem: String { isVI ? "Không tải được mục này." : "Couldn't load this item." }
+    static var uploadingPleaseWait: String { isVI ? "Đang tải lên…" : "Still uploading…" }
+    static var noNetworkWillRetry: String { isVI ? "Không có mạng. Sẽ thử lại khi có mạng." : "No network. Will retry when you're back online." }
+    static var uploadFailedGeneric: String { isVI ? "Không tải lên được. Thử lại nhé." : "Couldn't upload. Try again." }
     static var clipboardNoHttpLink: String { isVI ? "Clipboard không có link http(s) nào." : "The clipboard has no http(s) link." }
     static var createCollectionFailed: String { isVI ? "Không tạo được collection. Kiểm tra kết nối rồi thử lại." : "Couldn't create the collection. Check your connection and try again." }
     static var addToCollectionFailed: String { isVI ? "Không thêm được. Kiểm tra kết nối rồi thử lại." : "Couldn't add. Check your connection and try again." }

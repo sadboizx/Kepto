@@ -30,6 +30,10 @@ import UIKit
 /// `PHAsset` anywhere in this file.
 struct LibraryView: View {
     @EnvironmentObject private var viewModel: LibraryViewModel
+    /// Task Manager store (injected at the app root): the activity
+    /// button reads it directly so it appears/disappears as tasks
+    /// start and finish.
+    @EnvironmentObject private var taskStore: TaskStore
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     // Round 3: the Library opens on All Photos by default (launch
@@ -105,9 +109,8 @@ struct LibraryView: View {
     /// URL-input alert (shown by the empty-state "Save a link" button).
     @State private var showingURLInput = false
     @State private var urlInput = ""
-    @State private var clipboardAlert = false
-    /// One-line notice after an action (e.g. "already saved").
-    @State private var saveNotice: String?
+    /// Activity (Task Manager) sheet.
+    @State private var showingActivity = false
 
     /// Round-31: re-tap counter from the tab bar (KeptoTabView
     /// bumps it when the already-selected Library tab is tapped).
@@ -196,7 +199,7 @@ struct LibraryView: View {
                             if allSelected {
                                 selection.removeAll()
                             } else {
-                                selection = Set(allIDs)
+                                selection = Set(selectableIDs)
                             }
                         } label: {
                             Text(allSelected ? L10n.deselectAll : L10n.selectAll)
@@ -212,6 +215,27 @@ struct LibraryView: View {
                 } else {
                     ToolbarItem(placement: .topBarTrailing) {
                         HStack(spacing: 16) {
+                            // Task Manager: visible only while a task
+                            // is running, waiting for network, or
+                            // failed. The bolt spins subtly while
+                            // anything runs; the cloud-slash marks a
+                            // network wait.
+                            if taskStore.hasVisibleTasks {
+                                Button {
+                                    Haptics.tap()
+                                    showingActivity = true
+                                } label: {
+                                    Image(systemName: taskStore.isAnyWaiting ? "icloud.slash" : "bolt")
+                                        .font(.footnote.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 7)
+                                        .background(.regularMaterial, in: Capsule())
+                                        .symbolEffect(.rotate, isActive: taskStore.isAnyRunning)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(L10n.activity)
+                            }
                             Button {
                                 Haptics.tap()
                                 selecting = true
@@ -352,7 +376,7 @@ struct LibraryView: View {
             AddToCollectionPickerView(
                 item: pickerItem,
                 onAddedToCollection: { name, added in
-                    saveNotice = added ? L10n.addedToCollection(name) : L10n.alreadyInCollection(name)
+                    viewModel.showToast(added ? L10n.addedToCollection(name) : L10n.alreadyInCollection(name))
                 },
                 onCancel: { itemForAlbumPicker = nil }
             )
@@ -361,7 +385,7 @@ struct LibraryView: View {
             AddToAlbumSheet(
                 ids: addToAlbumItems.map(\.id),
                 onDone: { name, added in
-                    saveNotice = L10n.addedCountToCollection(added, name)
+                    viewModel.showToast(L10n.addedCountToCollection(added, name))
                     exitSelection()
                 }
             )
@@ -381,20 +405,13 @@ struct LibraryView: View {
         } message: {
             Text(L10n.deleteFromCloudMessage)
         }
-        .alert("Kepto", isPresented: .constant(saveNotice != nil)) {
-            Button("OK") { saveNotice = nil }
-        } message: {
-            Text(saveNotice ?? "")
-        }
         .alert("Kepto", isPresented: .constant(viewModel.errorMessage != nil)) {
             Button("OK") { viewModel.errorMessage = nil }
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
-        .alert("Clipboard", isPresented: $clipboardAlert) {
-            Button("OK") {}
-        } message: {
-            Text(L10n.clipboardNoHttpLink)
+        .sheet(isPresented: $showingActivity) {
+            ActivitySheet()
         }
         .onChange(of: zoom) { _, _ in
             Haptics.select()
@@ -678,7 +695,9 @@ struct LibraryView: View {
     /// multi-select is on (a tap toggles selection instead).
     private func cellMenu(for source: any GridItemSource) -> some View {
         Group {
-            if !selecting {
+            // No menu on an upload placeholder (no real item to
+            // share, save, favorite, or delete yet).
+            if !selecting, !viewModel.isUploadPlaceholder(source.id) {
                 Button { Task { await shareItem(source.id) } } label: {
                     Label(L10n.share, systemImage: "square.and.arrow.up")
                 }
@@ -895,8 +914,12 @@ struct LibraryView: View {
 
     // MARK: - Multi-select
 
+    /// Ids that can be selected — upload placeholders are not
+    /// selectable (they are not real items yet).
+    private var selectableIDs: [String] { allIDs.filter { !viewModel.isUploadPlaceholder($0) } }
+
     private var allSelected: Bool {
-        !allIDs.isEmpty && selection.count == allIDs.count
+        !selectableIDs.isEmpty && selection.count == selectableIDs.count
     }
 
     private var selectBar: some View {
@@ -936,6 +959,12 @@ struct LibraryView: View {
     }
 
     private func handleTap(_ id: String) {
+        // Upload placeholders are not real items yet — no viewer,
+        // no selection. A tap just says it is still uploading.
+        if viewModel.isUploadPlaceholder(id) {
+            if !selecting { viewModel.showToast(L10n.uploadingPleaseWait) }
+            return
+        }
         if selecting {
             if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
             Haptics.select()
@@ -1013,7 +1042,7 @@ struct LibraryView: View {
         // No notice on success. A partial failure is still reported,
         // like the Albums tab's errorMessage for the same case.
         if failures > 0 {
-            saveNotice = L10n.deletedCountPartial(deleted, failures)
+            viewModel.showToast(L10n.deletedCountPartial(deleted, failures), isError: true)
         }
     }
 
@@ -1027,7 +1056,7 @@ struct LibraryView: View {
             if let url = try? await viewModel.shareFileURL(for: item) { urls.append(url) }
         }
         guard !urls.isEmpty else {
-            saveNotice = L10n.shareDownloadFailed
+            viewModel.showToast(L10n.shareDownloadFailed, isError: true)
             return
         }
         shareURLs = urls
@@ -1047,7 +1076,7 @@ struct LibraryView: View {
             if let item = await resolveItem(id: id) { resolved.append(item) }
         }
         guard !resolved.isEmpty else {
-            saveNotice = L10n.loadItemsToAddFailed
+            viewModel.showToast(L10n.loadItemsToAddFailed, isError: true)
             return
         }
         addToAlbumItems = resolved
@@ -1065,9 +1094,9 @@ struct LibraryView: View {
             } catch { failed += 1 }
         }
         if failed == 0 {
-            saveNotice = "Đã lưu \(saved) vào Photos."
+            viewModel.showToast(L10n.savedToPhotos(saved))
         } else {
-            saveNotice = "Đã lưu \(saved) vào Photos, \(failed) lỗi."
+            viewModel.showToast(L10n.savedToPhotosPartial(saved, failed), isError: true)
         }
     }
 
@@ -1075,26 +1104,21 @@ struct LibraryView: View {
 
     private func saveToPhotos(_ id: String) async {
         guard let item = await resolveItem(id: id) else {
-            saveNotice = "Không tải được mục này."
+            viewModel.showToast("Không tải được mục này.", isError: true)
             return
         }
-        do {
-            try await viewModel.saveToPhotos(item: item)
-            saveNotice = "Đã lưu vào Photos."
-        } catch {
-            saveNotice = "Không lưu được vào Photos."
-        }
+        await viewModel.saveToPhotosWithFeedback(item: item)
     }
 
     private func shareItem(_ id: String) async {
         guard let item = await resolveItem(id: id) else {
-            saveNotice = L10n.shareDownloadFailed
+            viewModel.showToast(L10n.shareDownloadFailed, isError: true)
             return
         }
         do {
             shareFile = ShareFile(url: try await viewModel.shareFileURL(for: item))
         } catch {
-            saveNotice = L10n.shareDownloadFailed
+            viewModel.showToast(L10n.shareDownloadFailed, isError: true)
         }
     }
 
@@ -1126,7 +1150,7 @@ struct LibraryView: View {
         switch result {
         case .single(let single):
             if single.duplicate {
-                saveNotice = "Link này đã lưu trước đó."
+                viewModel.showToast("Link này đã lưu trước đó.")
             }
         case .collection(let coll):
             var notice = "Đã lưu \(coll.created) video mới"
@@ -1139,7 +1163,7 @@ struct LibraryView: View {
             if let title = coll.title, !title.isEmpty {
                 notice = "Collection “\(title)”: " + notice
             }
-            saveNotice = notice + "."
+            viewModel.showToast(notice + ".")
         }
     }
 
@@ -1147,9 +1171,9 @@ struct LibraryView: View {
     /// away; warns when there is no link.
     private func saveDirectFromClipboard() async {
         if let notice = await viewModel.saveFromClipboard() {
-            saveNotice = notice
+            viewModel.showToast(notice)
         } else {
-            clipboardAlert = true
+            viewModel.showToast(L10n.clipboardNoHttpLink, isError: true)
         }
     }
 }
@@ -1184,12 +1208,21 @@ struct PhotosGridCell: View {
     var body: some View {
         ZStack {
             AspectThumbnail(itemId: item.id)
-            if item.status == .pending {
+            // An uploading placeholder is not dimmed (the file
+            // already exists on device) — it shows the progress
+            // ring at the top-right instead. Other pending items
+            // (server ingest) keep the dim + spinner.
+            if item.status == .pending, item.uploadProgress == nil {
                 ZStack {
                     Color.black.opacity(0.35)
                     ProgressView()
                         .tint(.white)
                 }
+            }
+            if let progress = item.uploadProgress, progress < 1, !isSelectionMode {
+                UploadProgressRing(progress: progress)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
             if let badge = badgeText, item.status == .ready {
                 Text(badge)
@@ -1274,6 +1307,7 @@ struct PhotosGridCell: View {
             parts.append("photo")
         }
         if item.isFavorite { parts.append("favorite") }
+        if item.uploadProgress != nil { parts.append("uploading") }
         if item.status == .pending { parts.append("loading") }
         if item.status == .failed { parts.append("failed to save") }
         return parts.joined(separator: ", ")
@@ -1285,35 +1319,6 @@ struct PhotosGridCell: View {
     private var badgeText: String? {
         guard item.contentType?.hasPrefix("image/") != true else { return nil }
         return item.formattedDuration ?? item.formattedViewCount
-    }
-}
-
-/// Round-32 (grid P0): memoize the album cell. Without this, every
-/// parent body evaluation (selection toggle, window growth, data
-/// publish) rebuilt every visible cell's body, including its
-/// AspectThumbnail subtree — the whole-grid re-render on scroll.
-/// SwiftUI skips the body of an Equatable view when the new value
-/// equals the old one, so `==` compares exactly the data this body
-/// reads (id, status, favorite, author/title, duration/view count,
-/// content type, selection state). `onTap` is deliberately NOT
-/// compared: a fresh closure is created per render, and everything
-/// it closes over is covered — `isSelecting` by isSelectionMode,
-/// `item` by the fields above, and the frame cache is a class, so
-/// the closure always reads live frames. Only used by
-/// PhotoCollectionScreen (AlbumBrowser.swift).
-extension PhotosGridCell: Equatable {
-    static func == (lhs: PhotosGridCell, rhs: PhotosGridCell) -> Bool {
-        lhs.isSelectionMode == rhs.isSelectionMode
-            && lhs.isSelected == rhs.isSelected
-            && lhs.item.id == rhs.item.id
-            && lhs.item.status == rhs.item.status
-            && lhs.item.isFavorite == rhs.item.isFavorite
-            && lhs.item.authorUsername == rhs.item.authorUsername
-            && lhs.item.author == rhs.item.author
-            && lhs.item.title == rhs.item.title
-            && lhs.item.formattedDuration == rhs.item.formattedDuration
-            && lhs.item.formattedViewCount == rhs.item.formattedViewCount
-            && lhs.item.contentType == rhs.item.contentType
     }
 }
 

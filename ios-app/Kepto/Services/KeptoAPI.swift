@@ -461,7 +461,12 @@ final class KeptoAPI {
     /// caller computes it); when it matches an item already saved, the
     /// Worker returns that item with `duplicate: true` instead of
     /// uploading again. Returns the item and whether it was a duplicate.
-    func uploadFile(fileURL: URL, filename: String, mimeType: String, sha256: String? = nil) async throws -> (item: Item, duplicate: Bool) {
+    /// `onProgress` (0...1, byte-based) is called from the URLSession
+    /// delegate queue — the caller must hop to the main actor before
+    /// touching UI state. Nil = the old path (`session.upload`, no
+    /// progress). Timeout, auth headers, fromFile body and the return
+    /// type are identical either way.
+    func uploadFile(fileURL: URL, filename: String, mimeType: String, sha256: String? = nil, onProgress: ((Double) -> Void)? = nil) async throws -> (item: Item, duplicate: Bool) {
         var query = [URLQueryItem(name: "filename", value: filename)]
         if let sha256, !sha256.isEmpty {
             query.append(URLQueryItem(name: "sha256", value: sha256))
@@ -469,9 +474,34 @@ final class KeptoAPI {
         var request = authorizedRequest(url: url(path: "/api/upload", queryItems: query), method: "POST")
         request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 600
-        let (data, response) = try await session.upload(for: request, fromFile: fileURL)
+        let (data, response): (Data, URLResponse)
+        if let onProgress {
+            (data, response) = try await uploadWithProgress(request: request, fileURL: fileURL, onProgress: onProgress)
+        } else {
+            (data, response) = try await session.upload(for: request, fromFile: fileURL)
+        }
         let decoded = try handle(data, response, as: ItemResponse.self)
         return (decoded.item, decoded.duplicate ?? false)
+    }
+
+    /// Upload with byte progress. `URLSession.shared` cannot take a
+    /// delegate, so this builds a one-shot session around an
+    /// `UploadProgressDelegate` and bridges it to async/await with a
+    /// continuation (resumed exactly once, in didCompleteWithError).
+    /// The session is invalidated when the task completes. Cancelling
+    /// the awaiting task cancels the upload task too.
+    private func uploadWithProgress(request: URLRequest, fileURL: URL, onProgress: @escaping (Double) -> Void) async throws -> (Data, URLResponse) {
+        let delegate = UploadProgressDelegate(onProgress: onProgress)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let task = session.uploadTask(with: request, fromFile: fileURL)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, URLResponse), Error>) in
+                delegate.onComplete = { result in continuation.resume(with: result) }
+                task.resume()
+            }
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     /// DELETE /api/items/:id
@@ -691,5 +721,53 @@ final class KeptoAPI {
             if contentType.contains("heic") { return "heic" }
         }
         return "mp4"
+    }
+}
+
+/// Delegate for one upload-with-progress session (see
+/// `KeptoAPI.uploadWithProgress`). `URLSessionUploadTask` is a data
+/// task, so the response body arrives through the data-delegate
+/// methods and completion through `didCompleteWithError` — which
+/// resumes the awaiting continuation exactly once. All callbacks run
+/// on the session's serial delegate queue (delegateQueue nil), so
+/// `receivedData` / `response` need no extra locking; `onProgress`
+/// is called on that same queue and the caller hops to the main
+/// actor. The session is invalidated in `didCompleteWithError`, which
+/// also releases this delegate.
+private final class UploadProgressDelegate: NSObject, URLSessionDataDelegate {
+    private let onProgress: (Double) -> Void
+    var onComplete: (Result<(Data, URLResponse), Error>) -> Void = { _ in }
+    private var receivedData = Data()
+    private var response: URLResponse?
+
+    init(onProgress: @escaping (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        onProgress(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        self.response = response
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        receivedData.append(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        defer { session.finishTasksAndInvalidate() }
+        if let error {
+            onComplete(.failure(error))
+            return
+        }
+        guard let response else {
+            onComplete(.failure(URLError(.badServerResponse)))
+            return
+        }
+        onComplete(.success((receivedData, response)))
     }
 }

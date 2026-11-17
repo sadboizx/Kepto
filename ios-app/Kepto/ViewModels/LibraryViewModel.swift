@@ -122,8 +122,51 @@ final class LibraryViewModel: ObservableObject {
     @Published var uploadDuplicateCount = 0
     /// How many items in the last batch failed to import.
     @Published var uploadFailedCount = 0
-    /// One-line notice after an import (shown by the root).
-    @Published var uploadNotice: String?
+    /// One-line notice after an import. Kept as the string source —
+    /// the didSet routes it to the toast (the old blocking .alert on
+    /// it is gone); nothing reads it for display any more.
+    @Published var uploadNotice: String? {
+        didSet { if let uploadNotice { showToast(uploadNotice) } }
+    }
+
+    /// Task Manager store ("Hoạt động"). Owned here so the ViewModel
+    /// can register tasks; the app root injects it into the
+    /// environment for the views (top-bar activity button, sheet).
+    let taskStore = TaskStore()
+
+    /// Non-blocking toast — one shared toast for every tab. Replaces
+    /// the old blocking `.alert` on uploadNotice / saveNotice /
+    /// shareSaveNotice.
+    @Published private(set) var toast: ToastState?
+    private var toastDismissTask: Task<Void, Never>?
+
+    /// Show the toast (replacing any toast already showing) and
+    /// auto-dismiss it after ~2.5s. `retry` runs when the user taps
+    /// the toast's Retry button (a sync closure — async work wraps
+    /// itself in a Task).
+    func showToast(_ message: String, isError: Bool = false, retryTitle: String? = nil, retry: (() -> Void)? = nil) {
+        toastDismissTask?.cancel()
+        let state = ToastState(message: message, isError: isError, retryTitle: retryTitle, retry: retry)
+        toast = state
+        let id = state.id
+        toastDismissTask = Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            if toast?.id == id { toast = nil }
+        }
+    }
+
+    /// Dismiss the toast now (tap on it, or a Retry tap).
+    func dismissToast() {
+        toastDismissTask?.cancel()
+        toast = nil
+    }
+
+    /// Run the showing toast's Retry action, if any, then dismiss.
+    func toastRetry() {
+        let retry = toast?.retry
+        dismissToast()
+        retry?()
+    }
 
     /// Album picker after a Photos import: it opens the moment the
     /// user picks photos (v57) — the user chooses the album while
@@ -189,6 +232,13 @@ final class LibraryViewModel: ObservableObject {
         // Round-26: prefetch thumbnails missing from the cache
         // (disk-warm case) — the pipeline skips cached ids.
         prefetchMissingThumbnails()
+        // Task Manager: when a task leaves the store, delete any
+        // temp files kept for its upload retry. Restores persisted
+        // link tasks (the Worker/ingest kept working without the
+        // app); upload batches are NOT restored — their temp files
+        // are gone after a kill.
+        taskStore.onTaskRemoved = { [weak self] id in self?.cleanupRetrySource(id) }
+        Task { await restorePersistedLinkTasks() }
     }
 
     /// Re-read the Worker URL (UserDefaults) and API key (Keychain).
@@ -314,7 +364,9 @@ final class LibraryViewModel: ObservableObject {
         // Round-26: versioned envelope (v1 = the same payload
         // round-22 wrote as a bare array), so a future schema
         // change can migrate instead of silently dropping the cache.
-        let envelope = MetadataCacheFile(v: 1, items: allMetadata)
+        // Upload placeholders are local-only (not on the server) —
+        // persisting them would resurrect ghost cells after a kill.
+        let envelope = MetadataCacheFile(v: 1, items: allMetadata.filter { !uploadPlaceholderIDs.contains($0.id) })
         guard let url = Self.allMetadataCacheURL,
               let data = try? JSONEncoder().encode(envelope) else { return }
         // Round-25: the thumbnail cache already creates its
@@ -669,6 +721,23 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    /// Save to Photos with user feedback: toast + success haptic on
+    /// success; on failure a toast with a Retry action for the same
+    /// item. Call sites use this instead of the throwing
+    /// `saveToPhotos(item:)` so the feedback is in one place.
+    func saveToPhotosWithFeedback(item: Item) async {
+        do {
+            try await saveToPhotos(item: item)
+            Haptics.success()
+            showToast(L10n.savedToPhotosSingle)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            showToast(message, isError: true, retryTitle: L10n.retry, retry: { [weak self] in
+                Task { await self?.saveToPhotosWithFeedback(item: item) }
+            })
+        }
+    }
+
     /// Download the item's media file and save it to the Photos
     /// library (camera roll) — the context menus' "Save to Photos".
     /// Works for videos and for image posts: the Photos resource type
@@ -763,6 +832,9 @@ final class LibraryViewModel: ObservableObject {
             // Round-26: prefetch thumbnails for items newly ready
             // (the pending poll lands them here).
             prefetchMissingThumbnails()
+            // Task Manager: link/collection progress comes from this
+            // same refresh (the 5s pending poll calls fetch()).
+            refreshTaskProgressFromPoll()
         } catch {
             // Cancellation is not an error — the task was superseded
             // (view gone, refresh re-triggered). Never show it as an
@@ -891,8 +963,36 @@ final class LibraryViewModel: ObservableObject {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
             return nil
         }
+        // Task Manager: track this save (link, or collection once the
+        // Worker says so). The retry closure is attached after the id
+        // exists — it deletes a failed item, if any, and re-saves.
+        let taskID = taskStore.addTask(ActivityTask(kind: .link, title: url, url: url))
+        taskStore.updateTask(id: taskID) { $0.retry = { [weak self] in await self?.retryLinkTask(taskID) } }
         do {
             let result = try await api.save(url: url)
+            switch result {
+            case .single(let single):
+                if single.duplicate {
+                    // Nothing new was saved — no task to track.
+                    taskStore.removeTask(id: taskID)
+                } else {
+                    taskStore.updateTask(id: taskID) {
+                        $0.itemIDs = [single.item.id]
+                        $0.title = single.item.displayTitle
+                    }
+                }
+            case .collection(let coll):
+                if coll.created == 0 {
+                    taskStore.removeTask(id: taskID)
+                } else {
+                    taskStore.updateTask(id: taskID) {
+                        $0.kind = .collection
+                        $0.itemIDs = coll.items.map(\.id)
+                        $0.total = max(coll.total, 1)
+                        $0.title = (coll.title?.isEmpty == false) ? coll.title! : url
+                    }
+                }
+            }
             await fetch()
             await fetchCollections()
             // The library just changed — refresh the full metadata
@@ -902,31 +1002,131 @@ final class LibraryViewModel: ObservableObject {
             // The new item(s) are pending (ingesting) — start the poll
             // so their thumbnails appear when the ingest finishes.
             startPendingPoll()
+            refreshTaskProgressFromPoll()
             return result
         } catch {
-            if error is CancellationError { return nil }
-            if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
-            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            if error is CancellationError { taskStore.removeTask(id: taskID); return nil }
+            if let urlError = error as? URLError, urlError.code == .cancelled { taskStore.removeTask(id: taskID); return nil }
+            if isNetworkError(error) {
+                // Offline: the task waits (auto-resume is the batch
+                // loop's job for uploads; for links the user retries
+                // from the Task Manager — no spin loop, no alert).
+                taskStore.setState(id: taskID, .waitingForNetwork, errorText: L10n.waitingForNetwork)
+                showToast(L10n.noNetworkWillRetry, isError: true)
+            } else {
+                taskStore.setState(id: taskID, .failed, errorText: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
             return nil
         }
     }
 
+    /// Retry a failed/waiting link task: delete its failed item (if
+    /// any — so the re-save is not a duplicate) and save the URL
+    /// again. The old task goes away first; the re-save registers a
+    /// fresh one.
+    func retryLinkTask(_ taskID: UUID) async {
+        guard let task = taskStore.tasks.first(where: { $0.id == taskID }),
+              let url = task.url else { return }
+        for id in task.itemIDs {
+            if let item = items.first(where: { $0.id == id }) {
+                try? await delete(item: item)
+            }
+        }
+        taskStore.removeTask(id: taskID)
+        _ = await save(url: url)
+    }
+
+    /// After a Library refresh, advance link/collection tasks from
+    /// the items actually visible in the first page: a link task
+    /// finishes when its item is ready (or fails with the ingest
+    /// error); a collection's progress is the share of its items no
+    /// longer pending in the visible page. Called at the end of
+    /// fetch(), so the existing 5s pending poll drives it — no
+    /// second poller. Approximation, documented: items past the
+    /// first page are invisible here, but collection items finish
+    /// oldest-first (ingest queue order), so when the newest page
+    /// holds no pending item at all, the older ones are done too.
+    private func refreshTaskProgressFromPoll() {
+        for task in taskStore.tasks where task.state == .running && (task.kind == .link || task.kind == .collection) {
+            let visible = task.itemIDs.compactMap { id in items.first(where: { $0.id == id }) }
+            guard !visible.isEmpty else { continue }
+            if task.kind == .link {
+                guard let first = visible.first else { continue }
+                if first.status == .ready {
+                    taskStore.updateTask(id: task.id) { $0.done = 1 }
+                    taskStore.setState(id: task.id, .done)
+                } else if first.status == .failed {
+                    taskStore.setState(id: task.id, .failed, errorText: first.friendlyIngestError)
+                }
+            } else {
+                let doneCount = visible.filter { $0.status != .pending }.count
+                taskStore.updateTask(id: task.id) { $0.done = doneCount }
+                if doneCount >= visible.count && !items.contains(where: { $0.status == .pending }) {
+                    taskStore.setState(id: task.id, .done)
+                }
+            }
+        }
+    }
+
+    /// Restore persisted link/collection tasks once per launch. A
+    /// record is dropped when none of its items are pending any more
+    /// (one GET /api/list?status=pending call — no new endpoint);
+    /// the rest re-register as running and the pending poll resumes
+    /// them server-side (the Worker/ingest kept working without the
+    /// app). When the check itself fails (offline) or the pending
+    /// list is capped, nothing is dropped — the poll sorts it out.
+    private var didRestoreLinkTasks = false
+    func restorePersistedLinkTasks() async {
+        guard !didRestoreLinkTasks, let api else { return }
+        didRestoreLinkTasks = true
+        let records = taskStore.loadPersistedLinkTasks()
+        guard !records.isEmpty else { return }
+        var pendingIDs: Set<String>?
+        var capped = false
+        if let (pending, cursor) = try? await api.list(status: .pending, limit: 100) {
+            pendingIDs = Set(pending.map(\.id))
+            capped = cursor != nil
+        }
+        for record in records {
+            if let pendingIDs, !capped, !record.itemIDs.isEmpty,
+               record.itemIDs.allSatisfy({ !pendingIDs.contains($0) }) {
+                continue // every item finished — drop the record.
+            }
+            let done = pendingIDs.map { pending in record.itemIDs.filter { !pending.contains($0) }.count } ?? record.done
+            let taskID = taskStore.addTask(ActivityTask(
+                kind: record.isCollection ? .collection : .link,
+                title: record.url,
+                url: record.url,
+                itemIDs: record.itemIDs,
+                total: max(record.total, 1),
+                done: done,
+                state: .running,
+                createdAt: record.createdAt
+            ))
+            taskStore.updateTask(id: taskID) { $0.retry = { [weak self] in await self?.retryLinkTask(taskID) } }
+        }
+        taskStore.persistLinkTasks()
+    }
+
     /// Upload a photo/video from the device Albums. The file is sent to
     /// the Worker, which forwards it to the ingest service. Returns the
-    /// finished item and whether it was a duplicate (nil + false on
-    /// failure, errorMessage set). `sha256` is the SHA-256 of the exact
-    /// bytes being uploaded; when it matches an item already saved, the
-    /// Worker returns that item as a duplicate instead of uploading
-    /// again (and no Library refresh is needed — it is already there).
-    /// After a fresh upload the Library and the Albums tab both refresh,
-    /// so the new item shows up.
-    func upload(fileURL: URL, filename: String, mimeType: String, sha256: String? = nil) async -> (item: Item?, duplicate: Bool) {
+    /// finished item, whether it was a duplicate, and the error on
+    /// failure (nil + false + error, errorMessage set). `sha256` is the
+    /// SHA-256 of the exact bytes being uploaded; when it matches an
+    /// item already saved, the Worker returns that item as a duplicate
+    /// instead of uploading again (and no Library refresh is needed —
+    /// it is already there). After a fresh upload the Library and the
+    /// Albums tab both refresh, so the new item shows up. `onProgress`
+    /// (0...1) is forwarded to the API's byte-progress upload; the
+    /// caller hops to the main actor inside it.
+    func upload(fileURL: URL, filename: String, mimeType: String, sha256: String? = nil, onProgress: ((Double) -> Void)? = nil) async -> (item: Item?, duplicate: Bool, error: Error?) {
         guard let api else {
             errorMessage = KeptoAPIError.notConfigured.errorDescription
-            return (nil, false)
+            return (nil, false, KeptoAPIError.notConfigured)
         }
         do {
-            let (item, duplicate) = try await api.uploadFile(fileURL: fileURL, filename: filename, mimeType: mimeType, sha256: sha256)
+            let (item, duplicate) = try await api.uploadFile(fileURL: fileURL, filename: filename, mimeType: mimeType, sha256: sha256, onProgress: onProgress)
             if !duplicate {
                 // Mark it before the refresh below, so the Library's
                 // onChange sees it as a fresh import (not a background
@@ -953,12 +1153,240 @@ final class LibraryViewModel: ObservableObject {
                 // so its thumbnail appears when the ingest finishes.
                 startPendingPoll()
             }
-            return (item, duplicate)
+            return (item, duplicate, nil)
         } catch {
-            if error is CancellationError { return (nil, false) }
-            if let urlError = error as? URLError, urlError.code == .cancelled { return (nil, false) }
+            if error is CancellationError { return (nil, false, nil) }
+            if let urlError = error as? URLError, urlError.code == .cancelled { return (nil, false, nil) }
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            return (nil, false)
+            return (nil, false, error)
+        }
+    }
+
+    // MARK: - Upload placeholders + Task Manager wiring
+
+    /// Ids of local upload placeholders currently in the grid (not on
+    /// the server yet). Placeholders are real `Item`/`ItemMetadata`
+    /// rows with a local UUID so the grid can render a progress ring
+    /// on them; they are replaced by the real item when the upload
+    /// returns, or removed on failure/duplicate. They are NEVER
+    /// persisted to the listAll disk cache (see saveAllMetadataToDisk)
+    /// and upload batches are NOT resumed after a kill — the temp
+    /// files are gone.
+    private var uploadPlaceholderIDs: Set<String> = []
+
+    /// Last published progress per placeholder (throttle: the ring
+    /// only moves in 5% steps, so the grid doesn't rebuild per byte
+    /// chunk — every `items`/`allMetadata` mutation re-runs the
+    /// derived-cache rebuild).
+    private var lastPublishedUploadProgress: [String: Double] = [:]
+
+    /// Retry sources for failed upload tasks, keyed by task id.
+    /// PhotosPicker items re-load in-session; Files temp copies are
+    /// kept alive until their task leaves the store.
+    private enum UploadRetrySource {
+        case photo(PhotosPickerItem)
+        case file(URL)
+    }
+    private var uploadRetrySources: [UUID: UploadRetrySource] = [:]
+
+    /// True when the id belongs to a local upload placeholder (tap /
+    /// select / context menu must ignore it — it has no server item).
+    func isUploadPlaceholder(_ id: String) -> Bool { uploadPlaceholderIDs.contains(id) }
+
+    /// ISO-8601 with fractional seconds, the same shape D1 stores
+    /// (`saved_at`), so placeholder dates sort/parse like real ones.
+    private static let placeholderDateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// A local placeholder for one file about to upload: status
+    /// pending, title = filename, uploadProgress 0. The memberwise
+    /// init omits the defaulted `uploadProgress` — assign it on the
+    /// copy after init (memberwise-init trap).
+    private func makeUploadPlaceholder(filename: String, isVideo: Bool) -> (item: Item, metadata: ItemMetadata) {
+        let id = UUID().uuidString
+        let now = Self.placeholderDateFormatter.string(from: Date())
+        var item = Item(
+            id: id,
+            userId: "me",
+            platform: .album,
+            originalUrl: "upload://\(id)",
+            r2Key: nil,
+            thumbKey: nil,
+            previewKey: nil,
+            contentType: isVideo ? "video/mp4" : "image/jpeg",
+            title: filename,
+            caption: nil,
+            author: nil,
+            authorUsername: nil,
+            authorAvatarUrl: nil,
+            postedAt: nil,
+            savedAt: now,
+            duration: nil,
+            width: nil,
+            height: nil,
+            fileSize: nil,
+            sha256: nil,
+            previewCols: nil,
+            previewRows: nil,
+            previewInterval: nil,
+            previewCount: nil,
+            viewCount: nil,
+            status: .pending,
+            ingestError: nil,
+            createdAt: now
+        )
+        item.uploadProgress = 0
+        var metadata = ItemMetadata(from: item)
+        metadata.uploadProgress = 0
+        return (item, metadata)
+    }
+
+    private func insertUploadPlaceholder(_ placeholder: (item: Item, metadata: ItemMetadata)) {
+        uploadPlaceholderIDs.insert(placeholder.item.id)
+        if !items.contains(where: { $0.id == placeholder.item.id }) {
+            items.insert(placeholder.item, at: 0)
+        }
+        if !allMetadata.contains(where: { $0.id == placeholder.metadata.id }) {
+            allMetadata.append(placeholder.metadata)
+        }
+    }
+
+    /// Remove a placeholder from both lists and drop its cached
+    /// local thumbnail (if one was stored). Idempotent — the upload
+    /// path's own fetch() may already have dropped it.
+    private func removeUploadPlaceholder(id: String) {
+        uploadPlaceholderIDs.remove(id)
+        lastPublishedUploadProgress.removeValue(forKey: id)
+        items.removeAll { $0.id == id }
+        allMetadata.removeAll { $0.id == id }
+        KeptoAPI.removeCachedThumbnail(id: id)
+    }
+
+    /// Publish a progress step for a placeholder (item + metadata,
+    /// so both the Library grid and the album cell ring move).
+    /// Throttled to 5% steps (and always at 1.0).
+    private func setUploadProgress(placeholderID: String, taskID: UUID, progress: Double) {
+        let clamped = min(max(progress, 0), 1)
+        if let last = lastPublishedUploadProgress[placeholderID],
+           clamped < 1, abs(clamped - last) < 0.05 { return }
+        lastPublishedUploadProgress[placeholderID] = clamped
+        if let index = items.firstIndex(where: { $0.id == placeholderID }) {
+            items[index].uploadProgress = clamped
+        }
+        if let index = allMetadata.firstIndex(where: { $0.id == placeholderID }) {
+            allMetadata[index].uploadProgress = clamped
+        }
+        taskStore.updateTask(id: taskID) { $0.byteProgress = clamped }
+    }
+
+    /// Delete temp files kept for an upload task's retry (Files
+    /// picks). No-op for PhotosPicker sources and for tasks without
+    /// a kept file.
+    private func cleanupRetrySource(_ taskID: UUID) {
+        guard let source = uploadRetrySources.removeValue(forKey: taskID) else { return }
+        if case .file(let url) = source {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// True for errors that mean "no usable network right now"
+    /// (offline, timeout, lost connection, DNS) — those pause and
+    /// auto-resume instead of failing outright.
+    private func isNetworkError(_ error: Error?) -> Bool {
+        if let urlError = error as? URLError {
+            return [.notConnectedToInternet, .timedOut, .networkConnectionLost,
+                    .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains(urlError.code)
+        }
+        if case KeptoAPIError.network = error { return true }
+        return false
+    }
+
+    /// Display name + media kind for a PhotosPicker item, for the
+    /// upload placeholder and the Task Manager row. The picker
+    /// exposes no filename — Photos use "photo.jpg", videos
+    /// "video.<ext>" (the same names the upload itself sends).
+    private func pickerDisplayInfo(_ item: PhotosPickerItem) -> (filename: String, isVideo: Bool) {
+        let types = item.supportedContentTypes
+        let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
+        if isVideo {
+            let ext = types.first { $0.conforms(to: .movie) || $0.conforms(to: .video) }?.preferredFilenameExtension ?? "mp4"
+            return ("video.\(ext)", true)
+        }
+        return ("photo.jpg", false)
+    }
+
+    /// Runs one file's upload, pausing for connectivity when the
+    /// network drops mid-upload and retrying once after it returns.
+    /// The placeholder stays in the grid (ring frozen) while
+    /// waiting. No spin loop: one wait, one retry, then the result
+    /// stands (a still-failed task keeps its Retry button).
+    private func runOneUpload(taskID: UUID, work: @escaping () async -> UploadOneResult) async -> UploadOneResult {
+        let result = await work()
+        if case .failed(_, let network) = result, network {
+            taskStore.setState(id: taskID, .waitingForNetwork, errorText: L10n.waitingForNetwork)
+            await taskStore.waitForConnectivity()
+            taskStore.setState(id: taskID, .running)
+            return await work()
+        }
+        return result
+    }
+
+    /// Retry one failed upload task from the Task Manager: re-run the
+    /// single file from its in-session source (PhotosPicker item or
+    /// kept Files temp copy) with a fresh placeholder + progress.
+    /// The old task goes away first so its temp file is not deleted
+    /// under the retry (the source is taken out before removal).
+    func retryUploadTask(_ taskID: UUID) async {
+        guard let source = uploadRetrySources.removeValue(forKey: taskID),
+              let task = taskStore.tasks.first(where: { $0.id == taskID }) else { return }
+        let title = task.title
+        taskStore.removeTask(id: taskID)
+        let isVideo: Bool
+        switch source {
+        case .photo(let item):
+            isVideo = pickerDisplayInfo(item).isVideo
+        case .file(let url):
+            let type = UTType(filenameExtension: url.pathExtension)
+            isVideo = type?.conforms(to: .video) == true || type?.conforms(to: .movie) == true
+        }
+        let placeholder = makeUploadPlaceholder(filename: title, isVideo: isVideo)
+        insertUploadPlaceholder(placeholder)
+        let newTaskID = taskStore.addTask(ActivityTask(kind: .upload, title: title))
+        uploadRetrySources[newTaskID] = source
+        taskStore.updateTask(id: newTaskID) { $0.retry = { [weak self] in await self?.retryUploadTask(newTaskID) } }
+        let progressCallback: (Double) -> Void = { [weak self] progress in
+            Task { @MainActor in
+                self?.setUploadProgress(placeholderID: placeholder.item.id, taskID: newTaskID, progress: progress)
+            }
+        }
+        let result: UploadOneResult
+        switch source {
+        case .photo(let item):
+            result = await uploadOnePickedPhoto(item, placeholderID: placeholder.item.id, onProgress: progressCallback)
+        case .file(let url):
+            result = await uploadOnePickedFile(url, placeholderID: placeholder.item.id, onProgress: progressCallback)
+        }
+        switch result {
+        case .uploaded(let created):
+            removeUploadPlaceholder(id: placeholder.item.id)
+            if case .file(let url) = source {
+                try? FileManager.default.removeItem(at: url)
+            }
+            importPickerItems.append(created)
+            taskStore.updateTask(id: newTaskID) { $0.done = 1 }
+            taskStore.setState(id: newTaskID, .done)
+            uploadNotice = "Đã tải lên \(title)."
+        case .duplicate:
+            removeUploadPlaceholder(id: placeholder.item.id)
+            if case .file(let url) = source {
+                try? FileManager.default.removeItem(at: url)
+            }
+            taskStore.setState(id: newTaskID, .done)
+        case .failed(let message, _):
+            taskStore.setState(id: newTaskID, .failed, errorText: message ?? L10n.uploadFailedGeneric)
         }
     }
 
@@ -1011,14 +1439,45 @@ final class LibraryViewModel: ObservableObject {
         var duplicates = 0
         var failed = 0
         for item in items {
-            switch await uploadOnePickedPhoto(item) {
+            let info = pickerDisplayInfo(item)
+            // Local placeholder + Task Manager row first: the grid
+            // shows the ring from the first byte, not from the
+            // upload's return.
+            let placeholder = makeUploadPlaceholder(filename: info.filename, isVideo: info.isVideo)
+            insertUploadPlaceholder(placeholder)
+            let taskID = taskStore.addTask(ActivityTask(kind: .upload, title: info.filename))
+            uploadRetrySources[taskID] = .photo(item)
+            taskStore.updateTask(id: taskID) { $0.retry = { [weak self] in await self?.retryUploadTask(taskID) } }
+            // Offline gate: don't start the next file while offline —
+            // the task waits and the loop resumes when the path
+            // returns (mid-upload drops are retried in runOneUpload).
+            if taskStore.isOffline {
+                taskStore.setState(id: taskID, .waitingForNetwork, errorText: L10n.waitingForNetwork)
+                await taskStore.waitForConnectivity()
+                taskStore.setState(id: taskID, .running)
+            }
+            let progressCallback: (Double) -> Void = { [weak self] progress in
+                Task { @MainActor in
+                    self?.setUploadProgress(placeholderID: placeholder.item.id, taskID: taskID, progress: progress)
+                }
+            }
+            let result = await runOneUpload(taskID: taskID) {
+                await uploadOnePickedPhoto(item, placeholderID: placeholder.item.id, onProgress: progressCallback)
+            }
+            switch result {
             case .uploaded(let created):
+                removeUploadPlaceholder(id: placeholder.item.id)
                 uploaded.append(created)
                 importPickerItems.append(created)
+                taskStore.updateTask(id: taskID) { $0.done = 1 }
+                taskStore.setState(id: taskID, .done)
             case .duplicate:
+                removeUploadPlaceholder(id: placeholder.item.id)
                 duplicates += 1
-            case .failed:
+                taskStore.setState(id: taskID, .done)
+            case .failed(let message, _):
                 failed += 1
+                taskStore.setState(id: taskID, .failed, errorText: message ?? L10n.uploadFailedGeneric)
             }
             uploadDone += 1
         }
@@ -1092,14 +1551,46 @@ final class LibraryViewModel: ObservableObject {
         var duplicates = 0
         var failed = 0
         for url in urls {
-            switch await uploadOnePickedFile(url) {
+            let ext = url.pathExtension
+            let type = UTType(filenameExtension: ext)
+            let isVideo = type?.conforms(to: .video) == true || type?.conforms(to: .movie) == true
+            let placeholder = makeUploadPlaceholder(filename: url.lastPathComponent, isVideo: isVideo)
+            insertUploadPlaceholder(placeholder)
+            let taskID = taskStore.addTask(ActivityTask(kind: .upload, title: url.lastPathComponent))
+            uploadRetrySources[taskID] = .file(url)
+            taskStore.updateTask(id: taskID) { $0.retry = { [weak self] in await self?.retryUploadTask(taskID) } }
+            if taskStore.isOffline {
+                taskStore.setState(id: taskID, .waitingForNetwork, errorText: L10n.waitingForNetwork)
+                await taskStore.waitForConnectivity()
+                taskStore.setState(id: taskID, .running)
+            }
+            let progressCallback: (Double) -> Void = { [weak self] progress in
+                Task { @MainActor in
+                    self?.setUploadProgress(placeholderID: placeholder.item.id, taskID: taskID, progress: progress)
+                }
+            }
+            let result = await runOneUpload(taskID: taskID) {
+                await uploadOnePickedFile(url, placeholderID: placeholder.item.id, onProgress: progressCallback)
+            }
+            switch result {
             case .uploaded(let created):
+                removeUploadPlaceholder(id: placeholder.item.id)
+                // The input temp copy is spent — the server has it.
+                try? FileManager.default.removeItem(at: url)
                 uploaded.append(created)
                 importPickerItems.append(created)
+                taskStore.updateTask(id: taskID) { $0.done = 1 }
+                taskStore.setState(id: taskID, .done)
             case .duplicate:
+                removeUploadPlaceholder(id: placeholder.item.id)
+                try? FileManager.default.removeItem(at: url)
                 duplicates += 1
-            case .failed:
+                taskStore.setState(id: taskID, .done)
+            case .failed(let message, _):
+                // Keep the temp copy: it is the retry source until
+                // the task leaves the store (see cleanupRetrySource).
                 failed += 1
+                taskStore.setState(id: taskID, .failed, errorText: message ?? L10n.uploadFailedGeneric)
             }
             uploadDone += 1
         }
@@ -1145,30 +1636,41 @@ final class LibraryViewModel: ObservableObject {
     /// The SHA-256 of the exact bytes being uploaded is sent along,
     /// so the Worker can skip a file that is already saved (same
     /// content hash) instead of uploading it again.
-    private func uploadOnePickedFile(_ url: URL) async -> UploadOneResult {
+    private func uploadOnePickedFile(_ url: URL, placeholderID: String? = nil, onProgress: ((Double) -> Void)? = nil) async -> UploadOneResult {
         let ext = url.pathExtension
         let type = UTType(filenameExtension: ext)
         let isVideo = type?.conforms(to: .video) == true || type?.conforms(to: .movie) == true
+        // The input URL is the document picker's temp copy. The
+        // CALLER owns it now (it used to be deleted here by defer):
+        // success/duplicate deletes it, failure keeps it as the
+        // retry source until its task leaves the store.
         if isVideo {
-            defer { try? FileManager.default.removeItem(at: url) }
             let filename = url.lastPathComponent
             let mimeType = mimeType(for: ext)
             let hash = sha256Hex(ofFile: url)
-            let (uploaded, duplicate) = await upload(fileURL: url, filename: filename, mimeType: mimeType, sha256: hash)
+            let (uploaded, duplicate, error) = await upload(fileURL: url, filename: filename, mimeType: mimeType, sha256: hash, onProgress: onProgress)
             if let uploaded {
                 return duplicate ? .duplicate : .uploaded(uploaded)
             }
-            return .failed
+            return .failed(message: errorMessage, isNetwork: isNetworkError(error))
         }
         // Photo: read the bytes, decode, re-encode as JPEG (HEIC ->
         // JPEG — the ingest cannot convert HEIC), same as the
         // PhotosPicker path.
-        defer { try? FileManager.default.removeItem(at: url) }
         guard let rawData = try? Data(contentsOf: url),
               let image = UIImage(data: rawData),
               let data = image.jpegData(compressionQuality: 0.9) else {
             errorMessage = "Không đọc được ảnh đã chọn."
-            return .failed
+            return .failed(message: errorMessage, isNetwork: false)
+        }
+        // The grid cell shows the real photo while it uploads (the
+        // server thumbnail doesn't exist yet).
+        if let placeholderID {
+            Task.detached {
+                if let img = UIImage(data: data) {
+                    KeptoAPI.storeThumbnail(id: placeholderID, image: img)
+                }
+            }
         }
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kepto-upload-\(UUID().uuidString).jpg")
@@ -1176,16 +1678,16 @@ final class LibraryViewModel: ObservableObject {
             try data.write(to: tempURL)
         } catch {
             errorMessage = "Không chuẩn bị được ảnh để tải lên."
-            return .failed
+            return .failed(message: errorMessage, isNetwork: false)
         }
         defer { try? FileManager.default.removeItem(at: tempURL) }
         let filename = url.deletingPathExtension().lastPathComponent + ".jpg"
         let hash = sha256Hex(of: data)
-        let (uploaded, duplicate) = await upload(fileURL: tempURL, filename: filename, mimeType: "image/jpeg", sha256: hash)
+        let (uploaded, duplicate, error) = await upload(fileURL: tempURL, filename: filename, mimeType: "image/jpeg", sha256: hash, onProgress: onProgress)
         if let uploaded {
             return duplicate ? .duplicate : .uploaded(uploaded)
         }
-        return .failed
+        return .failed(message: errorMessage, isNetwork: isNetworkError(error))
     }
 
     /// The user picked an album for the just-imported items. Record
@@ -1243,8 +1745,10 @@ final class LibraryViewModel: ObservableObject {
         case uploaded(Item)
         /// Already saved — same content hash, skipped, no new item.
         case duplicate
-        /// Could not be read or uploaded (errorMessage is set).
-        case failed
+        /// Could not be read or uploaded. `message` is the human
+        /// text (errorMessage); `isNetwork` marks a network failure
+        /// (pause + auto-resume) versus any other failure (Retry).
+        case failed(message: String?, isNetwork: Bool)
     }
 
     /// Upload one picked photo/video. Photos are converted to JPEG first
@@ -1252,7 +1756,7 @@ final class LibraryViewModel: ObservableObject {
     /// videos are uploaded as-is. The SHA-256 of the exact bytes being
     /// uploaded is sent along, so the Worker can skip a file that is
     /// already saved (same content hash) instead of uploading it again.
-    private func uploadOnePickedPhoto(_ item: PhotosPickerItem) async -> UploadOneResult {
+    private func uploadOnePickedPhoto(_ item: PhotosPickerItem, placeholderID: String? = nil, onProgress: ((Double) -> Void)? = nil) async -> UploadOneResult {
         // Video: picker-native transfer only (round-24). The old
         // path fetched the PHAsset by itemIdentifier, but the app
         // declares ONLY NSPhotoLibraryAddUsageDescription and
@@ -1282,20 +1786,30 @@ final class LibraryViewModel: ObservableObject {
                     // seconds and the defer above deletes the file
                     // at return.
                     let thumbTask = Task.detached { Self.videoThumbnail(from: dest) }
-                    let (uploaded, duplicate) = await upload(fileURL: dest, filename: pickedURL.lastPathComponent, mimeType: mimeType, sha256: hash)
+                    // The grid cell shows the first frame while the
+                    // video uploads (the server thumbnail doesn't
+                    // exist yet).
+                    if let placeholderID {
+                        Task.detached {
+                            if let thumb = await thumbTask.value {
+                                KeptoAPI.storeThumbnail(id: placeholderID, image: thumb)
+                            }
+                        }
+                    }
+                    let (uploaded, duplicate, error) = await upload(fileURL: dest, filename: pickedURL.lastPathComponent, mimeType: mimeType, sha256: hash, onProgress: onProgress)
                     if let uploaded {
                         if !duplicate, let thumb = await thumbTask.value {
                             KeptoAPI.storeThumbnail(id: uploaded.id, image: thumb)
                         }
                         return duplicate ? .duplicate : .uploaded(uploaded)
                     }
-                    return .failed
+                    return .failed(message: errorMessage, isNetwork: isNetworkError(error))
                 }
             }
             let ext = types.first { $0.conforms(to: .movie) || $0.conforms(to: .video) }?.preferredFilenameExtension ?? "mp4"
             guard let videoData = try? await item.loadTransferable(type: Data.self), !videoData.isEmpty else {
                 errorMessage = "Không đọc được video đã chọn."
-                return .failed
+                return .failed(message: errorMessage, isNetwork: false)
             }
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("kepto-video-\(UUID().uuidString).\(ext)")
@@ -1303,7 +1817,7 @@ final class LibraryViewModel: ObservableObject {
                 try videoData.write(to: tempURL)
             } catch {
                 errorMessage = "Không chuẩn bị được video để tải lên."
-                return .failed
+                return .failed(message: errorMessage, isNetwork: false)
             }
             defer { try? FileManager.default.removeItem(at: tempURL) }
             let hash = sha256Hex(of: videoData)
@@ -1311,14 +1825,21 @@ final class LibraryViewModel: ObservableObject {
             // (same reason as the URL path above — the file is gone
             // at return).
             let thumbTask = Task.detached { Self.videoThumbnail(from: tempURL) }
-            let (uploaded, duplicate) = await upload(fileURL: tempURL, filename: "video.\(ext)", mimeType: mimeType(for: ext), sha256: hash)
+            if let placeholderID {
+                Task.detached {
+                    if let thumb = await thumbTask.value {
+                        KeptoAPI.storeThumbnail(id: placeholderID, image: thumb)
+                    }
+                }
+            }
+            let (uploaded, duplicate, error) = await upload(fileURL: tempURL, filename: "video.\(ext)", mimeType: mimeType(for: ext), sha256: hash, onProgress: onProgress)
             if let uploaded {
                 if !duplicate, let thumb = await thumbTask.value {
                     KeptoAPI.storeThumbnail(id: uploaded.id, image: thumb)
                 }
                 return duplicate ? .duplicate : .uploaded(uploaded)
             }
-            return .failed
+            return .failed(message: errorMessage, isNetwork: isNetworkError(error))
         }
         // Photo: load the raw bytes (Data conforms to Transferable;
         // UIImage does not), decode them, and re-encode as JPEG
@@ -1327,7 +1848,16 @@ final class LibraryViewModel: ObservableObject {
               let image = UIImage(data: rawData),
               let data = image.jpegData(compressionQuality: 0.9) else {
             errorMessage = "Không đọc được ảnh đã chọn."
-            return .failed
+            return .failed(message: errorMessage, isNetwork: false)
+        }
+        // The grid cell shows the real photo while it uploads (the
+        // server thumbnail doesn't exist yet).
+        if let placeholderID {
+            Task.detached {
+                if let img = UIImage(data: data) {
+                    KeptoAPI.storeThumbnail(id: placeholderID, image: img)
+                }
+            }
         }
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kepto-upload-\(UUID().uuidString).jpg")
@@ -1335,11 +1865,11 @@ final class LibraryViewModel: ObservableObject {
             try data.write(to: tempURL)
         } catch {
             errorMessage = "Không chuẩn bị được ảnh để tải lên."
-            return .failed
+            return .failed(message: errorMessage, isNetwork: false)
         }
         defer { try? FileManager.default.removeItem(at: tempURL) }
         let hash = sha256Hex(of: data)
-        let (uploaded, duplicate) = await upload(fileURL: tempURL, filename: "photo.jpg", mimeType: "image/jpeg", sha256: hash)
+        let (uploaded, duplicate, error) = await upload(fileURL: tempURL, filename: "photo.jpg", mimeType: "image/jpeg", sha256: hash, onProgress: onProgress)
         if let uploaded {
             if !duplicate {
                 // Round-26: cache the thumbnail now from the JPEG
@@ -1353,7 +1883,7 @@ final class LibraryViewModel: ObservableObject {
             }
             return duplicate ? .duplicate : .uploaded(uploaded)
         }
-        return .failed
+        return .failed(message: errorMessage, isNetwork: isNetworkError(error))
     }
 
     /// Round-26: first frame of a video file as a UIImage (for the

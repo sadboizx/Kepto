@@ -43,16 +43,31 @@ struct KeptoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            KeptoTabView()
-                .environmentObject(viewModel)
-                .onOpenURL { url in
-                    guard url.scheme == "kepto",
-                          url.host == "save",
-                          let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                          let raw = components.queryItems?.first(where: { $0.name == "url" })?.value,
-                          !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                    viewModel.pendingShareURL = raw
-                }
+            // GeometryReader (not @Environment(\.safeAreaInsets) —
+            // banned in this codebase): the toast sits below the
+            // status area, so it needs the top safe-area inset.
+            GeometryReader { geo in
+                KeptoTabView()
+                    .environmentObject(viewModel)
+                    .environmentObject(viewModel.taskStore)
+                    .onOpenURL { url in
+                        guard url.scheme == "kepto",
+                              url.host == "save",
+                              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                              let raw = components.queryItems?.first(where: { $0.name == "url" })?.value,
+                              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        viewModel.pendingShareURL = raw
+                    }
+                    // One shared toast for every tab (upload summaries,
+                    // clipboard/share saves, Save to Photos) — top,
+                    // below the status area, auto-dismiss ~2.5s.
+                    .overlay(alignment: .top) {
+                        if let toast = viewModel.toast {
+                            ToastView(toast: toast, onRetry: { viewModel.toastRetry() }, onTap: { viewModel.dismissToast() })
+                                .padding(.top, geo.safeAreaInsets.top + 8)
+                        }
+                    }
+            }
         }
     }
 }
@@ -82,10 +97,6 @@ struct KeptoTabView: View {
     @State private var forYouRetap = 0
     @State private var albumsRetap = 0
     @State private var searchRetap = 0
-    /// One-line notice after a Share Extension save (e.g. "already
-    /// saved" or a collection summary).
-    @State private var shareSaveNotice: String?
-
     var body: some View {
         // A re-tap on the already-selected tab does not change
         // `selectedTab`, so `.onChange` never fires for it. The
@@ -130,11 +141,6 @@ struct KeptoTabView: View {
                 viewModel.pendingShareURL = nil
                 Task { await saveSharedLink(newValue) }
             }
-        }
-        .alert("Kepto", isPresented: .constant(shareSaveNotice != nil)) {
-            Button("OK") { shareSaveNotice = nil }
-        } message: {
-            Text(shareSaveNotice ?? "")
         }
         // Photo Library: the picker is attached HERE (the root),
         // not in a tab, so any tab's "…" menu can open it by setting
@@ -193,12 +199,9 @@ struct KeptoTabView: View {
                 .padding(.bottom, 100)
             }
         }
-        // One-line notice after a Photos import.
-        .alert("Kepto", isPresented: .constant(viewModel.uploadNotice != nil)) {
-            Button("OK") { viewModel.uploadNotice = nil }
-        } message: {
-            Text(viewModel.uploadNotice ?? "")
-        }
+        // (The one-line notice after a Photos import is a toast now —
+        // `uploadNotice` still carries the string, its didSet routes
+        // it to the toast; no blocking alert here.)
         // Album picker after a Photos import: the user chooses which
         // album the just-uploaded items go into (or creates a new
         // one). Cancel leaves them in the Library, in no album.
@@ -219,7 +222,7 @@ struct KeptoTabView: View {
         switch result {
         case .single(let single):
             if single.duplicate {
-                shareSaveNotice = "Link này đã lưu trước đó."
+                viewModel.showToast("Link này đã lưu trước đó.")
             }
         case .collection(let coll):
             var notice = "Đã lưu \(coll.created) video mới"
@@ -232,7 +235,7 @@ struct KeptoTabView: View {
             if let title = coll.title, !title.isEmpty {
                 notice = "Collection “\(title)”: " + notice
             }
-            shareSaveNotice = notice + "."
+            viewModel.showToast(notice + ".")
         }
     }
 }
