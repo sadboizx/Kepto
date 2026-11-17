@@ -434,7 +434,11 @@ struct LibraryView: View {
             // the last row scrolls clear of the floating
             // Years/Months/Days/All Photos pill.
             .ignoresSafeArea(.container, edges: .top)
-            .contentMargins(EdgeInsets(top: topChromeHeight, leading: 0, bottom: 64, trailing: 0), for: .scrollContent)
+            // (EdgeInsets form of contentMargins is iOS 18+ — the
+            // project targets iOS 17.4, so top/bottom use the
+            // separate Edge.Set calls that exist since iOS 17.)
+            .contentMargins(.top, topChromeHeight, for: .scrollContent)
+            .contentMargins(.bottom, 64, for: .scrollContent)
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
             .background(Color(uiColor: .systemBackground))
             .simultaneousGesture(pinch)
