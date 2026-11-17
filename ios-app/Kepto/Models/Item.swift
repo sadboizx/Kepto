@@ -543,3 +543,51 @@ struct ErrorResponse: Decodable {
     let ok: Bool
     let error: String?
 }
+
+/// Seed constructor from the light `listAll` cache (round-21): builds
+/// a display-only Item so an album can render instantly from cached
+/// metadata while the first page loads (stale-while-revalidate).
+/// Everything the grid and the viewer need resolves by id —
+/// thumbnails (`fetchThumbnail(id:)`), playback (`playURL` =
+/// /api/play/<id>), share/save (`downloadVideoFile` via playURL) — so
+/// the missing R2 keys do not matter. The background fetch replaces
+/// these seeds with the real Items (same ids, same order) within ~a
+/// second; `status` is assumed `.ready` and `userId` / `originalUrl`
+/// are unknown until then. (An extension init, so the synthesized
+/// memberwise init stays available — a custom init inside the struct
+/// would remove it and break `withFavorite`.)
+extension Item {
+    init(seededFrom metadata: ItemMetadata) {
+        self.init(
+            id: metadata.id,
+            userId: "",
+            platform: metadata.platform,
+            originalUrl: "",
+            r2Key: nil,
+            thumbKey: nil,
+            previewKey: nil,
+            contentType: metadata.contentType,
+            title: metadata.title,
+            caption: metadata.caption,
+            author: metadata.author,
+            authorUsername: metadata.authorUsername,
+            authorAvatarUrl: nil,
+            postedAt: metadata.postedAt,
+            savedAt: metadata.savedAt,
+            duration: metadata.duration,
+            width: metadata.width,
+            height: metadata.height,
+            fileSize: metadata.fileSize,
+            sha256: nil,
+            previewCols: nil,
+            previewRows: nil,
+            previewInterval: nil,
+            previewCount: nil,
+            viewCount: nil,
+            status: .ready,
+            ingestError: nil,
+            createdAt: metadata.savedAt
+        )
+        self.isFavorite = metadata.isFavorite
+    }
+}

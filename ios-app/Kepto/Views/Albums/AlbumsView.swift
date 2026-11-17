@@ -90,6 +90,11 @@ struct AlbumsView: View {
                 RecentlyDeletedNoteView()
             }
             .task {
+                // Warm the full-metadata cache while the user browses
+                // the album list (round-21): by tap time the album
+                // can seed its grid from it instantly. Guarded
+                // no-op when already loaded or fetching.
+                Task { await viewModel.fetchAllMetadata() }
                 await viewModel.fetchCollections()
                 await viewModel.fetchStats()
                 if viewModel.items.isEmpty {

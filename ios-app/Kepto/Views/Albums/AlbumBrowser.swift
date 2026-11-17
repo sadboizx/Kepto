@@ -394,16 +394,25 @@ struct PhotoCollectionScreen: View {
                 await fetch(reset: true)
             }
             .onChange(of: viewModel.allMetadataLoaded) { _, loaded in
-                // The cache arrived after the grid loaded — overlay
-                // its favorite flags now (the merge is idempotent).
+                // The cache arrived after the grid opened: if the
+                // grid is still empty, seed it now (round-21) — the
+                // grid appears without waiting for the page fetch.
+                // Otherwise overlay its favorite flags (idempotent).
                 if loaded {
-                    items = viewModel.applyingMetadataFavoriteFlags(to: items)
+                    if items.isEmpty {
+                        seedItemsFromCache()
+                    } else {
+                        items = viewModel.applyingMetadataFavoriteFlags(to: items)
+                    }
                 }
             }
             .overlay {
-                if isLoading && items.isEmpty {
-                    ProgressView(L10n.loading)
-                } else if items.isEmpty && !isLoading {
+                // No full-screen spinner while loading (round-21):
+                // the skeleton grid inside the ScrollView is the
+                // loading state when the cache is cold; with a warm
+                // cache the grid is already seeded, so `items` is
+                // never empty here.
+                if items.isEmpty && !isLoading {
                     ContentUnavailableView {
                         Label(emptyTitle, systemImage: emptySymbol)
                     } description: {
@@ -425,6 +434,47 @@ struct PhotoCollectionScreen: View {
     /// Rebuild the sorted-items cache from the loaded pages.
     private func refreshSortedItems() {
         cachedSortedItems = items.sortedChronologically()
+    }
+
+    /// Seed the grid from the `listAll` metadata cache (round-21,
+    /// stale-while-revalidate): the album renders instantly from
+    /// cached metadata while the first page loads in the background.
+    /// Only the NEWEST page window (50, like the API page) is seeded
+    /// — that is the region the bottom-anchored first frame shows;
+    /// older items keep lazy-loading via load-more exactly as before.
+    /// The background fetch() replaces these seeds with the real
+    /// Items (same ids, same order), in place — no flash, no jump.
+    /// No-op when items are already loaded or the cache is cold.
+    private func seedItemsFromCache() {
+        guard items.isEmpty, !viewModel.allMetadata.isEmpty else { return }
+        let matching = viewModel.allMetadata.filter { matchesSource($0) }
+        guard !matching.isEmpty else { return }
+        // Server order (newest first): the display sort is ascending,
+        // so reverse it — same ids and order the first page returns.
+        let newest = matching.sortedChronologically().reversed().prefix(50)
+        items = newest.map { Item(seededFrom: $0) }
+        refreshSortedItems()
+    }
+
+    /// True when a cached metadata row belongs to this album.
+    private func matchesSource(_ m: ItemMetadata) -> Bool {
+        switch source {
+        case .kind(.recents):
+            return true
+        case .kind(.favorites):
+            return m.isFavorite
+        case .kind(.user), .kind(.people), .kind(.media), .kind(.deleted):
+            // Section kinds, never a browser source — nothing to seed.
+            return false
+        case .myCollection(let collection):
+            return m.myCollectionIds.contains(collection.id)
+        case .creator(let collection):
+            return m.authorUsername == collection.id
+        case .media(.video):
+            return m.contentType?.hasPrefix("video/") == true
+        case .media(.photo):
+            return m.contentType?.hasPrefix("image/") == true
+        }
     }
 
     private var collectionGrid: some View {
@@ -477,6 +527,18 @@ struct PhotoCollectionScreen: View {
                             }
                             .onDisappear {
                                 if item.id == sortedItems.last?.id { isAtBottom = false }
+                            }
+                        }
+                    }
+                    if sortedItems.isEmpty && isLoading {
+                        // Cold cache (first-ever open): gray placeholder
+                        // cells in the exact grid layout — no
+                        // full-screen spinner, no layout flash when the
+                        // real cells land (round-21).
+                        LazyVGrid(columns: columns, spacing: 2) {
+                            ForEach(0..<12, id: \.self) { _ in
+                                Color(.systemGray5)
+                                    .aspectRatio(1, contentMode: .fit)
                             }
                         }
                     }
@@ -541,6 +603,9 @@ struct PhotoCollectionScreen: View {
             }
             .onAppear {
                 scrollProxy = proxy
+                // Render from the cache first (round-21): the grid is
+                // up before the first page returns.
+                seedItemsFromCache()
                 refreshSortedItems()
                 maybeInitialScroll(proxy)
             }
