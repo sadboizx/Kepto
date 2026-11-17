@@ -1359,7 +1359,7 @@ final class LibraryViewModel: ObservableObject {
     /// Round-26: first frame of a video file as a UIImage (for the
     /// save-time thumbnail cache). Synchronous — callers run it off
     /// the main actor. Nil when the frame cannot be read.
-    private static func videoThumbnail(from fileURL: URL) -> UIImage? {
+    private nonisolated static func videoThumbnail(from fileURL: URL) -> UIImage? {
         let asset = AVAsset(url: fileURL)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
