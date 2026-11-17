@@ -231,7 +231,8 @@ struct LibraryView: View {
                                         .padding(.horizontal, 14)
                                         .padding(.vertical, 7)
                                         .background(.regularMaterial, in: Capsule())
-                                        .symbolEffect(.rotate, isActive: taskStore.isAnyRunning)
+                                        .rotationEffect(taskStore.isAnyRunning ? .degrees(360) : .degrees(0))
+                                        .animation(taskStore.isAnyRunning ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: taskStore.isAnyRunning)
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel(L10n.activity)

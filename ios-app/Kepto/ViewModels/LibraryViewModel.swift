@@ -1300,7 +1300,7 @@ final class LibraryViewModel: ObservableObject {
             return [.notConnectedToInternet, .timedOut, .networkConnectionLost,
                     .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains(urlError.code)
         }
-        if case KeptoAPIError.network = error { return true }
+        if let apiError = error as? KeptoAPIError, case .network(_) = apiError { return true }
         return false
     }
 
@@ -1462,7 +1462,7 @@ final class LibraryViewModel: ObservableObject {
                 }
             }
             let result = await runOneUpload(taskID: taskID) {
-                await uploadOnePickedPhoto(item, placeholderID: placeholder.item.id, onProgress: progressCallback)
+                await self.uploadOnePickedPhoto(item, placeholderID: placeholder.item.id, onProgress: progressCallback)
             }
             switch result {
             case .uploaded(let created):
@@ -1570,7 +1570,7 @@ final class LibraryViewModel: ObservableObject {
                 }
             }
             let result = await runOneUpload(taskID: taskID) {
-                await uploadOnePickedFile(url, placeholderID: placeholder.item.id, onProgress: progressCallback)
+                await self.uploadOnePickedFile(url, placeholderID: placeholder.item.id, onProgress: progressCallback)
             }
             switch result {
             case .uploaded(let created):
