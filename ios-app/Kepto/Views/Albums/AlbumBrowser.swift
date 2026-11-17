@@ -74,6 +74,16 @@ struct PhotoCollectionScreen: View {
     /// `onCurrentItemChange` can scroll the grid to the current
     /// thumbnail (same pattern as LibraryView's `scrollProxy`).
     @State private var scrollProxy: ScrollViewProxy?
+    /// Height of the top chrome (status bar + nav bar), measured
+    /// live while it is visible and latched at its max (same pattern
+    /// as LibraryView's `topChromeHeight`, round-17): the grid
+    /// ignores the top safe area (see `collectionGrid`) and uses
+    /// this as a fixed top content margin instead, so the first row
+    /// starts below the nav bar instead of hiding under it
+    /// (round-19) — and opening/closing the viewer never moves the
+    /// grid, because the margin does not change when the chrome
+    /// hides.
+    @State private var topChromeHeight: CGFloat = 0
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
@@ -300,6 +310,13 @@ struct PhotoCollectionScreen: View {
             // cells — the viewer's thumbnail target stays valid.
             .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
             .statusBarHidden(feedStartItem != nil)
+            // Measure the top chrome height while it is visible
+            // (status bar + nav bar); latched at its max so the
+            // ScrollView's fixed top margin stays put when the
+            // viewer hides the chrome (round-19, same as LibraryView).
+            .onGeometryChange(for: CGFloat.self, of: { $0.safeAreaInsets.top }) { newTop in
+                if newTop > topChromeHeight { topChromeHeight = newTop }
+            }
             // The system back button ("< Albums") is white via
             // .tint(.primary) on the AlbumsView NavigationStack (the tint
             // comes from the stack, not the pushed view). It shows
@@ -489,10 +506,32 @@ struct PhotoCollectionScreen: View {
             // (the device video shows the grid pixel-stable across
             // it). Ignoring the top safe area pins the content
             // inset to 0 in both states, so the bars returning
-            // cannot move the content at all. Visually a no-op:
-            // the grid already draws under the (transparent) nav
-            // bar — the first row sits at y = 0.
+            // cannot move the content at all. The fixed top margin
+            // below (round-19) replaces the inset: without it the
+            // first row sat at y = 0, half-hidden under the
+            // transparent nav bar (the Favorites 1-item screenshot
+            // proves it — the only cell is stuck under the chrome).
+            // The margin is latched at max (see `topChromeHeight`),
+            // so it never changes while the viewer hides the chrome.
+            // Open at the BOTTOM (newest) from the very first frame
+            // (round-20): `.defaultScrollAnchor(.bottom)` (iOS 17+)
+            // is a layout anchor, not a scroll — the ScrollView lays
+            // out with its content pinned at the bottom edge, so
+            // there is no onAppear scrollTo, no flash at the top and
+            // no slide-down. The old `maybeInitialScroll` scrollTo
+            // calls stay as a belt-and-braces fallback (they no-op
+            // once the view is already at the bottom) and still set
+            // the flags `maybeScrollToNewItem` needs. As async data
+            // lands, the anchor keeps the bottom pinned (new content
+            // grows upward); pull-to-refresh swaps the page in place
+            // (`items = page`, never emptied first), so it does not
+            // reset the position — and a mid-list user is not yanked
+            // when items append below the viewport. Load-more
+            // prepends OLDER pages at the top; the anchor keeps the
+            // visible content stable (no jump).
             .ignoresSafeArea(edges: .top)
+            .defaultScrollAnchor(.bottom)
+            .contentMargins(.top, topChromeHeight, for: .scrollContent)
             // The cells report their global frames (see
             // `PhotosGridCell`): keep them in the cache so a tap can hand
             // the tapped cell's frame to the viewer for its
