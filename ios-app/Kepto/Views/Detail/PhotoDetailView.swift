@@ -47,12 +47,20 @@ import UIKit
 /// `NativePopGestureHelper` (same v46 bridge) still lives in this
 /// file for the album detail views.
 struct PhotoDetailView: View {
-    /// The list to page through. A Binding so appends from `onNearEnd`
-    /// (the library's loadMore, or a collection's) are visible here.
+    /// The list the viewer pages through, in DESC server order
+    /// (newest first). The pager itself runs over `pagedItems`
+    /// (this reversed, ASC) so paging matches the grid. A Binding
+    /// so appends from `onNearEnd` (the library's loadMore, or a
+    /// collection's) are visible here.
     @Binding var items: [Item]
     /// The item the viewer opens on.
     let startItemId: String
-    /// Called when the user nears the end (loads the next page).
+    /// Called when the user nears the OLDEST end of the paging order
+    /// (loads the next page). The viewer pages `pagedItems` (ASC,
+    /// oldest first), so "near the end" means a low index there —
+    /// and the opener's loader appends OLDER items to DESC `items`,
+    /// which prepend to the reversed view. The name stays `onNearEnd`
+    /// for the existing call sites.
     var onNearEnd: (() async -> Void)? = nil
     /// Retained for the existing call sites (Library / Search /
     /// For You / albums pass a title); no longer displayed — the top
@@ -110,11 +118,17 @@ struct PhotoDetailView: View {
     /// time. Nil for Search / For You (no cache — the slide-down
     /// fallback applies).
     var frameLookup: ((String) -> CGRect?)? = nil
+    /// Called with the current item's id whenever the viewer pages
+    /// to another item, so the opener can scroll its background
+    /// grid to that thumbnail (Apple Photos). Nil for openers that
+    /// don't follow (Search / For You).
+    var onCurrentItemChange: ((String) -> Void)? = nil
 
     init(items: Binding<[Item]>, startItemId: String,
          onNearEnd: (() async -> Void)? = nil, title: String = L10n.library,
          sourceFrame: CGRect? = nil, onDismiss: (() -> Void)? = nil,
-         frameLookup: ((String) -> CGRect?)? = nil) {
+         frameLookup: ((String) -> CGRect?)? = nil,
+         onCurrentItemChange: ((String) -> Void)? = nil) {
         self._items = items
         self.startItemId = startItemId
         self.onNearEnd = onNearEnd
@@ -122,11 +136,21 @@ struct PhotoDetailView: View {
         self.sourceFrame = sourceFrame
         self.onDismiss = onDismiss
         self.frameLookup = frameLookup
+        self.onCurrentItemChange = onCurrentItemChange
         self._currentID = State(initialValue: startItemId)
     }
 
-    private var currentIndex: Int? { items.firstIndex { $0.id == currentID } }
-    private var currentItem: Item? { currentIndex.flatMap { items[$0] } }
+    /// The paging order: the grid is ASC (oldest top, newest
+    /// bottom), so the viewer pages `items.reversed()` — swipe-left
+    /// goes to a NEWER item, swipe-right to an OLDER one, matching
+    /// the grid. `items` itself stays DESC (server order): the
+    /// opener's load-more appends older items to it, which prepend
+    /// here. The current item is tracked by id, so the index shift
+    /// from a prepend is harmless.
+    private var pagedItems: [Item] { items.reversed() }
+
+    private var currentIndex: Int? { pagedItems.firstIndex { $0.id == currentID } }
+    private var currentItem: Item? { currentIndex.flatMap { pagedItems[$0] } }
 
     /// How far the drag has faded the viewer: 0 at rest, 1 at ~300pt
     /// down (the background is fully transparent and the grid behind
@@ -265,7 +289,7 @@ struct PhotoDetailView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
-                    ForEach(items) { item in
+                    ForEach(pagedItems) { item in
                         pageView(for: item)
                     }
                 }
@@ -355,22 +379,30 @@ struct PhotoDetailView: View {
         }
     }
 
-    /// Near the end: load the next page so swiping never hits a dead
-    /// end while there is more to show.
+    /// The current page changed: tell the opener (it scrolls its
+    /// background grid to the current thumbnail), and near the
+    /// OLDEST end of the paging order load the next page so swiping
+    /// right never hits a dead end while there is more to show.
     private func handleCurrentItemChange() {
-        if let idx = currentIndex, items.count - idx <= 3 {
+        if let id = currentID { onCurrentItemChange?(id) }
+        if let idx = currentIndex, idx <= 2 {
             Task { await onNearEnd?() }
         }
     }
 
     /// The current item vanished (e.g. deleted): move to the nearest
-    /// remaining item instead of a blank page.
+    /// remaining item instead of a blank page. Positions are in the
+    /// ASC paging order, so the viewer lands on the NEWER neighbour
+    /// (the next item down the grid, like Apple Photos). `pagedItems`
+    /// already reflects the new list here; only the old list needs
+    /// reversing.
     private func handleItemsChange(old oldItems: [Item], new newItems: [Item]) {
         guard !newItems.contains(where: { $0.id == currentID }) else { return }
-        if let oldIdx = oldItems.firstIndex(where: { $0.id == currentID }) {
-            let nextIdx = min(oldIdx, newItems.count - 1)
-            if nextIdx >= 0 { currentID = newItems[nextIdx].id }
-        } else if let last = newItems.last {
+        let oldPaged = Array(oldItems.reversed())
+        if let oldIdx = oldPaged.firstIndex(where: { $0.id == currentID }) {
+            let nextIdx = min(oldIdx, pagedItems.count - 1)
+            if nextIdx >= 0 { currentID = pagedItems[nextIdx].id }
+        } else if let last = pagedItems.last {
             currentID = last.id
         }
     }
@@ -379,7 +411,7 @@ struct PhotoDetailView: View {
     /// the first item.
     private func fixInitialCurrentItem() {
         if !items.contains(where: { $0.id == currentID }),
-           let first = items.first {
+           let first = pagedItems.first {
             currentID = first.id
         }
     }

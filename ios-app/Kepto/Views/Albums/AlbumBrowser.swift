@@ -70,6 +70,10 @@ struct PhotoCollectionScreen: View {
     /// `CellFrameCache`): written by the cells' preference, read
     /// only when a cell is tapped.
     @State private var cellFrameCache = CellFrameCache()
+    /// The grid's ScrollView proxy, kept so the viewer's
+    /// `onCurrentItemChange` can scroll the grid to the current
+    /// thumbnail (same pattern as LibraryView's `scrollProxy`).
+    @State private var scrollProxy: ScrollViewProxy?
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
@@ -185,7 +189,13 @@ struct PhotoCollectionScreen: View {
                         // release instead of trusting the tap-time
                         // capture. The cache is a class, so the
                         // closure always sees the current frames.
-                        frameLookup: { [cellFrameCache] id in cellFrameCache.frames[id] }
+                        frameLookup: { [cellFrameCache] id in cellFrameCache.frames[id] },
+                        // Follow the viewer's current item in the
+                        // background grid (Apple Photos): while the
+                        // user pages, the grid scrolls the current
+                        // thumbnail into view — only when it is
+                        // off-screen, so a visible cell never moves.
+                        onCurrentItemChange: { id in scrollGridToCurrentItem(id: id) }
                     )
                     .ignoresSafeArea()
                 }
@@ -469,6 +479,20 @@ struct PhotoCollectionScreen: View {
                     }
                 }
             }
+            // The grid must not move when the viewer closes
+            // (round-17): while the viewer is open the nav bar +
+            // status bar are hidden, so the top safe-area inset is
+            // 0; when they come back the inset grows by ~91pt and
+            // the ScrollView's offset compensation for it lands a
+            // frame late — the grid jerks up slightly at the swap
+            // instant. The 0.15s deferred merge was exonerated
+            // (the device video shows the grid pixel-stable across
+            // it). Ignoring the top safe area pins the content
+            // inset to 0 in both states, so the bars returning
+            // cannot move the content at all. Visually a no-op:
+            // the grid already draws under the (transparent) nav
+            // bar — the first row sits at y = 0.
+            .ignoresSafeArea(edges: .top)
             // The cells report their global frames (see
             // `PhotosGridCell`): keep them in the cache so a tap can hand
             // the tapped cell's frame to the viewer for its
@@ -477,6 +501,7 @@ struct PhotoCollectionScreen: View {
                 cellFrameCache.frames.merge(frames) { _, new in new }
             }
             .onAppear {
+                scrollProxy = proxy
                 refreshSortedItems()
                 maybeInitialScroll(proxy)
             }
@@ -644,6 +669,29 @@ struct PhotoCollectionScreen: View {
     }
 
     // MARK: - Scroll to bottom (Apple Photos order)
+
+    /// The viewer paged to another item: keep its thumbnail visible
+    /// in the background grid (Apple Photos). Scrolls only when the
+    /// cell is off-screen — a visible cell must not move under the
+    /// viewer — and instantly (no animation), so the grid is already
+    /// in place when the viewer closes. The viewport is the screen
+    /// minus the tab bar (83pt: 49pt bar + 34pt Home indicator);
+    /// the nav bar + status bar are hidden while the viewer is
+    /// open, so the top edge is y = 0. An unknown frame (cell never
+    /// laid out) still scrolls: `scrollTo` lays it out.
+    private func scrollGridToCurrentItem(id: String) {
+        guard let proxy = scrollProxy else { return }
+        guard sortedItems.contains(where: { $0.id == id }) else { return }
+        if let frame = cellFrameCache.frames[id] {
+            let screen = UIScreen.main.bounds
+            let visible = CGRect(x: 0, y: 0, width: screen.width, height: screen.height - 83)
+            if visible.intersects(frame) { return }
+        }
+        var transaction = Transaction()
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { proxy.scrollTo(id, anchor: .center) }
+    }
 
     /// Instant (no-animation) scroll to the bottom (newest item).
     /// The transaction disables animations outright — a plain

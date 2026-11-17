@@ -244,11 +244,11 @@ final class LibraryViewModel: ObservableObject {
         let calendar = Calendar.current
         var groups: [Date: [Item]] = [:]
         for item in items {
-            let comps = calendar.dateComponents(components, from: item.sortDate)
+            let comps = calendar.dateComponents(components, from: item.creationDate)
             guard let key = calendar.date(from: comps) else { continue }
             groups[key, default: []].append(item)
         }
-        return groups.map { (key: $0.key, ids: $0.value.sortedChronologically().map(\.id)) }.sorted { $0.key < $1.key }
+        return groups.map { (key: $0.key, ids: $0.value.sortedByCreationDate().map(\.id)) }.sorted { $0.key < $1.key }
     }
 
     /// The full metadata cache grouped by the given calendar
@@ -261,11 +261,11 @@ final class LibraryViewModel: ObservableObject {
         let calendar = Calendar.current
         var groups: [Date: [ItemMetadata]] = [:]
         for meta in allMetadata {
-            let comps = calendar.dateComponents(components, from: meta.sortDate)
+            let comps = calendar.dateComponents(components, from: meta.creationDate)
             guard let key = calendar.date(from: comps) else { continue }
             groups[key, default: []].append(meta)
         }
-        return groups.map { (key: $0.key, items: $0.value.sortedChronologically()) }.sorted { $0.key < $1.key }
+        return groups.map { (key: $0.key, items: $0.value.sortedByCreationDate()) }.sorted { $0.key < $1.key }
     }
 
     /// Full-library groupings: days / months / years, oldest first.

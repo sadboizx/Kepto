@@ -57,6 +57,16 @@ struct LibraryView: View {
     /// The ScrollViewProxy for the pin scrollTo in `growWindowIfNeeded`
     /// (grid cells have no proxy in scope).
     @State private var scrollProxy: ScrollViewProxy?
+    /// The ScrollView's global frame (the visible viewport), for the
+    /// viewer's onCurrentItemChange: a page whose cell is off-screen
+    /// scrolls the grid to it. Updated by onGeometryChange below.
+    @State private var scrollViewport: CGRect = .zero
+    /// The top chrome height (status bar + nav bar) measured while
+    /// the chrome is visible — the ScrollView ignores the top safe
+    /// area (see `scroll`) and uses this as a fixed top content
+    /// margin instead, so opening/closing the viewer never moves
+    /// the grid (round-17 close-jump fix).
+    @State private var topChromeHeight: CGFloat = 0
     /// True while the last (newest) cell is on screen — i.e. the
     /// user is at the bottom. Tracked by gridCell's onAppear /
     /// onDisappear; gates the new-item follow scroll and the
@@ -127,11 +137,20 @@ struct LibraryView: View {
             // overlay in a NavigationStack, so it has to be set
             // here, on the opener's root. Both return the moment
             // the viewer closes (feedStartItem = nil). The grid
-            // already extends under the bar, so hiding it does not
-            // move the cells — the viewer's thumbnail target stays
-            // valid.
+            // does not move either way: the ScrollView ignores the
+            // top safe area and uses a fixed top margin (see
+            // `scroll` + `topChromeHeight`) — before round-17 the
+            // inset change landed ~0.25s after the chrome and the
+            // grid visibly slid down ~45pt on close.
             .toolbar(feedStartItem == nil ? .visible : .hidden, for: .navigationBar)
             .statusBarHidden(feedStartItem != nil)
+            // Measure the top chrome height while it is visible
+            // (status bar + nav bar); latched at its max so the
+            // ScrollView's fixed top margin stays put when the
+            // viewer hides the chrome (round-17 close-jump fix).
+            .onGeometryChange(for: CGFloat.self, of: { $0.safeAreaInsets.top }) { newTop in
+                if newTop > topChromeHeight { topChromeHeight = newTop }
+            }
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .cancellationAction) {
@@ -223,7 +242,7 @@ struct LibraryView: View {
             // Floating view-mode pill above the tab bar (v60 style).
             .overlay(alignment: .bottom) {
                 if !selecting, viewModel.isConfigured {
-                    ZoomSegmentBar(zoom: $zoom)
+                    ZoomSegmentBar(zoom: $zoom, onRetap: { _ in scrollToBottomAnimated() })
                         .padding(.bottom, 8)
                 }
             }
@@ -273,7 +292,23 @@ struct LibraryView: View {
                         // the viewer re-queries the cell's frame at
                         // release instead of trusting the tap-time
                         // capture.
-                        frameLookup: { [cellFrameCache] id in cellFrameCache.frames[id] }
+                        frameLookup: { [cellFrameCache] id in cellFrameCache.frames[id] },
+                        // Apple Photos keeps the grid under the
+                        // viewer on the current item: if the cell is
+                        // off-screen, scroll the grid to it instantly
+                        // (no animation — the grid is hidden behind
+                        // the viewer, so the move is invisible); if
+                        // it is already fully visible, do nothing.
+                        onCurrentItemChange: { [cellFrameCache] id in
+                            guard let frame = cellFrameCache.frames[id],
+                                  let proxy = scrollProxy else { return }
+                            let visible = scrollViewport.insetBy(dx: 0, dy: 8)
+                            guard !visible.contains(frame) else { return }
+                            var transaction = Transaction()
+                            transaction.animation = nil
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) { proxy.scrollTo(id, anchor: .center) }
+                        }
                     )
                     .ignoresSafeArea()
                 }
@@ -338,6 +373,10 @@ struct LibraryView: View {
         }
         .onChange(of: zoom) { _, _ in
             Haptics.select()
+            // Round-18: switching mode does NOT scroll — the grid
+            // re-renders in the new zoom as before. Scroll-to-bottom
+            // happens only on a re-tap of the active segment, via
+            // ZoomSegmentBar's onRetap (scrollToBottomAnimated).
         }
     }
 
@@ -385,9 +424,18 @@ struct LibraryView: View {
                     allPhotosGrid
                 }
             }
-            // Bottom margin so the last row scrolls clear of the
-            // floating Years/Months/Days/All Photos pill.
-            .contentMargins(.bottom, 64, for: .scrollContent)
+            // The ScrollView ignores the top safe area: its top
+            // inset is always 0, so hiding/showing the nav bar +
+            // status bar for the viewer never changes it — the grid
+            // cannot jump on close (round-17: the inset change used
+            // to land ~0.25s after the chrome, sliding the grid down
+            // ~45pt). The fixed top margin below replaces the inset,
+            // so the top looks exactly as before. Bottom margin so
+            // the last row scrolls clear of the floating
+            // Years/Months/Days/All Photos pill.
+            .ignoresSafeArea(.container, edges: .top)
+            .contentMargins(EdgeInsets(top: topChromeHeight, leading: 0, bottom: 64, trailing: 0), for: .scrollContent)
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
             .background(Color(uiColor: .systemBackground))
             .simultaneousGesture(pinch)
             // The cells report their global frames (see `gridCell`):
@@ -739,6 +787,20 @@ struct LibraryView: View {
         transaction.animation = nil
         transaction.disablesAnimations = true
         withTransaction(transaction) { proxy.scrollTo(id, anchor: .bottom) }
+    }
+
+    /// Animated scroll to the bottom (newest) for a re-tap on the
+    /// already-selected zoom pill (round-18, Apple Photos pattern):
+    /// same zoom-aware target as the instant scroll, but eased over
+    /// ~0.4s instead of teleporting. No-ops when already at the
+    /// bottom (isAtBottom), when the list is empty (no target), or
+    /// while the viewer is open. No data reload — only the scroll.
+    /// Rapid re-taps are harmless: every tap targets the same last
+    /// id, so a new animation just retargets the same destination
+    /// instead of stacking.
+    private func scrollToBottomAnimated() {
+        guard let proxy = scrollProxy, let id = scrollTargetID, !isAtBottom, feedStartItem == nil else { return }
+        withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(id, anchor: .bottom) }
     }
 
     /// Scroll to the bottom (newest) once, instantly, on first open

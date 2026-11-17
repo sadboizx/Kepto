@@ -224,6 +224,12 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     /// parseable date sort as the oldest (.distantPast) — they never
     /// crash the sort.
     var sortDate: Date { savedDate ?? postedDate ?? .distantPast }
+
+    /// Capture date (the sort key for Years/Months/Days): the
+    /// original post date is the closest thing to when the
+    /// photo/video was taken, else when it was saved into Kepto.
+    /// Uploads have postedAt null, so they fall back to savedDate.
+    var creationDate: Date { postedDate ?? savedDate ?? .distantPast }
 }
 
 /// Light metadata for one item (GET /api/listAll). Everything the
@@ -326,6 +332,12 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
     /// crash the sort.
     var sortDate: Date { savedDate ?? postedDate ?? .distantPast }
 
+    /// Capture date (the sort key for Years/Months/Days): the
+    /// original post date is the closest thing to when the
+    /// photo/video was taken, else when it was saved into Kepto.
+    /// Uploads have postedAt null, so they fall back to savedDate.
+    var creationDate: Date { postedDate ?? savedDate ?? .distantPast }
+
     var displayAuthor: String {
         guard let author, !author.isEmpty else { return platform.displayName }
         return author
@@ -380,11 +392,23 @@ extension Array where Element == Item {
     func sortedChronologically() -> [Item] {
         sorted { ($0.sortDate, $0.id) < ($1.sortDate, $1.id) }
     }
+
+    /// Same order, by capture date instead of save date (Years /
+    /// Months / Days groupings).
+    func sortedByCreationDate() -> [Item] {
+        sorted { ($0.creationDate, $0.id) < ($1.creationDate, $1.id) }
+    }
 }
 
 extension Array where Element == ItemMetadata {
     func sortedChronologically() -> [ItemMetadata] {
         sorted { ($0.sortDate, $0.id) < ($1.sortDate, $1.id) }
+    }
+
+    /// Same order, by capture date instead of save date (Years /
+    /// Months / Days groupings).
+    func sortedByCreationDate() -> [ItemMetadata] {
+        sorted { ($0.creationDate, $0.id) < ($1.creationDate, $1.id) }
     }
 }
 

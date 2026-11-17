@@ -114,13 +114,20 @@ struct SelectBottomBar<More: View>: View {
 /// clears it via a bottom content margin on the scroll view.
 struct ZoomSegmentBar: View {
     @Binding var zoom: LibraryZoom
+    /// Round-18: tapping the ALREADY-selected segment scrolls the grid
+    /// to the bottom (newest) instead of switching mode. The Library
+    /// passes its animated scroll here; nil = plain mode switch.
+    var onRetap: ((LibraryZoom) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(LibraryZoom.allCases) { mode in
                 let selected = zoom == mode
                 Button {
-                    zoom = mode
+                    // Re-tap on the active segment = scroll to bottom
+                    // (Apple Photos pattern); a different segment just
+                    // switches mode — no scroll, no reload.
+                    if zoom == mode { onRetap?(mode) } else { zoom = mode }
                 } label: {
                     Text(mode.title)
                         .font(.subheadline)
