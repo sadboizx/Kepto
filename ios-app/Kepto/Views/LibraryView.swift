@@ -78,6 +78,9 @@ struct LibraryView: View {
     @State private var isAtBottom = false
     @State private var selecting = false
     @State private var selection: Set<String> = []
+    /// Drag-to-select state (see `DragSelectTracker`): reset on
+    /// gesture end and on leaving select mode.
+    @State private var dragSelect = DragSelectTracker()
     /// The item the Photos detail viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
     /// The global frame of the thumbnail the viewer opened from
@@ -193,25 +196,9 @@ struct LibraryView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button {
-                            Haptics.select()
-                            if allSelected {
-                                selection.removeAll()
-                            } else {
-                                selection = Set(selectableIDs)
-                            }
-                        } label: {
-                            Text(allSelected ? L10n.deselectAll : L10n.selectAll)
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(.regularMaterial, in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    // No Select All here: it applies to albums,
+                    // not to Library / Recents (Photos has none
+                    // there either) — only Cancel.
                 } else {
                     ToolbarItem(placement: .topBarTrailing) {
                         HStack(spacing: 16) {
@@ -501,6 +488,7 @@ struct LibraryView: View {
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
             .background(Color(uiColor: .systemBackground))
             .simultaneousGesture(pinch)
+            .simultaneousGesture(dragSelectGesture)
             // The cells report their global frames (see `gridCell`):
             // keep them in the cache so a tap can hand the tapped cell's
             // frame to the viewer for its shrink-to-thumbnail dismiss.
@@ -915,20 +903,30 @@ struct LibraryView: View {
 
     // MARK: - Multi-select
 
-    /// Ids that can be selected — upload placeholders are not
-    /// selectable (they are not real items yet).
-    private var selectableIDs: [String] { allIDs.filter { !viewModel.isUploadPlaceholder($0) } }
-
-    private var allSelected: Bool {
-        !selectableIDs.isEmpty && selection.count == selectableIDs.count
+    /// (photos, videos, unknown) among the selection, for the
+    /// bottom bar's center text. The grid pages, so an id past the
+    /// loaded pages has an unknown kind — and any unknown forces
+    /// the "Items" wording (see `L10n.selectionSummary`).
+    private var selectionKindCounts: (photos: Int, videos: Int, unknown: Int) {
+        var byID: [String: Item] = [:]
+        for item in viewModel.items { byID[item.id] = item }
+        var photos = 0, videos = 0, unknown = 0
+        for id in selection {
+            switch byID[id]?.contentType?.hasPrefix("image/") {
+            case true: photos += 1
+            case false: videos += 1
+            case nil: unknown += 1
+            }
+        }
+        return (photos, videos, unknown)
     }
 
     private var selectBar: some View {
         SelectBottomBar(
-            enabled: !selection.isEmpty,
+            photoCount: selectionKindCounts.photos,
+            videoCount: selectionKindCounts.videos,
+            unknownCount: selectionKindCounts.unknown,
             onShare: { Task { await shareSelection() } },
-            onFavorite: { Task { await favoriteSelection() } },
-            onAdd: { Task { await presentAddToAlbum() } },
             onDelete: {
                 pendingDelete = Array(selection)
                 showDelete = true
@@ -938,25 +936,45 @@ struct LibraryView: View {
                 Button { Task { await saveSelectionToPhotos() } } label: {
                     Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
                 }
+                Button { Task { await presentAddToAlbum() } } label: {
+                    Label(L10n.addToAlbum, systemImage: "rectangle.stack.badge.plus")
+                }
+                Button { Task { await favoriteSelection() } } label: {
+                    Label(L10n.favorite, systemImage: "heart")
+                }
                 Button { Task { await presentSlideshow() } } label: {
                     Label(L10n.slideshow, systemImage: "play.rectangle")
                 }
             } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 20))
-                    Text(L10n.more)
-                        .font(.caption2)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 20))
             }
         }
+    }
+
+    /// Drag-to-select (Photos): in select mode a drag across cells
+    /// selects/deselects them in bulk (see `DragSelectTracker`).
+    /// `minimumDistance: 12` keeps tap-to-toggle intact, and
+    /// `.simultaneousGesture` lets the ScrollView still scroll.
+    private var dragSelectGesture: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                guard selecting else { return }
+                selection = dragSelect.update(
+                    start: value.startLocation,
+                    current: value.location,
+                    toGlobal: { CGPoint(x: scrollViewport.origin.x + $0.x, y: scrollViewport.origin.y + $0.y) },
+                    frames: cellFrameCache.frames,
+                    selection: selection
+                )
+            }
+            .onEnded { _ in dragSelect.reset() }
     }
 
     private func exitSelection() {
         selecting = false
         selection.removeAll()
+        dragSelect.reset()
     }
 
     private func handleTap(_ id: String) {
@@ -1198,10 +1216,13 @@ struct LibraryView: View {
 struct PhotosGridCell: View {
     let item: Item
     /// Multi-select: when true the cell shows a selection circle
-    /// (top-left) and a tap toggles selection (the parent's onTap
-    /// decides). The long-press menu is the native `.contextMenu`,
-    /// attached by the parent (LibraryView / PhotoCollectionScreen) —
-    /// the cell itself has no long-press gesture.
+    /// (bottom-right, Photos) and a tap toggles selection (the
+    /// parent's onTap decides). The long-press menu is the native
+    /// `.contextMenu`, attached by the parent (LibraryView /
+    /// PhotoCollectionScreen) — the cell itself has no long-press
+    /// gesture. Unselected cells dim slightly in select mode; the
+    /// duration badge and failed dot hide while selecting (the
+    /// checkmark owns the bottom-right corner then).
     var isSelectionMode: Bool = false
     var isSelected: Bool = false
     var onTap: (() -> Void)? = nil
@@ -1209,6 +1230,7 @@ struct PhotosGridCell: View {
     var body: some View {
         ZStack {
             AspectThumbnail(itemId: item.id)
+                .opacity(isSelectionMode && !isSelected ? 0.7 : 1)
             // An uploading placeholder is not dimmed (the file
             // already exists on device) — it shows the progress
             // ring at the top-right instead. Other pending items
@@ -1225,7 +1247,7 @@ struct PhotosGridCell: View {
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
-            if let badge = badgeText, item.status == .ready {
+            if let badge = badgeText, item.status == .ready, !isSelectionMode {
                 Text(badge)
                     .font(.caption2)
                     .fontWeight(.semibold)
@@ -1234,7 +1256,7 @@ struct PhotosGridCell: View {
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
-            if item.status == .failed {
+            if item.status == .failed, !isSelectionMode {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 8, height: 8)
@@ -1255,7 +1277,8 @@ struct PhotosGridCell: View {
                     .foregroundStyle(isSelected ? .blue : .white)
                     .shadow(color: .black.opacity(0.6), radius: 2, x: 0, y: 1)
                     .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
             }
         }
         .background(Color(.systemGray5))

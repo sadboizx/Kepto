@@ -61,47 +61,112 @@ struct DayHeader: View {
     }
 }
 
-/// Bottom action bar shown in multi-select mode: Share / Favorite /
-/// Add / Delete plus an extra `more` slot. Photos' `SelectBottomBar`,
-/// unchanged except the labels are English inline strings for now —
-/// Labels come from L10n (step 9).
+/// Bottom action bar shown in multi-select mode, Photos' Recents
+/// select bar: Share icon — center count text — Delete icon — "…"
+/// menu. Icon-only; blue while anything is selected, gray while
+/// nothing is (the buttons are disabled then). Favorite / Add to
+/// Album live in the `more` menu, not on the bar. The counts come
+/// from the caller — the wording ("1 Photo Selected" / "N Items
+/// Selected" / "Select Items") is `L10n.selectionSummary`.
 struct SelectBottomBar<More: View>: View {
-    var enabled: Bool
+    var photoCount: Int
+    var videoCount: Int
+    var unknownCount: Int
     var onShare: () -> Void
-    var onFavorite: () -> Void
-    var onAdd: () -> Void
     var onDelete: () -> Void
     @ViewBuilder var more: () -> More
 
+    private var total: Int { photoCount + videoCount + unknownCount }
+
     var body: some View {
         HStack(spacing: 0) {
-            barButton(L10n.share, "square.and.arrow.up", action: onShare)
-            barButton(L10n.favorite, "heart", action: onFavorite)
-            barButton(L10n.add, "rectangle.stack.badge.plus", action: onAdd)
-            barButton(L10n.delete, "trash", action: onDelete)
-            more()
+            iconButton("square.and.arrow.up", action: onShare)
+                .accessibilityLabel(L10n.share)
+            Text(L10n.selectionSummary(photos: photoCount, videos: videoCount, unknown: unknownCount))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-                .disabled(!enabled)
+                .lineLimit(1)
+            iconButton("trash", action: onDelete)
+                .accessibilityLabel(L10n.delete)
+            more()
+                .frame(width: 44, height: 44)
+                .foregroundStyle(total > 0 ? Color.blue : Color.gray)
+                .disabled(total == 0)
         }
         .padding(.top, 6)
         .padding(.bottom, 2)
         .background(.bar)
     }
 
-    private func barButton(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+    private func iconButton(_ symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: symbol)
-                    .font(.system(size: 20, weight: .regular))
-                Text(title)
-                    .font(.caption2)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .regular))
+                .frame(width: 44, height: 44)
+                .foregroundStyle(total > 0 ? Color.blue : Color.gray)
         }
-        .disabled(!enabled)
-        .accessibilityLabel(title)
+        .disabled(total == 0)
+        .buttonStyle(.plain)
+    }
+}
+
+/// Drag-to-select (Photos): in select mode, dragging a finger
+/// across cells selects/deselects them in bulk. One tracker serves
+/// both grids (Library + Album) — both keep the same
+/// `CellFrameCache` of global cell frames, and both ScrollViews
+/// report their global viewport, so a ScrollView-local drag point
+/// converts to global by adding the viewport origin.
+///
+/// The mode is fixed by the FIRST cell hit: dragging from an
+/// unselected cell selects everything touched, from a selected
+/// cell deselects. A vertical-dominant drag is a scroll, not a
+/// select — until a cell has been hit, segments with |dy| > 2*|dx|
+/// are ignored, so a plain swipe still scrolls; once selection
+/// has begun, the drag keeps applying even if it turns vertical.
+/// Points are sampled along each segment (~20pt steps) so a fast
+/// drag cannot jump over a cell between two reported locations.
+struct DragSelectTracker {
+    /// true = this drag selects, false = it deselects; nil until
+    /// the first cell is hit.
+    private(set) var mode: Bool? = nil
+    private var lastLocation: CGPoint? = nil
+
+    mutating func reset() {
+        mode = nil
+        lastLocation = nil
+    }
+
+    /// Feed one drag update (`start`/`current` are ScrollView-local,
+    /// as `DragGesture` reports them). `toGlobal` converts a local
+    /// point to the global space the frame cache lives in. Returns
+    /// the updated selection.
+    mutating func update(start: CGPoint, current: CGPoint, toGlobal: (CGPoint) -> CGPoint, frames: [String: CGRect], selection: Set<String>) -> Set<String> {
+        var selection = selection
+        // First sample measures from the gesture's start point, so
+        // a straight vertical swipe (a scroll) never hits a cell.
+        let previous = lastLocation ?? start
+        let dx = current.x - previous.x
+        let dy = current.y - previous.y
+        defer { lastLocation = current }
+        // Vertical-dominant and nothing hit yet: a scroll — keep
+        // sampling, don't hit-test.
+        if mode == nil && abs(dy) > 2 * abs(dx) { return selection }
+        // Sample along the segment so a fast drag can't skip a cell.
+        let distance = hypot(dx, dy)
+        let steps = max(1, Int(ceil(distance / 20)))
+        for i in 1...steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            hitTest(toGlobal(CGPoint(x: previous.x + dx * t, y: previous.y + dy * t)), frames: frames, selection: &selection)
+        }
+        return selection
+    }
+
+    private mutating func hitTest(_ global: CGPoint, frames: [String: CGRect], selection: inout Set<String>) {
+        guard let id = frames.first(where: { $0.value.contains(global) })?.key else { return }
+        if mode == nil { mode = !selection.contains(id) }
+        if mode == true { selection.insert(id) } else { selection.remove(id) }
     }
 }
 

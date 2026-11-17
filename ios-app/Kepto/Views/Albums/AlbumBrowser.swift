@@ -114,6 +114,9 @@ struct PhotoCollectionScreen: View {
     /// Photos' SelectBottomBar.
     @State private var isSelecting = false
     @State private var selectedIDs: Set<String> = []
+    /// Drag-to-select state (see `DragSelectTracker`): reset on
+    /// gesture end and on leaving select mode.
+    @State private var dragSelect = DragSelectTracker()
     @State private var showingBulkDeleteConfirmation = false
     /// Presents the Settings sheet from the "…" menu.
     @State private var showingSettings = false
@@ -686,6 +689,7 @@ struct PhotoCollectionScreen: View {
             .defaultScrollAnchor(.bottom)
             .contentMargins(.top, topChromeHeight, for: .scrollContent)
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
+            .simultaneousGesture(dragSelectGesture)
             // The cells report their global frames (see
             // `PhotosGridCell`): keep them in the cache so a tap can hand
             // the tapped cell's frame to the viewer for its
@@ -764,34 +768,73 @@ struct PhotoCollectionScreen: View {
         }
     }
 
+    /// (photos, videos, unknown) among the selection, for the
+    /// bottom bar's center text. The album's items are fully
+    /// loaded, so a selected id is always found — unknown stays 0
+    /// unless an id somehow outlives its row.
+    private var selectionKindCounts: (photos: Int, videos: Int, unknown: Int) {
+        var byID: [String: Item] = [:]
+        for item in items { byID[item.id] = item }
+        var photos = 0, videos = 0, unknown = 0
+        for id in selectedIDs {
+            switch byID[id]?.contentType?.hasPrefix("image/") {
+            case true: photos += 1
+            case false: videos += 1
+            case nil: unknown += 1
+            }
+        }
+        return (photos, videos, unknown)
+    }
+
     /// Bottom bar in multi-select mode: Photos' SelectBottomBar
-    /// (Share / Favorite / Add / Delete) + a "More" menu with Save
-    /// to Photos and Slideshow. (Photos' Hide / Duplicate entries
-    /// are dropped — Hide and Duplicate were cut in Q3/Q4.)
+    /// (Share / count / Delete / "…"). The "…" menu holds Save to
+    /// Photos, Add to Album and Favorite, then Slideshow. (Photos'
+    /// Hide / Duplicate entries are dropped — Hide and Duplicate
+    /// were cut in Q3/Q4.)
     private var selectBar: some View {
         SelectBottomBar(
-            enabled: !selectedIDs.isEmpty,
+            photoCount: selectionKindCounts.photos,
+            videoCount: selectionKindCounts.videos,
+            unknownCount: selectionKindCounts.unknown,
             onShare: { Task { await shareSelection() } },
-            onFavorite: { Task { await favoriteSelection() } },
-            onAdd: { showingAddToAlbum = true },
             onDelete: { showingBulkDeleteConfirmation = true }
         ) {
             Menu {
                 Button { Task { await saveSelectionToPhotos() } } label: {
                     Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
                 }
+                Button { showingAddToAlbum = true } label: {
+                    Label(L10n.addToAlbum, systemImage: "rectangle.stack.badge.plus")
+                }
+                Button { Task { await favoriteSelection() } } label: {
+                    Label(L10n.favorite, systemImage: "heart")
+                }
                 Button { presentSlideshow() } label: {
                     Label(L10n.slideshow, systemImage: "play.rectangle")
                 }
             } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "ellipsis.circle").font(.system(size: 20))
-                    Text(L10n.more).font(.caption2)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
+                Image(systemName: "ellipsis.circle").font(.system(size: 20))
             }
         }
+    }
+
+    /// Drag-to-select (Photos): in select mode a drag across cells
+    /// selects/deselects them in bulk (see `DragSelectTracker`).
+    /// `minimumDistance: 12` keeps tap-to-toggle intact, and
+    /// `.simultaneousGesture` lets the ScrollView still scroll.
+    private var dragSelectGesture: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                guard isSelecting else { return }
+                selectedIDs = dragSelect.update(
+                    start: value.startLocation,
+                    current: value.location,
+                    toGlobal: { CGPoint(x: scrollViewport.origin.x + $0.x, y: scrollViewport.origin.y + $0.y) },
+                    frames: cellFrameCache.frames,
+                    selection: selectedIDs
+                )
+            }
+            .onEnded { _ in dragSelect.reset() }
     }
 
     /// Empty-state copy for this source.
@@ -839,6 +882,7 @@ struct PhotoCollectionScreen: View {
     private func exitSelectionMode() {
         isSelecting = false
         selectedIDs.removeAll()
+        dragSelect.reset()
     }
 
     private func toggleSelection(_ item: Item) {

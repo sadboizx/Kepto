@@ -263,6 +263,26 @@ enum L10n {
         return n == 1 ? "1 Photo Selected" : "\(n) Photos Selected"
     }
 
+    static var selectItems: String { isVI ? "Chọn mục" : "Select Items" }
+
+    /// Center text of the select bottom bar. With nothing selected
+    /// it reads "Select Items"; otherwise the wording follows the
+    /// kinds selected — "1 Photo Selected" / "N Photos Selected"
+    /// for photos only, the same for videos, "N Items Selected"
+    /// when the kinds are mixed or any selected id has an unknown
+    /// kind (the Library pages, so an unloaded id is unknown).
+    static func selectionSummary(photos: Int, videos: Int, unknown: Int) -> String {
+        let total = photos + videos + unknown
+        if total == 0 { return selectItems }
+        if unknown > 0 || (photos > 0 && videos > 0) {
+            return isVI ? "Đã chọn \(total) mục" : "\(total) Item\(total == 1 ? "" : "s") Selected"
+        }
+        if photos > 0 {
+            return isVI ? "Đã chọn \(photos) ảnh" : "\(photos) Photo\(photos == 1 ? "" : "s") Selected"
+        }
+        return isVI ? "Đã chọn \(videos) video" : "\(videos) Video\(videos == 1 ? "" : "s") Selected"
+    }
+
     static func itemCount(_ n: Int) -> String {
         if isVI { return "\(n)" }
         return n == 1 ? "1" : "\(n)"

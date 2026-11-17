@@ -90,9 +90,11 @@ private func formatDuration(_ duration: Double?) -> String? {
 /// Badges kept from Kepto's `PhotosGridCell` (duration first, view
 /// count fallback, favorite heart, pending spinner, failed dot);
 /// Photos' Live/Portrait badges are dropped — `Item` has no such
-/// flags. The selection checkmark sits top-trailing like Photos
-/// (Kepto's old cell had it top-leading); the favorite heart is
-/// hidden while selecting so the two never overlap.
+/// flags. The selection checkmark sits bottom-trailing like Photos;
+/// the duration badge is hidden while selecting (the checkmark owns
+/// that corner then) and the favorite heart is hidden too, so the
+/// two never overlap. Unselected cells dim slightly in select mode
+/// so the selection stands out.
 ///
 /// The square is forced the Kepto way — a `Color` (no intrinsic
 /// aspect) + `.aspectRatio` + `.overlay` + `.clipped()` +
@@ -128,10 +130,14 @@ struct AssetThumbnail: View {
                         .scaledToFill()
                 }
             }
+            // In select mode unselected cells dim slightly (Photos);
+            // the overlays below are added after, so the checkmark
+            // and badges stay full-strength.
+            .opacity(selecting && !selected ? 0.7 : 1)
             .overlay { pendingOverlay }
-            .overlay(alignment: .bottomLeading) { if showBadge { badgeRow } }
+            .overlay(alignment: .bottomLeading) { if showBadge && !selecting { badgeRow } }
             .overlay(alignment: .bottomLeading) { favoriteMark }
-            .overlay(alignment: .topTrailing) { selectionMark }
+            .overlay(alignment: .bottomTrailing) { selectionMark }
             .overlay(alignment: .topTrailing) { uploadRing }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -210,11 +216,13 @@ struct AssetThumbnail: View {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.white)
+                        .transition(.scale)
                 }
             }
             .frame(width: 22, height: 22)
             .padding(5)
             .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: selected)
         }
     }
 }
