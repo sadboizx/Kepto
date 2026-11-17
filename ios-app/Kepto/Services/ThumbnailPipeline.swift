@@ -32,7 +32,11 @@ final class ThumbnailPipeline {
         if let existing = inFlight[id] {
             return try? await existing.task.value
         }
-        let box = FetchBox(Task { try await api.fetchThumbnail(id: id) })
+        // Round-28: detached — the fetch, the JPEG decode and the
+        // disk write must NOT run on the main actor. This class is
+        // @MainActor, so a plain Task inherits it; 40 cells landing
+        // at once decoded on main and stalled the album open.
+        let box = FetchBox(Task.detached { try await api.fetchThumbnail(id: id) })
         inFlight[id] = box
         defer { if inFlight[id] === box { inFlight[id] = nil } }
         return try? await box.task.value
@@ -46,7 +50,7 @@ final class ThumbnailPipeline {
     /// already in flight are skipped, in caller order — the caller
     /// passes newest-first, so the first missing thumbnails
     /// fetched are the ones the user sees first. A second call for
-    /// the same ids is a cheap no-op. At most 4 fetches run at once
+    /// the same ids is a cheap no-op. At most 8 fetches run at once
     /// (the old version fired up to `limit` at once); the default
     /// cap is 120 ids per call.
     func prefetch(ids: [String], api: KeptoAPI, limit: Int = 120) {
@@ -54,13 +58,15 @@ final class ThumbnailPipeline {
             .prefix(limit)
         guard !missing.isEmpty else { return }
         Task {
-            // Bounded concurrency, in caller order: each chunk of 4
-            // runs together, the next chunk starts when it finishes.
+            // Bounded concurrency, in caller order: each chunk of 8
+            // runs together, the next chunk starts when it finishes. (Round-28
+            // revision: 4 -> 8 — the album case warms twice as fast; the
+            // thumbnails are tiny and the Worker handles it.)
             // Each fetch goes through thumbnail(id:api:) so in-flight
             // dedup still applies if another caller asks mid-flight.
             var start = missing.startIndex
             while start < missing.endIndex {
-                let end = missing.index(start, offsetBy: 4, limitedBy: missing.endIndex) ?? missing.endIndex
+                let end = missing.index(start, offsetBy: 8, limitedBy: missing.endIndex) ?? missing.endIndex
                 let chunk = missing[start..<end]
                 await withTaskGroup(of: Void.self) { group in
                     for id in chunk {
