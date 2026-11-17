@@ -846,7 +846,11 @@ app.get("/api/play/:id", async (c) => {
 app.get("/api/thumb/:id", async (c) => {
   const item = await getItem(c.env.DB, c.req.param("id"));
   if (!item) return c.json({ ok: false, error: "Không tìm thấy item." }, 404);
-  return streamFromR2(c, item.thumb_key, `${item.id}.jpg`);
+  // A photo item whose thumb was never made (thumb_key null) falls back
+  // to the original: the viewer loads this endpoint too, so a null thumb
+  // broke both grid and viewer even though the original was fine in R2.
+  // Heals already-saved items with no re-save.
+  return streamFromR2(c, item.thumb_key ?? item.r2_key, `${item.id}.jpg`);
 });
 
 /** Scrub-preview sprite: the tile grid of thumbnails the player crops per timestamp. */
