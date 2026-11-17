@@ -413,25 +413,43 @@ struct FavoriteResponse: Decodable {
 /// renders. Kept here (not scattered per screen) so all grids agree.
 extension Array where Element == Item {
     func sortedChronologically() -> [Item] {
-        sorted { ($0.sortDate, $0.id) < ($1.sortDate, $1.id) }
+        // Round-29: sortDate parses an ISO8601 string on EVERY access,
+        // and the comparator reads it ~log N times per element — for a
+        // 117-item album that was ~1600 parses on the main thread in
+        // onAppear, between tap and push (~1s stall; <10 items were
+        // instant). Parse once per element, sort the pairs, drop the
+        // keys. Order is identical: (date, id), oldest first.
+        map { ($0, $0.sortDate) }
+            .sorted { ($0.1, $0.0.id) < ($1.1, $1.0.id) }
+            .map { $0.0 }
     }
 
     /// Same order, by capture date instead of save date (Years /
     /// Months / Days groupings).
     func sortedByCreationDate() -> [Item] {
-        sorted { ($0.creationDate, $0.id) < ($1.creationDate, $1.id) }
+        // Round-29: same one-parse-per-element fix as above.
+        map { ($0, $0.creationDate) }
+            .sorted { ($0.1, $0.0.id) < ($1.1, $1.0.id) }
+            .map { $0.0 }
     }
 }
 
 extension Array where Element == ItemMetadata {
     func sortedChronologically() -> [ItemMetadata] {
-        sorted { ($0.sortDate, $0.id) < ($1.sortDate, $1.id) }
+        // Round-29: same one-parse-per-element fix as Item above —
+        // this is the sort the album seed runs (all 117 rows).
+        map { ($0, $0.sortDate) }
+            .sorted { ($0.1, $0.0.id) < ($1.1, $1.0.id) }
+            .map { $0.0 }
     }
 
     /// Same order, by capture date instead of save date (Years /
     /// Months / Days groupings).
     func sortedByCreationDate() -> [ItemMetadata] {
-        sorted { ($0.creationDate, $0.id) < ($1.creationDate, $1.id) }
+        // Round-29: same one-parse-per-element fix as Item above.
+        map { ($0, $0.creationDate) }
+            .sorted { ($0.1, $0.0.id) < ($1.1, $1.0.id) }
+            .map { $0.0 }
     }
 }
 
