@@ -7,8 +7,11 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Owns the library state. Cloud-only: items live in D1 behind the
-/// Worker API; nothing is cached on disk. The app is Photos-style now:
+/// Owns the library state. Cloud-only: media lives in R2/D1 behind
+/// the Worker API; no photo or video is ever stored on disk. Only the
+/// light listAll metadata (ids, titles, dates, flags) is cached on
+/// disk (round-22) so the library renders instantly on launch, then
+/// refreshes in the background. The app is Photos-style now:
 /// the Library tab is a flat grid of all saved items (Years / Months /
 /// Days / All Photos view modes are a presentation choice in the view,
 /// not a server filter), the Albums tab shows per-creator and
@@ -35,11 +38,18 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var allMetadata: [ItemMetadata] = [] {
         didSet { rebuildDerivedCache() }
     }
-    /// True once the full-metadata fetch has succeeded. Local
-    /// search falls back to the server only while this is false.
+    /// True once the full metadata is available — from the disk
+    /// cache (round-22) or a successful fetch. Local search falls
+    /// back to the server only while this is false.
     @Published private(set) var allMetadataLoaded = false {
         didSet { rebuildDerivedCache() }
     }
+    /// True once the network fetch has succeeded this launch. The
+    /// disk cache also sets `allMetadataLoaded`, but the background
+    /// refresh must still run once per launch (saves/deletes made
+    /// elsewhere) — so the skip flag is the NETWORK load, not the
+    /// disk load.
+    private var allMetadataNetworkLoaded = false
 
     // MARK: - Cached derived data (round-13 perf)
     //
@@ -167,6 +177,9 @@ final class LibraryViewModel: ObservableObject {
 
     init() {
         reloadConfig()
+        // Render from the disk cache before the first network call
+        // (round-22): the grid is up on launch, no waiting.
+        loadAllMetadataFromDisk()
     }
 
     /// Re-read the Worker URL (UserDefaults) and API key (Keychain).
@@ -187,26 +200,68 @@ final class LibraryViewModel: ObservableObject {
 
     // MARK: - Full library metadata (GET /api/listAll)
 
-    /// Fetch the full library metadata once (GET /api/listAll).
-    /// Runs at most once per config (guard flag) unless `force` is
-    /// set — save/upload pass force: true because the library just
-    /// changed. Quiet on failure: the Library grid, groupings and
-    /// search keep working from the paged list / server search, and
-    /// the next fetch() retries (allMetadataLoaded stays false).
+    /// Fetch the full library metadata (GET /api/listAll). The
+    /// NETWORK fetch runs at most once per launch (guard flag)
+    /// unless `force` is set — save/upload pass force: true because
+    /// the library just changed. A disk cache from the previous
+    /// launch (round-22) renders first, so this fetch is a
+    /// background refresh, not a gate. Quiet on failure: the Library
+    /// grid, groupings and search keep working from the paged list /
+    /// server search (or the disk cache), and the next fetch()
+    /// retries (allMetadataNetworkLoaded stays false).
     func fetchAllMetadata(force: Bool = false) async {
         guard let api else { return }
-        guard force || !allMetadataLoaded else { return }
+        guard force || !allMetadataNetworkLoaded else { return }
         guard !isFetchingAllMetadata else { return }
         isFetchingAllMetadata = true
         defer { isFetchingAllMetadata = false }
         do {
             allMetadata = try await api.listAll()
             allMetadataLoaded = true
+            allMetadataNetworkLoaded = true
+            saveAllMetadataToDisk()
         } catch {
             if error is CancellationError { return }
             if let urlError = error as? URLError, urlError.code == .cancelled { return }
             // Quiet — see above.
         }
+    }
+
+    // MARK: - listAll disk cache (round-22)
+    //
+    // The metadata cache used to live only in memory: every cold
+    // launch re-downloaded GET /api/listAll before the Library grid
+    // and the album seeds had anything to render. This file persists
+    // ONLY the light metadata (ids, titles, dates, flags — no R2
+    // keys, no media bytes), so launch renders from disk instantly
+    // and the network fetch becomes a background refresh (SWR).
+    // Media stays cloud-only, as before: nothing about a photo or
+    // video is ever written to disk.
+    private static var allMetadataCacheURL: URL? {
+        guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        return dir.appendingPathComponent("listAll-cache.json")
+    }
+
+    /// Load the persisted metadata cache, if any. Called from init:
+    /// the grid renders from disk before the first network call.
+    /// Corrupt or outdated files are ignored (the network fetch
+    /// replaces them) — a bad cache must never block the library.
+    private func loadAllMetadataFromDisk() {
+        guard let url = Self.allMetadataCacheURL,
+              let data = try? Data(contentsOf: url),
+              let cached = try? JSONDecoder().decode([ItemMetadata].self, from: data),
+              !cached.isEmpty else { return }
+        allMetadata = cached
+        allMetadataLoaded = true
+    }
+
+    /// Persist the metadata cache after a successful network fetch.
+    /// Best-effort and silent: a failed write only costs the next
+    /// launch its instant render, never the library itself.
+    private func saveAllMetadataToDisk() {
+        guard let url = Self.allMetadataCacheURL,
+              let data = try? JSONEncoder().encode(allMetadata) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     /// Recompute the cached derived data (see above) from the current
@@ -1104,23 +1159,53 @@ final class LibraryViewModel: ObservableObject {
     /// uploaded is sent along, so the Worker can skip a file that is
     /// already saved (same content hash) instead of uploading it again.
     private func uploadOnePickedPhoto(_ item: PhotosPickerItem) async -> UploadOneResult {
-        // Video: get the file via PhotoKit (loadVideoFile fetches
-        // the PHAsset by the picker's itemIdentifier and requests
-        // the AVAsset — network access on, so iCloud videos
-        // download). loadTransferable(type: URL.self) fails for
-        // videos that live in iCloud or need transcoding, surfacing
-        // as "Không đọc được video đã chọn".
+        // Video: picker-native transfer only (round-24). The old
+        // path fetched the PHAsset by itemIdentifier, but the app
+        // declares ONLY NSPhotoLibraryAddUsageDescription and
+        // requests only .addOnly authorization — PHAsset.fetchAssets
+        // returns empty without read access, so EVERY video failed
+        // here with "Không đọc được video đã chọn." (photos worked
+        // because they already used loadTransferable, which needs no
+        // PhotoKit permission). Two attempts, cheapest first:
+        // (1) loadTransferable(URL) — the system hands a file
+        // (copying/transcoding as needed), nothing held in memory;
+        // (2) loadTransferable(Data) — the picker downloads the
+        // video (incl. iCloud) and hands the bytes; written to a
+        // temp file for the upload. The Worker's ~100 MB limit
+        // bounds the Data attempt.
         let types = item.supportedContentTypes
         let isVideo = types.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
         if isVideo {
-            guard let (fileURL, filename) = await loadVideoFile(item) else {
+            if let pickedURL = try? await item.loadTransferable(type: URL.self) {
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("kepto-video-\(UUID().uuidString).\(pickedURL.pathExtension)")
+                if (try? FileManager.default.copyItem(at: pickedURL, to: dest)) != nil {
+                    defer { try? FileManager.default.removeItem(at: dest) }
+                    let mimeType = mimeType(for: dest.pathExtension)
+                    let hash = sha256Hex(ofFile: dest)
+                    let (uploaded, duplicate) = await upload(fileURL: dest, filename: pickedURL.lastPathComponent, mimeType: mimeType, sha256: hash)
+                    if let uploaded {
+                        return duplicate ? .duplicate : .uploaded(uploaded)
+                    }
+                    return .failed
+                }
+            }
+            let ext = types.first { $0.conforms(to: .movie) || $0.conforms(to: .video) }?.preferredFilenameExtension ?? "mp4"
+            guard let videoData = try? await item.loadTransferable(type: Data.self), !videoData.isEmpty else {
                 errorMessage = "Không đọc được video đã chọn."
                 return .failed
             }
-            defer { try? FileManager.default.removeItem(at: fileURL) }
-            let mimeType = mimeType(for: fileURL.pathExtension)
-            let hash = sha256Hex(ofFile: fileURL)
-            let (uploaded, duplicate) = await upload(fileURL: fileURL, filename: filename, mimeType: mimeType, sha256: hash)
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("kepto-video-\(UUID().uuidString).\(ext)")
+            do {
+                try videoData.write(to: tempURL)
+            } catch {
+                errorMessage = "Không chuẩn bị được video để tải lên."
+                return .failed
+            }
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+            let hash = sha256Hex(of: videoData)
+            let (uploaded, duplicate) = await upload(fileURL: tempURL, filename: "video.\(ext)", mimeType: mimeType(for: ext), sha256: hash)
             if let uploaded {
                 return duplicate ? .duplicate : .uploaded(uploaded)
             }
@@ -1150,43 +1235,6 @@ final class LibraryViewModel: ObservableObject {
             return duplicate ? .duplicate : .uploaded(uploaded)
         }
         return .failed
-    }
-
-    /// Load a picked video as a file we own. Returns the temp file
-    /// URL + the original filename (for the upload's ?filename=).
-    /// PhotosPickerItem has no file API of its own — neither
-    /// loadFileRepresentation nor itemProvider exists on it (both
-    /// attempts failed to compile in v58/v59.1). The video is
-    /// fetched through PhotoKit instead: the picker's
-    /// itemIdentifier is the PHAsset local identifier, and
-    /// requestAVAsset (network access on, so iCloud videos
-    /// download) hands back the file URL. The file is copied to
-    /// our own temp location. Returns nil when the video cannot
-    /// be read at all.
-    private func loadVideoFile(_ item: PhotosPickerItem) async -> (URL, String)? {
-        guard let identifier = item.itemIdentifier else { return nil }
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-        guard let asset = assets.firstObject, asset.mediaType == .video else { return nil }
-        let options = PHVideoRequestOptions()
-        options.isNetworkAccessAllowed = true
-        options.deliveryMode = .highQualityFormat
-        return await withCheckedContinuation { continuation in
-            PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
-                guard let urlAsset = avAsset as? AVURLAsset else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                let srcURL = urlAsset.url
-                let dest = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("kepto-video-\(UUID().uuidString).\(srcURL.pathExtension)")
-                do {
-                    try FileManager.default.copyItem(at: srcURL, to: dest)
-                    continuation.resume(returning: (dest, srcURL.lastPathComponent))
-                } catch {
-                    continuation.resume(returning: nil)
-                }
-            }
-        }
     }
 
     /// SHA-256 of data, as a lowercase hex string (for content-hash dedupe).

@@ -32,7 +32,8 @@ enum KeptoAPIError: Error, LocalizedError {
 /// No URL, API key, or secret is hardcoded here: the base URL comes from
 /// UserDefaults (set in Settings) and the API key from the Keychain.
 /// Cloud-only: this client never downloads media to Photos or to disk —
-/// playback streams from the Worker and thumbnails are kept in memory only.
+/// playback streams from the Worker and thumbnails are cached in
+/// memory (NSCache) + on disk (Caches/thumbnails, previews only).
 final class KeptoAPI {
     private let baseURL: URL
     private let apiKey: String
@@ -46,6 +47,72 @@ final class KeptoAPI {
     /// smooth because only decoded UIImages are kept (NSCache evicts
     /// under memory pressure). Keyed by item id.
     private static let thumbnailCache = NSCache<NSString, UIImage>()
+
+    /// Disk thumbnail cache (round-23): one JPEG per item id under
+    /// Caches/thumbnails. Layered under the NSCache above — a
+    /// thumbnail survives app restarts, so the grid renders with
+    /// real images on launch instead of gray placeholders waiting
+    /// on the network. Caches (not Application Support): the bytes
+    /// are regenerable from the Worker, and the system may purge
+    /// them under storage pressure — a purge only costs a
+    /// re-download, never data. Thumbnails are immutable per item
+    /// id (generated at ingest; a re-save gets a new id), so no
+    /// invalidation is needed. Total size is capped; the oldest
+    /// files go first when the cap is exceeded.
+    private static let thumbnailDiskCapBytes = 300 * 1024 * 1024
+
+    private static var thumbnailDiskDirectory: URL? {
+        guard let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let thumbs = dir.appendingPathComponent("thumbnails", isDirectory: true)
+        try? FileManager.default.createDirectory(at: thumbs, withIntermediateDirectories: true)
+        return thumbs
+    }
+
+    private static func thumbnailDiskURL(for id: String) -> URL? {
+        thumbnailDiskDirectory?.appendingPathComponent("\(id).jpg")
+    }
+
+    /// Read a thumbnail from disk, if present. Nil when missing or
+    /// undecodable — the caller falls through to the network.
+    private static func thumbnailFromDisk(id: String) -> UIImage? {
+        guard let url = thumbnailDiskURL(for: id),
+              let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else { return nil }
+        return image
+    }
+
+    /// Persist freshly downloaded thumbnail bytes, then evict the
+    /// oldest files while the directory is over the cap.
+    /// Best-effort and silent.
+    private static func saveThumbnailToDisk(id: String, data: Data) {
+        guard let url = thumbnailDiskURL(for: id) else { return }
+        try? data.write(to: url, options: .atomic)
+        evictThumbnailsIfNeeded()
+    }
+
+    private static func evictThumbnailsIfNeeded() {
+        guard let dir = thumbnailDiskDirectory else { return }
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
+        var entries: [(url: URL, size: Int, date: Date)] = []
+        var total = 0
+        for url in urls {
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                  let size = values.fileSize,
+                  let date = values.contentModificationDate else { continue }
+            entries.append((url, size, date))
+            total += size
+        }
+        guard total > thumbnailDiskCapBytes else { return }
+        // Oldest first: a thumbnail file is written once, so its
+        // modification date is its save date — evicting the oldest
+        // saved is the right order for immutable per-id thumbnails.
+        for entry in entries.sorted(by: { $0.date < $1.date }) {
+            try? fm.removeItem(at: entry.url)
+            total -= entry.size
+            if total <= thumbnailDiskCapBytes { break }
+        }
+    }
 
     /// UserDefaults key for the Worker base URL (not a secret).
     static let baseURLDefaultsKey = "kepto.baseURL"
@@ -434,23 +501,34 @@ final class KeptoAPI {
 
     /// GET /api/thumb/:id with the Authorization header.
     /// AsyncImage cannot send custom headers, so thumbnails are loaded
-    /// with URLSession here and kept in memory only (no disk cache —
-    /// the app is cloud-only by design).
+    /// with URLSession here. Three layers (round-23): the shared
+    /// NSCache (this session), the disk cache under Caches/thumbnails
+    /// (survives restarts), then the network. The app is cloud-only
+    /// for media — the disk layer holds only small preview images,
+    /// never originals.
     func fetchThumbnail(for item: Item) async throws -> UIImage? {
         try await fetchThumbnail(id: item.id)
     }
 
     func fetchThumbnail(id: String) async throws -> UIImage? {
-        // Serve from the shared cache when possible (smooth scrolling
-        // with thousands of items — no re-download on scroll-back).
+        // Layer 1: memory (smooth scrolling with thousands of items
+        // — no re-download on scroll-back).
         if let cached = Self.thumbnailCache.object(forKey: id as NSString) {
             return cached
         }
+        // Layer 2: disk (survives app restarts — the grid opens with
+        // real thumbnails instead of gray placeholders).
+        if let disk = Self.thumbnailFromDisk(id: id) {
+            Self.thumbnailCache.setObject(disk, forKey: id as NSString)
+            return disk
+        }
+        // Layer 3: network.
         let (data, response) = try await session.data(for: authorizedRequest(url: url(path: "/api/thumb/\(id)")))
         guard let http = response as? HTTPURLResponse,
               (200...299).contains(http.statusCode) else { return nil }
         guard let image = UIImage(data: data) else { return nil }
         Self.thumbnailCache.setObject(image, forKey: id as NSString)
+        Self.saveThumbnailToDisk(id: id, data: data)
         return image
     }
 

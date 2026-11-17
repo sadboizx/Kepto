@@ -1900,31 +1900,25 @@ private final class NativePopGestureViewController: UIViewController {
         if pop.delegate !== popDelegate {
             pop.delegate = popDelegate
         }
-        // The hosting (SwiftUI) view controller's view holds the
-        // ScrollView — the paging viewer or the grid
-        // (album). Make its pan wait for the pop gesture.
-        guard let hostView = parent?.view else { return }
-        for scrollView in Self.scrollViews(in: hostView) {
-            scrollView.panGestureRecognizer.require(toFail: pop)
-        }
-    }
-
-    private static func scrollViews(in view: UIView) -> [UIScrollView] {
-        var found: [UIScrollView] = []
-        for subview in view.subviews {
-            if let scrollView = subview as? UIScrollView {
-                found.append(scrollView)
-            }
-            found.append(contentsOf: scrollViews(in: subview))
-        }
-        return found
+        // NOTE (round-24): that is ALL this helper does now. It
+        // used to also make every ScrollView's pan require the pop
+        // to fail, and the delegate allowed simultaneous recognition.
+        // PhotosClone has neither, and Kepto's swipe-back jerked for
+        // the first 1–2 frames: the grid's pan recognised alongside
+        // the pop and twitched the grid before the pop took over. A
+        // vertical grid does not compete with the horizontal edge
+        // pan (PhotosClone proves it), so the wiring only hurt. The
+        // delegate + isEnabled above stay: a hidden nav bar can
+        // disable the pop, and the viewerOpen gate must keep working.
     }
 }
 
 /// Delegate for the navigation controller's interactive pop gesture.
-/// Allows the pop whenever there is a view to pop to, and lets the
-/// scroll view's pan coexist (require(toFail:) orders them, so the
-/// edge pan wins when it starts at the edge).
+/// Allows the pop whenever there is a view to pop to. It does NOT
+/// let the scroll view's pan recognise simultaneously (round-24):
+/// that made the grid twitch in the first 1–2 frames of a swipe-back
+/// — PhotosClone runs the plain system pop with no delegate
+/// interference, and so does Kepto now.
 private final class PopGestureDelegate: NSObject, UIGestureRecognizerDelegate {
     weak var navigationController: UINavigationController?
 
@@ -1940,9 +1934,5 @@ private final class PopGestureDelegate: NSObject, UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard !Self.viewerOpen, let nav = navigationController else { return false }
         return nav.viewControllers.count > 1
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        return true
     }
 }
