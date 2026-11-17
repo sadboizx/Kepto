@@ -489,10 +489,24 @@ export async function listCollections(
   return results ?? [];
 }
 
+/** One extra photo of a TikTok photo post (photos 1..n; photo 0 is the
+    main item itself, carried by the top-level IngestResult fields). */
+export interface IngestPhoto {
+  r2_key: string;
+  thumb_key?: string | null;
+  content_type?: string | null;
+  width?: number | null;
+  height?: number | null;
+  file_size?: number | null;
+  sha256?: string | null;
+}
+
 export interface IngestResult {
   item_id: string;
   r2_key: string;
   thumb_key?: string | null;
+  /** Extra photos of a TikTok photo post — each becomes a sibling item. */
+  photos?: IngestPhoto[];
   preview_key?: string | null;
   content_type?: string | null;
   title?: string | null;
@@ -549,6 +563,69 @@ export async function markReady(db: D1Database, r: IngestResult): Promise<void> 
       r.item_id,
     )
     .run();
+}
+
+/**
+ * Create one sibling PHOTO item per extra photo of a TikTok photo post.
+ * Each sibling copies the main item's ownership / attribution
+ * (user_id, platform, original_url, title, caption, author,
+ * author_username, author_avatar_url, posted_at) and takes its own
+ * media fields from the photo entry; preview/duration stay NULL
+ * (stills have no sprite or duration). Siblings are inserted in
+ * order, so their ms-precision saved_at values order them after the
+ * main item, photo 1 first. Album membership is copied too: every
+ * my_collection the main item is in also gets the sibling.
+ * Returns the created sibling ids. Entries without an r2_key are
+ * skipped.
+ */
+export async function createPhotoSiblings(
+  db: D1Database,
+  mainItem: Item,
+  photos: IngestPhoto[],
+): Promise<string[]> {
+  const ids: string[] = [];
+  const collections = await db
+    .prepare(`SELECT collection_id FROM my_collection_items WHERE item_id = ?1`)
+    .bind(mainItem.id)
+    .all<{ collection_id: string }>();
+  const collectionIds = (collections.results ?? []).map((r) => r.collection_id);
+  for (const p of photos) {
+    if (!p.r2_key) continue;
+    const id = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO items (id, user_id, platform, original_url, r2_key, thumb_key,
+           preview_key, content_type, title, caption, author, author_username,
+           author_avatar_url, posted_at, duration, width, height, file_size, sha256, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+           NULL, ?14, ?15, ?16, ?17, 'ready')`,
+      )
+      .bind(
+        id,
+        mainItem.user_id,
+        mainItem.platform,
+        mainItem.original_url,
+        p.r2_key,
+        p.thumb_key ?? p.r2_key,
+        p.content_type ?? "image/jpeg",
+        mainItem.title,
+        mainItem.caption,
+        mainItem.author,
+        mainItem.author_username,
+        mainItem.author_avatar_url,
+        mainItem.posted_at,
+        p.width ?? null,
+        p.height ?? null,
+        p.file_size ?? null,
+        p.sha256 ?? null,
+      )
+      .run();
+    for (const collectionId of collectionIds) {
+      await addItemToMyCollection(db, collectionId, id);
+    }
+    ids.push(id);
+  }
+  return ids;
 }
 
 export async function markFailed(

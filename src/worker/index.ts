@@ -99,6 +99,7 @@ import {
   listMyCollectionExclusiveItems,
   listMyCollectionItems,
   listMyCollections,
+  createPhotoSiblings,
   markFailed,
   markReady,
   normalizeSaveUrl,
@@ -764,7 +765,20 @@ app.post("/api/ingest-complete", async (c) => {
     return c.json({ ok: false, error: "r2_key là bắt buộc khi thành công." }, 422);
   }
   await markReady(c.env.DB, b as IngestResult);
-  return c.json({ ok: true, item: await getItem(c.env.DB, b.item_id) });
+  // TikTok photo post: extra photos become sibling items. A failure
+  // here must not fail the main item — it is already ready.
+  let siblings: string[] = [];
+  if (Array.isArray(b.photos) && b.photos.length > 0) {
+    try {
+      const fresh = await getItem(c.env.DB, b.item_id);
+      if (fresh) siblings = await createPhotoSiblings(c.env.DB, fresh, b.photos);
+    } catch (e) {
+      console.error(
+        JSON.stringify({ event: "photo_siblings_failed", item_id: b.item_id, error: String(e).slice(0, 200) }),
+      );
+    }
+  }
+  return c.json({ ok: true, item: await getItem(c.env.DB, b.item_id), siblings });
 });
 
 /** Parse `Range: bytes=start-end` into a clamped { start, end } (inclusive). Null = no/invalid range. */
