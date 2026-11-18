@@ -1,10 +1,12 @@
 """Sign one IPA with one certificate from the repository — no releases,
-no site. PPQ Protection is ON (same formula as the pool flow): the app
-is signed as <bundle id>.<suffix>, where suffix is the first 6 hex
-chars of sha256("<app-id>:<display name>") — so the same certificate
-always produces the same bundle id, and different apps sharing one
-certificate never overwrite each other on install. The Share Extension
-survives (plugins are kept when a PPQ suffix applies).
+no site, no PPQ Protection. The app keeps its own bundle id
+(com.sadboizx.kepto), exactly as the certificate's profile authorizes
+only the application-identifier entitlement — iOS does not require the
+Info.plist bundle id to match the profile's App ID, so the app is
+signed as-is (proven: ipasign.cc signed with this same certificate,
+no id change, no suffix, and it installs). The stock signer would
+re-ID the app to the profile's id instead, so this module uses a
+subclass that keeps the app's id.
 
 Run from the repository root:
 
@@ -17,16 +19,16 @@ it there first):
     signer/certificate/cert.mobileprovision
     signer/certificate/cert.txt          # the .p12 password (may be empty)
 
-The app keeps its own bundle id plus the PPQ suffix
-(com.sadboizx.kepto.<suffix>): the signer refuses to run when the
-profile cannot produce that id (for example a profile that opts out
-of PPQ), instead of silently re-ID-ing the app to the profile's id.
+The signer refuses to run when the app would not keep its own bundle id.
 No signing-assets embed (that is Feather/Ksign only).
+
+NOTE: with an explicit profile and no PPQ suffix, the Share Extension
+(PlugIns) is dropped — the stock pipeline only keeps extensions when the
+profile is wildcard or a suffix applies. The main app is unaffected.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import shutil
 import sys
 import tempfile
@@ -37,25 +39,15 @@ from .certs import CertError
 from .util import CommandError, Fatal, HTTPFailure, error, http_get, log
 
 
-def _display_name(cert, profile) -> str:
-    """Display name for the PPQ suffix — the same string the pool flow
-    uses for this certificate (company + profile name, e.g.
-    'Jiangsu Simcere Pharmaceutical Co.,Ltd (workone)'), so an app
-    signed here gets the same bundle id as the same app signed by the
-    pool with the same certificate."""
-    name = cert.common_name
-    for prefix in ("iPhone Distribution: ", "iPhone Developer: "):
-        if name.startswith(prefix):
-            name = name[len(prefix):]
-            break
-    return f"{name} ({profile.name})" if profile.name else name
+class _KeepIdSigner(codesign.Signer):
+    """Signer that keeps the app's own bundle id even with an explicit
+    profile and no PPQ suffix. The stock target_bundle_id re-IDs the app
+    to the profile's App ID in that case (inherited from zsign); iOS
+    itself does not require it — only the application-identifier
+    entitlement must match the profile, and that stays verbatim."""
 
-
-def ppq_suffix(app_id: str, display_name: str) -> str:
-    """Deterministic 6-character PPQ suffix for one (app, certificate)
-    pair — identical to signer.sync.ppq_suffix and the old zsign
-    pipeline's formula."""
-    return hashlib.sha256(f"{app_id}:{display_name}".encode()).hexdigest()[:6]
+    def target_bundle_id(self, job: codesign.Job) -> str:
+        return self.info["bundle_id"]
 
 
 def sign_one(root: Path, unsigned_ipa: Path, out_dir: Path, workdir: Path,
@@ -72,10 +64,9 @@ def sign_one(root: Path, unsigned_ipa: Path, out_dir: Path, workdir: Path,
         if pw_file.is_file() else ""
     cert = certs.read_p12(p12, password)
     profile = certs.read_profile(profile_path)
-    suffix = ppq_suffix(app_id, _display_name(cert, profile))
     log(f"Signing with {cert.common_name} (expires {cert.not_after.date()}, "
         f"profile {profile.name}, fingerprint {cert.fingerprint[:8]}..., "
-        f"PPQ suffix {suffix})")
+        "keeping bundle id, no PPQ)")
     issuers: list[bytes] = []
     if cert.issuer_url:
         try:
@@ -83,7 +74,7 @@ def sign_one(root: Path, unsigned_ipa: Path, out_dir: Path, workdir: Path,
         except HTTPFailure as exc:
             log(f"Could not fetch issuer certificate: {exc}")
     job = codesign.Job("signed", p12, password, profile_path, profile,
-                       cert.fingerprint, ppq_suffix=suffix, embed=False)
+                       cert.fingerprint, ppq_suffix="", embed=False)
     out_dir.mkdir(parents=True, exist_ok=True)
     signdir = workdir / "sign"
     shutil.rmtree(signdir, ignore_errors=True)
@@ -92,14 +83,12 @@ def sign_one(root: Path, unsigned_ipa: Path, out_dir: Path, workdir: Path,
         usable = codesign.prepare_keychain(keychain, [job], issuers, signdir / "keychain")
         if job.fingerprint not in usable:
             raise Fatal("the certificate could not be loaded into the keychain")
-        signer = codesign.Signer(unsigned_ipa, signdir, keychain)
+        signer = _KeepIdSigner(unsigned_ipa, signdir, keychain)
         bundle_id = signer.target_bundle_id(job)
-        expected = f"{signer.info['bundle_id']}.{suffix}"
-        if bundle_id != expected:
-            raise Fatal(f"the profile would sign as {bundle_id}, not "
-                        f"{expected} — upload a provisioning profile for "
-                        "Kepto (wildcard, or explicit for "
-                        f"{signer.info['bundle_id']})")
+        if bundle_id != signer.info["bundle_id"]:
+            raise Fatal(f"the app would sign as {bundle_id}, not "
+                        f"{signer.info['bundle_id']} — refusing to change "
+                        "the app's bundle id")
         result = signer.sign(job, out_dir, app_id)
     if not result.ok:
         raise Fatal(f"signing failed: {result.error}")
