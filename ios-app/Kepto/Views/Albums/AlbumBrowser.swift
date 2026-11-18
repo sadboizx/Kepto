@@ -575,82 +575,9 @@ struct PhotoCollectionScreen: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
-                    LazyVGrid(columns: columns, spacing: 2) {
-                        ForEach(sortedItems) { item in
-                            PhotosGridCell(
-                                item: item,
-                                frameCache: cellFrameCache,
-                                isSelectionMode: isSelecting,
-                                isSelected: selectedIDs.contains(item.id),
-                                onTap: {
-                                    if isSelecting {
-                                        toggleSelection(item)
-                                    } else {
-                                        // Capture the tapped cell's frame
-                                        // before opening: the viewer's
-                                        // dismiss drag shrinks the media
-                                        // onto it.
-                                        feedStartFrame = cellFrameCache.frames[item.id]
-                                        feedStartItem = item
-                                    }
-                                }
-                            )
-                            .contextMenu {
-                                GridItemContextMenu(
-                                    item: item,
-                                    isSelecting: isSelecting,
-                                    onSaveToPhotos: { saveToPhotos($0) },
-                                    onShare: { shareItem($0) },
-                                    onToggleFavorite: { toggleGridFavorite($0) },
-                                    onAddToAlbum: { itemForAlbumPicker = $0 },
-                                    onDelete: { requestGridDelete($0) },
-                                    onRemoveFromCollection: sourceIsMyCollection ? { item in
-                                        Task { await removeFromCollection(item) }
-                                    } : nil
-                                )
-                            }
-                            .onAppear {
-                                // Load-more fires at the OLDEST end
-                                // (top): the server pages go older, so
-                                // the oldest loaded cell appearing
-                                // means the user scrolled up into
-                                // not-yet-loaded items.
-                                if item.id == sortedItems.first?.id {
-                                    Task { await loadMore() }
-                                }
-                                if item.id == sortedItems.last?.id { isAtBottom = true }
-                            }
-                            .onDisappear {
-                                if item.id == sortedItems.last?.id { isAtBottom = false }
-                            }
-                        }
-                    }
-                    if sortedItems.isEmpty && isLoading {
-                        // Cold cache (first-ever open): gray placeholder
-                        // cells in the exact grid layout — no
-                        // full-screen spinner, no layout flash when the
-                        // real cells land (round-21).
-                        LazyVGrid(columns: columns, spacing: 2) {
-                            ForEach(0..<12, id: \.self) { _ in
-                                Color(.systemGray5)
-                                    .aspectRatio(1, contentMode: .fit)
-                            }
-                        }
-                    }
-                    if nextCursor != nil {
-                        HStack {
-                            Spacer()
-                            if isLoadingMore {
-                                ProgressView()
-                            } else {
-                                Button(L10n.loadMore) {
-                                    Task { await loadMore() }
-                                }
-                            }
-                            Spacer()
-                        }
-                        .padding(.vertical, 12)
-                    }
+                    collectionLazyGrid
+                    skeletonGridIfNeeded
+                    loadMoreFooterIfNeeded
                 }
             }
             // The grid must not move when the viewer closes
@@ -712,6 +639,123 @@ struct PhotoCollectionScreen: View {
                 maybeInitialScroll(proxy)
                 maybeScrollToNewItem(proxy, oldLast: oldLast, newLast: cachedSortedItems.last?.id, oldCount: oldItems.count, newCount: newItems.count)
             }
+        }
+    }
+
+    /// The grid of cells. Extracted so the SwiftUI type-checker sees
+    /// each piece separately — the original inline ForEach + PhotosGridCell
+    /// + contextMenu + onAppear/onDisappear expression timed out
+    /// ("compiler is unable to type-check this expression in
+    /// reasonable time") because the four nested builders multiplied
+    /// the inference work.
+    private var collectionLazyGrid: some View {
+        LazyVGrid(columns: columns, spacing: 2) {
+            ForEach(sortedItems) { item in
+                collectionCell(for: item)
+            }
+        }
+    }
+
+    /// One cell + its menu + its appear/disappear hooks. Extracted
+    /// (same reason as `collectionLazyGrid`): each nested builder
+    /// (contextMenu, onAppear, onDisappear) is its own type-inference
+    /// problem when written inline; a helper collapses them into one
+    /// `some View` at the call site. The `removeClosure` is built
+    /// with explicit if/else (not ternary) — the ternary with a
+    /// closure + nil was the hardest inference case inside the
+    /// original expression.
+    private func collectionCell(for item: Item) -> some View {
+        let removeClosure: ((Item) -> Void)?
+        if sourceIsMyCollection {
+            removeClosure = { (target: Item) in
+                Task { await removeFromCollection(target) }
+            }
+        } else {
+            removeClosure = nil
+        }
+        return PhotosGridCell(
+            item: item,
+            frameCache: cellFrameCache,
+            isSelectionMode: isSelecting,
+            isSelected: selectedIDs.contains(item.id),
+            onTap: { handleCellTap(item) }
+        )
+        .contextMenu {
+            GridItemContextMenu(
+                item: item,
+                isSelecting: isSelecting,
+                onSaveToPhotos: { saveToPhotos($0) },
+                onShare: { shareItem($0) },
+                onToggleFavorite: { toggleGridFavorite($0) },
+                onAddToAlbum: { itemForAlbumPicker = $0 },
+                onDelete: { requestGridDelete($0) },
+                onRemoveFromCollection: removeClosure
+            )
+        }
+        .onAppear { handleCellAppear(item) }
+        .onDisappear { handleCellDisappear(item) }
+    }
+
+    /// Tap behavior: in select mode toggle the selection; otherwise
+    /// capture the tapped cell's frame (for the viewer's shrink-to-
+    /// thumbnail dismiss) and open the viewer. Lifted out of the
+    /// inline `onTap:` closure so the compiler does not have to
+    /// infer it inside the ForEach/LazyVGrid nest.
+    private func handleCellTap(_ item: Item) {
+        if isSelecting {
+            toggleSelection(item)
+        } else {
+            feedStartFrame = cellFrameCache.frames[item.id]
+            feedStartItem = item
+        }
+    }
+
+    /// Load-more fires at the OLDEST end (top): the server pages go
+    /// older, so the oldest loaded cell appearing means the user
+    /// scrolled up into not-yet-loaded items.
+    private func handleCellAppear(_ item: Item) {
+        if item.id == sortedItems.first?.id {
+            Task { await loadMore() }
+        }
+        if item.id == sortedItems.last?.id { isAtBottom = true }
+    }
+
+    private func handleCellDisappear(_ item: Item) {
+        if item.id == sortedItems.last?.id { isAtBottom = false }
+    }
+
+    /// Cold-cache placeholder grid: gray cells in the exact grid
+    /// layout — no full-screen spinner, no layout flash when the real
+    /// cells land (round-21). Extracted with the same reasoning.
+    @ViewBuilder
+    private var skeletonGridIfNeeded: some View {
+        if sortedItems.isEmpty && isLoading {
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(0..<12, id: \.self) { _ in
+                    Color(.systemGray5)
+                        .aspectRatio(1, contentMode: .fit)
+                }
+            }
+        }
+    }
+
+    /// Load-more footer. Extracted with the same reasoning as the
+    /// grid.
+    @ViewBuilder
+    private var loadMoreFooterIfNeeded: some View {
+        if nextCursor != nil {
+            HStack {
+                Spacer()
+                if isLoadingMore {
+                    ProgressView()
+                } else {
+                    Button(L10n.loadMore) {
+                        Task { await loadMore() }
+                    }
+                }
+                Spacer()
+            }
+            .padding(.vertical, 12)
         }
     }
 
