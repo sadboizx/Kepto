@@ -388,6 +388,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
             guard parent.selecting, let cv = collectionView else { return }
             let location = gesture.location(in: nil) // window coords = global
+            print("[RowSelect] handlePan state=\(gesture.state.rawValue) locWindow=\(location)")
             switch gesture.state {
             case .began:
                 dragSelect.reset()
@@ -431,6 +432,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         private func applyRowSelect(at item: Int) {
             guard parent.columnCount > 0, item < parent.ids.count else { return }
             let row = item / parent.columnCount
+            print("[RowSelect] applyRowSelect item=\(item) row=\(row) lastRow=\(lastRowSelectRow) initial=\(rowSelectInitialSelection) columnCount=\(parent.columnCount)")
             guard row != lastRowSelectRow else { return }
             lastRowSelectRow = row
             var updated = parent.selectedIDs
@@ -484,9 +486,14 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-            // The pan is inert outside select mode — the collection
-            // view's scroll is the only vertical gesture then.
-            parent.selecting && g === panRecognizer
+            // Chỉ check selecting — bỏ check `g === panRecognizer`
+            // (có thể fail nếu SwiftUI tạo lại Coordinator mới do
+            // identity change, trong khi gesture cũ vẫn còn sống
+            // trong UIKit hierarchy). Mọi pan trên collection view
+            // đều của chúng ta — không có pan khác.
+            let allow = parent.selecting
+            print("[RowSelect] shouldBegin=\(allow) parent.selecting=\(parent.selecting)")
+            return allow
         }
     }
 }
@@ -502,6 +509,26 @@ final class GridCell: UICollectionViewCell {
     static let reuseID = "GridCell"
     private(set) var id: String?
 
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        // Zero insets để UIHostingConfiguration không tự cộng
+        // margin theo contentView.layoutMargins của cell cũ khi
+        // reuse — nguyên nhân phụ của hiệu ứng scale khi cuộn.
+        contentView.directionalLayoutMargins = .zero
+        contentView.layoutMargins = .zero
+        contentView.insetsLayoutMarginsFromSafeArea = false
+        contentView.clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        // Clear bất kỳ animation nào còn active từ cell cũ.
+        contentView.layer.removeAllAnimations()
+        layer.removeAllAnimations()
+    }
+
     func configure(
         id: String,
         source: (any GridItemSource)?,
@@ -514,14 +541,18 @@ final class GridCell: UICollectionViewCell {
         self.id = id
         let content: AnyView
         if let source {
-            content = AnyView(
-                AssetThumbnail(source: source, selecting: selecting, selected: selected)
-                    .environmentObject(viewModel)
-                    .id(source.id)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onTap)
-                    .contextMenu { contextMenu }
-            )
+            // Không gắn contextMenu trong select mode — long-press
+            // (dù menu rỗng) vẫn attach UILongPressGestureRecognizer
+            // và ăn mất pan row-select. Trong select mode chỉ có
+            // tap + pan, không có long-press.
+            let base = AssetThumbnail(source: source, selecting: selecting, selected: selected)
+                .environmentObject(viewModel)
+                .id(source.id)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onTap)
+            content = selecting
+                ? AnyView(base)
+                : AnyView(base.contextMenu { contextMenu })
         } else {
             content = AnyView(
                 Color(uiColor: .secondarySystemFill)
@@ -533,6 +564,17 @@ final class GridCell: UICollectionViewCell {
         // lại + lề so với LazyVGrid trước đây. Ép margins về 0 để
         // thumbnail tràn đúng cell như Apple Photos. Nếu không phải
         // nguyên nhân thì đây là no-op, sẽ loại trừ hướng này.
-        contentConfiguration = UIHostingConfiguration { content }.margins(.all, 0)
+        // Wrap in performWithoutAnimation: UIHostingConfiguration
+        // proposes zero (or the old cell's size) first, then the
+        // real cell bounds — UIKit animates that size change inside
+        // the scroll view's animation context (the "zoom while
+        // scrolling" effect). Disabling animation around the
+        // assignment makes the hosted view render at its final
+        // size on the first frame, no scale-in.
+        UIView.performWithoutAnimation {
+            contentConfiguration = UIHostingConfiguration { content }.margins(.all, 0)
+            contentView.setNeedsLayout()
+            contentView.layoutIfNeeded()
+        }
     }
 }

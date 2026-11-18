@@ -476,7 +476,11 @@ struct LibraryView: View {
     }
 
     private var dayColumns: [GridItem] {
-        fixedColumns(count: sizeClass == .regular ? 5 : 3, width: scrollViewport.width)
+        // Fallback to screen width while scrollViewport is still
+        // zero (first layout, or right after switching zooms before
+        // .onGeometryChange fires) — same pattern as allCellWidth.
+        let width = scrollViewport.width > 0 ? scrollViewport.width : UIScreen.main.bounds.width
+        return fixedColumns(count: sizeClass == .regular ? 5 : 3, width: width)
     }
 
     /// Cell width for the All Photos UICollectionView (Đợt 2): same
@@ -679,16 +683,29 @@ struct LibraryView: View {
     }
 
     private var daysGrid: some View {
-        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-            ForEach(windowedDays) { day in
-                Section {
-                    LazyVGrid(columns: dayColumns, spacing: 2) {
-                        ForEach(day.itemIDs, id: \.self) { id in
-                            gridCell(for: id)
+        // DEBUG — xoá sau khi xác định nguyên nhân.
+        let _ = print("[Days] windowedDays=\(windowedDays.count) days=\(days.count) cachedDayGroups=\(viewModel.cachedDayGroups.count) items=\(viewModel.items.count) allMetadata=\(viewModel.allMetadata.count) allMetadataLoaded=\(viewModel.allMetadataLoaded) scrollViewport=\(scrollViewport) dayColumns=\(dayColumns)")
+        return VStack(spacing: 0) {
+            if windowedDays.isEmpty && !viewModel.isLoading {
+                ContentUnavailableView {
+                    Label(L10n.nothingSavedYet, systemImage: "tray")
+                } description: {
+                    Text(L10n.emptyLibraryHint)
+                }
+                .frame(maxHeight: .infinity)
+            } else {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    ForEach(windowedDays) { day in
+                        Section {
+                            LazyVGrid(columns: dayColumns, spacing: 2) {
+                                ForEach(day.itemIDs, id: \.self) { id in
+                                    gridCell(for: id)
+                                }
+                            }
+                        } header: {
+                            DayHeader(title: day.title, subtitle: day.subtitle)
                         }
                     }
-                } header: {
-                    DayHeader(title: day.title, subtitle: day.subtitle)
                 }
             }
         }
