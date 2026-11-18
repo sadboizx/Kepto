@@ -127,7 +127,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> UICollectionView {
-        let cv = UICollectionView(frame: .zero, collectionViewLayout: makeLayout(cellWidth: cellWidth, spacing: spacing))
+        let cv = NoAnimationCollectionView(frame: .zero, collectionViewLayout: makeLayout(cellWidth: cellWidth, spacing: spacing))
         cv.backgroundColor = .systemBackground
         // Tap handled by the SwiftUI cell's .onTapGesture — the
         // collection view's own selection stays off so taps do not
@@ -425,38 +425,30 @@ struct PhotoGridCollectionView: UIViewRepresentable {
             }
         }
 
-        /// Áp selection theo hình chữ nhật từ cell bắt đầu đến cell
-        /// cuối, dựa trên mode:
-        /// - Mode select: `initial ∪ rect` (cell mới trong rect → chọn;
-        ///   kéo ngược ra khỏi rect → về initial → uncheck).
-        /// - Mode deselect: `initial - rect` (cell trong rect → bỏ chọn;
-        ///   kéo ngược ra khỏi rect → về initial → chọn lại).
+        /// Áp selection theo khoảng liên tục row-major từ item bắt đầu
+        /// đến item cuối, dựa trên mode:
+        /// - Mode select: `initial ∪ range` (item mới trong range → chọn;
+        ///   kéo ngược ra khỏi range → về initial → uncheck).
+        /// - Mode deselect: `initial - range` (item trong range → bỏ chọn;
+        ///   kéo ngược ra khỏi range → về initial → chọn lại).
         private func applyRectSelection(from startItem: Int, to endItem: Int) {
             guard parent.columnCount > 0 else { return }
+            // Sửa lỗi: chọn theo khoảng row-major liên tục
             let minItem = min(startItem, endItem)
             let maxItem = max(startItem, endItem)
-            let minRow = minItem / parent.columnCount
-            let maxRow = maxItem / parent.columnCount
-            let startCol = minItem % parent.columnCount
-            let endCol = maxItem % parent.columnCount
-            let minCol = min(startCol, endCol)
-            let maxCol = max(startCol, endCol)
 
-            var cellsInRect: Set<String> = []
-            for row in minRow...maxRow {
-                for col in minCol...maxCol {
-                    let idx = row * parent.columnCount + col
-                    if idx < parent.ids.count {
-                        cellsInRect.insert(parent.ids[idx])
-                    }
+            var cellsInRange: Set<String> = []
+            for idx in minItem...maxItem {
+                if idx < parent.ids.count {
+                    cellsInRange.insert(parent.ids[idx])
                 }
             }
 
             let newSelection: Set<String>
             if selectGestureMode {
-                newSelection = selectGestureInitialSelection.union(cellsInRect)
+                newSelection = selectGestureInitialSelection.union(cellsInRange)
             } else {
-                newSelection = selectGestureInitialSelection.subtracting(cellsInRect)
+                newSelection = selectGestureInitialSelection.subtracting(cellsInRange)
             }
             if newSelection != parent.selectedIDs {
                 parent.onDragSelect(newSelection)
@@ -498,6 +490,18 @@ struct PhotoGridCollectionView: UIViewRepresentable {
             let allow = parent.selecting
             FileLog.log("[RowSelect] shouldBegin=\(allow) parent.selecting=\(parent.selecting)")
             return allow
+        }
+    }
+}
+
+/// Chặn animation mặc định của UIKit khi cell frame thay đổi
+/// (nguyên nhân gây hiệu ứng zoom khi cuộn). Bọc super.layoutSubviews()
+/// trong performWithoutAnimation để cell luôn hiển thị đúng kích thước
+/// ngay từ frame đầu tiên.
+final class NoAnimationCollectionView: UICollectionView {
+    override func layoutSubviews() {
+        UIView.performWithoutAnimation {
+            super.layoutSubviews()
         }
     }
 }
@@ -584,6 +588,10 @@ final class GridCell: UICollectionViewCell {
                 .id(source.id)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onTap)
+                // Tắt hoàn toàn animation bên trong SwiftUI view —
+                // tránh hiệu ứng zoom nếu SwiftUI đang animate
+                // kích thước khi cell vừa được dequeue.
+                .transaction { $0.disablesAnimations = true }
             content = selecting
                 ? AnyView(base)
                 : AnyView(base.contextMenu { contextMenu })
