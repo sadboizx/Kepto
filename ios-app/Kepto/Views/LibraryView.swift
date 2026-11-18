@@ -91,6 +91,12 @@ struct LibraryView: View {
     /// `CellFrameCache`): written directly by the cells (no
     /// PreferenceKey), read only when a cell is tapped.
     @State private var cellFrameCache = CellFrameCache()
+    /// Handle for driving the All Photos UICollectionView (Đợt 2):
+    /// scroll-to-bottom on re-tap, scroll-to-current when the viewer
+    /// pages. Nil until the collection view is created (zoom == .all);
+    /// stays populated across state changes, cleared when All Photos
+    /// is torn down (zoom switches away).
+    @State private var gridScroll = GridScrollController()
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
@@ -136,7 +142,7 @@ struct LibraryView: View {
                     // without a layout flash. The floating zoom pill
                     // is part of `scroll`, so it appears with it.
                     ScrollView {
-                        LazyVGrid(columns: allColumns, spacing: 2) {
+                        LazyVGrid(columns: fixedColumns(count: sizeClass == .regular ? 8 : 4, width: scrollViewport.width), spacing: 2) {
                             ForEach(0..<12, id: \.self) { _ in
                                 Color(.systemGray5)
                                     .aspectRatio(1, contentMode: .fit)
@@ -337,6 +343,14 @@ struct LibraryView: View {
                         // the viewer, so the move is invisible); if
                         // it is already fully visible, do nothing.
                         onCurrentItemChange: { [cellFrameCache] id in
+                            // All Photos: collection view scroll (native).
+                            // Days/Months/Years: ScrollViewProxy scroll.
+                            if zoom == .all {
+                                if let frame = cellFrameCache.frames[id],
+                                   scrollViewport.insetBy(dx: 0, dy: 8).contains(frame) { return }
+                                gridScroll.scrollTo(id: id, at: .centeredVertically, animated: false)
+                                return
+                            }
                             guard let frame = cellFrameCache.frames[id],
                                   let proxy = scrollProxy else { return }
                             let visible = scrollViewport.insetBy(dx: 0, dy: 8)
@@ -407,6 +421,17 @@ struct LibraryView: View {
             // re-renders in the new zoom as before. Scroll-to-bottom
             // happens only on a re-tap of the active segment, via
             // ZoomSegmentBar's onRetap (scrollToBottomAnimated).
+            //
+            // Đợt 2: All Photos (UICollectionView) and Days (LazyVGrid)
+            // track isAtBottom independently — reset on zoom switch so
+            // a Days-"at-bottom" flag cannot leak into an All-Photos
+            // maybeScrollToNewItem (and vice versa). The other grid
+            // sets its own flag on the next cell visibility change.
+            // The ScrollViewProxy is only valid for the ScrollView
+            // zooms — nil it out when entering .all so a stale proxy
+            // is never used there.
+            isAtBottom = false
+            if zoom == .all { scrollProxy = nil }
         }
     }
 
@@ -450,72 +475,115 @@ struct LibraryView: View {
         fixedColumns(count: sizeClass == .regular ? 5 : 3, width: scrollViewport.width)
     }
 
-    private var allColumns: [GridItem] {
-        fixedColumns(count: sizeClass == .regular ? 8 : 4, width: scrollViewport.width)
+    /// Cell width for the All Photos UICollectionView (Đợt 2): same
+    /// formula as fixedColumns — integer-pixel, 4/8 columns, spacing
+    /// 2. Falls back to screen width before the first layout pass
+    /// (scrollViewport == .zero) so cells are the right size on the
+    /// very first apply, no flash on the first data landing.
+    private var allCellWidth: CGFloat {
+        let count = sizeClass == .regular ? 8 : 4
+        let spacing: CGFloat = 2
+        let totalSpacing = spacing * CGFloat(count - 1)
+        let width = scrollViewport.width > 0 ? scrollViewport.width : UIScreen.main.bounds.width
+        return floor((width - totalSpacing) / CGFloat(count))
     }
 
     private var scroll: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                switch zoom {
-                case .years:
-                    yearsGrid
-                case .months:
-                    monthsGrid
-                case .days:
-                    daysGrid
-                case .all:
-                    allPhotosGrid
+        Group {
+            if zoom == .all {
+                // All Photos is UICollectionView-backed now (Đợt 2):
+                // the collection view IS the scroller, so it renders
+                // top-level here — never inside the ScrollView below
+                // (a UICollectionView has no intrinsic content size
+                // and lays out at height 0 inside a vertical
+                // ScrollView, and the two vertical scrollers would
+                // fight). Same chrome as the ScrollView branch: the
+                // view ignores the top safe area; the top inset is
+                // applied by the collection view itself (topInset).
+                allPhotosGrid
+                    .background(Color(uiColor: .systemBackground))
+                    .ignoresSafeArea(.container, edges: .top)
+                    .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
+                    .simultaneousGesture(pinch)
+                    .onAppear {
+                        // No ScrollViewProxy exists for the collection
+                        // view — the .all scroll helpers take nil.
+                        scrollProxy = nil
+                        maybeInitialScroll(nil)
+                    }
+                    .onChange(of: viewModel.cachedAllIDs) { oldIDs, newIDs in
+                        maybeInitialScroll(nil)
+                        maybeScrollToNewItem(nil, oldIDs: oldIDs, newIDs: newIDs)
+                    }
+                    .onChange(of: viewModel.allMetadataLoaded) { _, _ in
+                        maybeInitialScroll(nil)
+                    }
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        switch zoom {
+                        case .years:
+                            yearsGrid
+                        case .months:
+                            monthsGrid
+                        case .days:
+                            daysGrid
+                        case .all:
+                            // Unreachable: .all renders top-level
+                            // above. Kept for exhaustiveness.
+                            EmptyView()
+                        }
+                    }
+                    // The ScrollView ignores the top safe area: its top
+                    // inset is always 0, so hiding/showing the nav bar +
+                    // status bar for the viewer never changes it — the grid
+                    // cannot jump on close (round-17: the inset change used
+                    // to land ~0.25s after the chrome, sliding the grid down
+                    // ~45pt). The fixed top margin below replaces the inset,
+                    // so the top looks exactly as before. Bottom margin so
+                    // the last row scrolls clear of the floating
+                    // Years/Months/Days/All Photos pill.
+                    // Open at the BOTTOM (newest) from the very first frame
+                    // (round-20): `.defaultScrollAnchor(.bottom)` (iOS 17+)
+                    // is a layout anchor, not a scroll — the ScrollView lays
+                    // out with its content pinned at the bottom edge, so
+                    // there is no onAppear scrollTo, no flash at the top and
+                    // no slide-down. The old `maybeInitialScroll` scrollTo
+                    // calls stay as a belt-and-braces fallback (they no-op
+                    // once the view is already at the bottom) and still set
+                    // the flags `maybeScrollToNewItem` needs. As async data
+                    // lands, the anchor keeps the bottom pinned (new content
+                    // grows upward); pull-to-refresh only swaps the page in
+                    // place, so it does not reset the position — and a
+                    // mid-list user is not yanked when items append below
+                    // the viewport. One anchor covers the three zooms that
+                    // share this ScrollView (Years / Months / Days).
+                    .defaultScrollAnchor(.bottom)
+                    .ignoresSafeArea(.container, edges: .top)
+                    // (EdgeInsets form of contentMargins is iOS 18+ — the
+                    // project targets iOS 17.4, so top/bottom use the
+                    // separate Edge.Set calls that exist since iOS 17.)
+                    .contentMargins(.top, topChromeHeight, for: .scrollContent)
+                    .contentMargins(.bottom, 64, for: .scrollContent)
+                    .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
+                    .background(Color(uiColor: .systemBackground))
+                    .simultaneousGesture(pinch)
+                    .simultaneousGesture(dragSelectGesture)
+                    .onAppear {
+                        scrollProxy = proxy
+                        maybeInitialScroll(proxy)
+                    }
+                    .onChange(of: viewModel.cachedAllIDs) { oldIDs, newIDs in
+                        maybeInitialScroll(proxy)
+                        maybeScrollToNewItem(proxy, oldIDs: oldIDs, newIDs: newIDs)
+                    }
+                    .onChange(of: viewModel.allMetadataLoaded) { _, _ in
+                        maybeInitialScroll(proxy)
+                    }
                 }
             }
-            // The ScrollView ignores the top safe area: its top
-            // inset is always 0, so hiding/showing the nav bar +
-            // status bar for the viewer never changes it — the grid
-            // cannot jump on close (round-17: the inset change used
-            // to land ~0.25s after the chrome, sliding the grid down
-            // ~45pt). The fixed top margin below replaces the inset,
-            // so the top looks exactly as before. Bottom margin so
-            // the last row scrolls clear of the floating
-            // Years/Months/Days/All Photos pill.
-            // Open at the BOTTOM (newest) from the very first frame
-            // (round-20): `.defaultScrollAnchor(.bottom)` (iOS 17+)
-            // is a layout anchor, not a scroll — the ScrollView lays
-            // out with its content pinned at the bottom edge, so
-            // there is no onAppear scrollTo, no flash at the top and
-            // no slide-down. The old `maybeInitialScroll` scrollTo
-            // calls stay as a belt-and-braces fallback (they no-op
-            // once the view is already at the bottom) and still set
-            // the flags `maybeScrollToNewItem` needs. As async data
-            // lands, the anchor keeps the bottom pinned (new content
-            // grows upward); pull-to-refresh only swaps the page in
-            // place, so it does not reset the position — and a
-            // mid-list user is not yanked when items append below
-            // the viewport. One anchor covers all four zooms: Years /
-            // Months / Days / All Photos share this ScrollView.
-            .defaultScrollAnchor(.bottom)
-            .ignoresSafeArea(.container, edges: .top)
-            // (EdgeInsets form of contentMargins is iOS 18+ — the
-            // project targets iOS 17.4, so top/bottom use the
-            // separate Edge.Set calls that exist since iOS 17.)
-            .contentMargins(.top, topChromeHeight, for: .scrollContent)
-            .contentMargins(.bottom, 64, for: .scrollContent)
-            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
-            .background(Color(uiColor: .systemBackground))
-            .simultaneousGesture(pinch)
-            .simultaneousGesture(dragSelectGesture)
-            .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
-            .onAppear {
-                scrollProxy = proxy
-                maybeInitialScroll(proxy)
-            }
-            .onChange(of: viewModel.cachedAllIDs) { oldIDs, newIDs in
-                maybeInitialScroll(proxy)
-                maybeScrollToNewItem(proxy, oldIDs: oldIDs, newIDs: newIDs)
-            }
-            .onChange(of: viewModel.allMetadataLoaded) { _, _ in
-                maybeInitialScroll(proxy)
-            }
         }
+        .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
     }
 
     private var yearsGrid: some View {
@@ -622,18 +690,34 @@ struct LibraryView: View {
         }
     }
 
+    /// All Photos grid on UICollectionView (Đợt 2): native virtualization
+    /// + prefetching + Apple Photos-exact scroll APIs. The collection
+    /// view renders the FULL allIDs (no `visibleWindow` cap) — the
+    /// UIKit side virtualizes 10k+ items without a pin hack. Cell
+    /// taps, context menus and the drag-to-select tracker are wired
+    /// through the representable's closures (same behavior as before).
     private var allPhotosGrid: some View {
-        LazyVGrid(columns: allColumns, spacing: 2) {
-            ForEach(windowedAllIDs, id: \.self) { id in
-                gridCell(for: id)
-            }
-        }
-    }
-
-    /// The newest `visibleWindow` ids (the grid renders only these —
-    /// see `visibleWindow`).
-    private var windowedAllIDs: [String] {
-        Array(allIDs.suffix(visibleWindow))
+        PhotoGridCollectionView(
+            ids: allIDs,
+            selecting: selecting,
+            selectedIDs: selection,
+            cellWidth: allCellWidth,
+            spacing: 2,
+            topInset: topChromeHeight,
+            frameCache: cellFrameCache,
+            scrollController: gridScroll,
+            viewModel: viewModel,
+            sourceFor: { source(for: $0) },
+            contextMenuFor: { id in
+                guard let source = source(for: id) else { return AnyView(EmptyView()) }
+                return AnyView(cellMenu(for: source))
+            },
+            onTap: { handleTap($0) },
+            onPrefetch: { ids in viewModel.prefetchMissingThumbnails(ids: ids) },
+            onDragSelect: { selection = $0 },
+            onWillDisplayNearTop: { index in maybeLoadMore(at: index) },
+            onLastCellVisibilityChange: { visible in isAtBottom = visible }
+        )
     }
 
     /// The newest day groups whose items total at least the window
@@ -821,16 +905,21 @@ struct LibraryView: View {
     /// laid out) — the viewport does not jump. The pin lays out at
     /// most one growth chunk of new cells.
     private func growWindowIfNeeded(at index: Int, id: String) {
+        // All Photos is UICollectionView-backed now (Đợt 2) — it
+        // virtualizes its full list with no window cap. This method
+        // is only reached from gridCell (Days), so the "windowed"
+        // growth applies to Days only. The cache prune keeps only
+        // Days frames.
+        guard zoom == .days else { return }
         let windowTop = max(allIDs.count - visibleWindow, 0)
         guard windowTop > 0, index <= windowTop + 10 else { return }
         guard let proxy = scrollProxy else { return }
         visibleWindow += 120
-        // Prune stale cell frames (hot-path fix): the cache only
-        // needs the frames of the cells the grids currently render
-        // (All Photos window + Days window).
-        var keep = Set(windowedAllIDs)
-        keep.formUnion(windowedDays.flatMap(\.itemIDs))
-        cellFrameCache.prune(keeping: keep)
+        // Prune stale cell frames: only Days cells write via gridCell
+        // (All Photos cells write via the collection view's
+        // willDisplay and are pruned by the collection view's own
+        // lifecycle — a stale entry is harmless, never read).
+        cellFrameCache.prune(keeping: Set(windowedDays.flatMap(\.itemIDs)))
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
     }
 
@@ -839,12 +928,12 @@ struct LibraryView: View {
     /// The id to scroll to for "the bottom" (newest) in the current
     /// zoom: the last cell in All Photos / Days, the last card in
     /// Months / Years.
+    /// The id to scroll to for "the bottom" on the ScrollView-backed
+    /// zooms (Days / Months / Years). All Photos uses the collection
+    /// view's own scrollToItem (see scrollToBottomAnimated / Instant).
     private var scrollTargetID: String? {
-        // Round-13: the target is the last of the WINDOWED list, so
-        // the scrollTo lays out at most one window of cells — never
-        // the whole library (the 46s freeze on open).
         switch zoom {
-        case .all: windowedAllIDs.last
+        case .all: nil
         case .days: windowedDays.last?.itemIDs.last
         case .months: months.last?.id
         case .years: years.last?.id
@@ -854,8 +943,18 @@ struct LibraryView: View {
     /// Instant (no-animation) scroll to the bottom. The transaction
     /// disables animations outright — a plain scrollTo inside the
     /// zoom-animated ScrollView could otherwise visibly slide down.
-    private func scrollToBottomInstant(_ proxy: ScrollViewProxy) {
-        guard let id = scrollTargetID else { return }
+    private func scrollToBottomInstant(_ proxy: ScrollViewProxy?) {
+        if zoom == .all {
+            // The collection view handles its own initial scroll
+            // (see PhotoGridCollectionView.Coordinator's
+            // performInitialScrollIfNeeded). Calling gridScroll here
+            // would race the first data apply — no-op when the
+            // collection view is not populated yet, which is fine
+            // (it will scroll itself once populated).
+            gridScroll.scrollToBottom(animated: false)
+            return
+        }
+        guard let proxy = proxy, let id = scrollTargetID else { return }
         var transaction = Transaction()
         transaction.animation = nil
         transaction.disablesAnimations = true
@@ -872,8 +971,15 @@ struct LibraryView: View {
     /// id, so a new animation just retargets the same destination
     /// instead of stacking.
     private func scrollToBottomAnimated() {
-        guard let proxy = scrollProxy, let id = scrollTargetID, !isAtBottom, feedStartItem == nil else { return }
-        withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(id, anchor: .bottom) }
+        guard !isAtBottom, feedStartItem == nil else { return }
+        if zoom == .all {
+            // Apple Photos-parity scroll: UICollectionView's
+            // scrollToItem is a single animated pass, no
+            // ScrollViewProxy layout hop.
+            gridScroll.scrollToBottom(animated: true)
+        } else if let proxy = scrollProxy, let id = scrollTargetID {
+            withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(id, anchor: .bottom) }
+        }
     }
 
     /// Scroll to the bottom (newest) once, instantly, on first open
@@ -887,8 +993,17 @@ struct LibraryView: View {
     /// shrink it, and the once-flag is already set). The target is
     /// the last of the windowed list (see `scrollTargetID`), so the
     /// scrollTo lays out at most one window of cells.
-    private func maybeInitialScroll(_ proxy: ScrollViewProxy) {
+    private func maybeInitialScroll(_ proxy: ScrollViewProxy?) {
         guard !didInitialScroll, !allIDs.isEmpty, feedStartItem == nil else { return }
+        if zoom == .all {
+            // All Photos: the collection view scrolls itself to the
+            // bottom once its data source is populated (see
+            // PhotoGridCollectionView.Coordinator). Mark the flag so
+            // maybeScrollToNewItem starts firing; the actual scroll
+            // is the collection view's job.
+            if viewModel.allMetadataLoaded { didInitialScroll = true }
+            return
+        }
         if viewModel.allMetadataLoaded {
             // Re-anchoring after a fallback scroll: only if the user
             // is still at the bottom — the full list grew above them
@@ -911,13 +1026,22 @@ struct LibraryView: View {
     /// mid-list (and even though the import sheet was open when it
     /// landed). Only after the initial scroll — and never while the
     /// viewer or select mode is open.
-    private func maybeScrollToNewItem(_ proxy: ScrollViewProxy, oldIDs: [String], newIDs: [String]) {
+    private func maybeScrollToNewItem(_ proxy: ScrollViewProxy?, oldIDs: [String], newIDs: [String]) {
         guard (didInitialScroll || didFallbackScroll), feedStartItem == nil, !selecting else { return }
         guard zoom == .all || zoom == .days else { return }
         guard newIDs.count > oldIDs.count, let newLast = newIDs.last, newLast != oldIDs.last else { return }
         let isFreshImport = viewModel.justImportedIDs.contains(newLast)
         guard isAtBottom || isFreshImport else { return }
-        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(newLast, anchor: .bottom) }
+        if zoom == .all {
+            // UICollectionView: data source apply is animated by the
+            // diff (insert of the new last item); scrollToItem lands
+            // the user on it. Simpler than a ScrollViewProxy scroll
+            // because the target cell already exists (data source
+            // applied before this onChange handler runs).
+            gridScroll.scrollTo(id: newLast, at: .bottom, animated: true)
+        } else if let proxy = proxy {
+            withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(newLast, anchor: .bottom) }
+        }
         if isFreshImport { viewModel.clearJustImportedIDs() }
     }
 
@@ -986,7 +1110,13 @@ struct LibraryView: View {
     private var dragSelectGesture: some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard selecting else { return }
+                // Đợt 2: never runs for All Photos — the collection
+                // view's own UIPanGestureRecognizer owns drag-select
+                // there (two independent DragSelectTrackers would
+                // pin conflicting modes). The .all branch of `scroll`
+                // does not attach this gesture at all; this guard is
+                // belt-and-braces.
+                guard selecting, zoom != .all else { return }
                 selection = dragSelect.update(
                     start: value.startLocation,
                     current: value.location,
