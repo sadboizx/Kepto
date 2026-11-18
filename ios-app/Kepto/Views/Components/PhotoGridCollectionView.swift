@@ -388,7 +388,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
             guard parent.selecting, let cv = collectionView else { return }
             let location = gesture.location(in: nil) // window coords = global
-            print("[RowSelect] handlePan state=\(gesture.state.rawValue) locWindow=\(location)")
+            FileLog.log("[RowSelect] handlePan state=\(gesture.state.rawValue) locWindow=\(location)")
             switch gesture.state {
             case .began:
                 dragSelect.reset()
@@ -432,7 +432,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         private func applyRowSelect(at item: Int) {
             guard parent.columnCount > 0, item < parent.ids.count else { return }
             let row = item / parent.columnCount
-            print("[RowSelect] applyRowSelect item=\(item) row=\(row) lastRow=\(lastRowSelectRow) initial=\(rowSelectInitialSelection) columnCount=\(parent.columnCount)")
+            FileLog.log("[RowSelect] applyRowSelect item=\(item) row=\(row) lastRow=\(lastRowSelectRow) initial=\(rowSelectInitialSelection) columnCount=\(parent.columnCount)")
             guard row != lastRowSelectRow else { return }
             lastRowSelectRow = row
             var updated = parent.selectedIDs
@@ -492,7 +492,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
             // trong UIKit hierarchy). Mọi pan trên collection view
             // đều của chúng ta — không có pan khác.
             let allow = parent.selecting
-            print("[RowSelect] shouldBegin=\(allow) parent.selecting=\(parent.selecting)")
+            FileLog.log("[RowSelect] shouldBegin=\(allow) parent.selecting=\(parent.selecting)")
             return allow
         }
     }
@@ -575,6 +575,28 @@ final class GridCell: UICollectionViewCell {
             contentConfiguration = UIHostingConfiguration { content }.margins(.all, 0)
             contentView.setNeedsLayout()
             contentView.layoutIfNeeded()
+        }
+    }
+}
+
+// MARK: - File debug log (Cách 3, tạm thời)
+
+// Ghi log ra Documents/debug.log để xem trên iPhone qua Files app
+// (On My iPhone → Kepto → debug.log) — print() không xem được khi
+// không có Mac/PC. Cần UIFileSharingEnabled +
+// LSSupportsOpeningDocumentsInPlace trong Info.plist. Xoá cùng với
+// các log [Days]/[RowSelect] sau khi chẩn đoán xong.
+enum FileLog {
+    static func log(_ msg: String) {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let url = dir.appendingPathComponent("debug.log")
+        let line = "\(Date()): \(msg)\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            try? handle.seekToEndOfFile()
+            try? handle.write(line.data(using: .utf8) ?? Data())
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 }
