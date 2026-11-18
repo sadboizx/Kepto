@@ -194,7 +194,7 @@ jobs:
           {
             echo "## Signed IPA"
             echo ""
-            echo "- [Cài Kepto — bấm để cài]($PAGE_URL)"
+            echo "- [![Cài Kepto](https://img.shields.io/badge/C%C3%A0i_Kepto-0a84ff?style=for-the-badge&logo=apple)]($PAGE_URL)"
             echo "- IPA trực tiếp: $IPA_URL"
             echo "- File: \`$KEY\`"
           } >> "$GITHUB_STEP_SUMMARY"
