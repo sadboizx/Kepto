@@ -1,7 +1,7 @@
 name: Build IPA (unsigned)
 
 # Build Kepto thành .ipa, ký bằng cert trong repo (signer/certificate/),
-# rồi đẩy IPA đã ký lên R2 và trả link tải tạm. Không qua Signed releases.
+# rồi đẩy IPA đã ký lên R2 và trả link tải. Không qua Signed releases.
 # Không PPQ Protection: bundle id giữ nguyên com.sadboizx.kepto (signer
 # giữ id gốc của app, không đổi sang id của profile). Lưu ý: với profile
 # explicit và không PPQ, Share Extension (PlugIns) sẽ bị bỏ.
@@ -9,9 +9,18 @@ name: Build IPA (unsigned)
 # Cách chạy: tab Actions → "Build IPA (unsigned)" → Run workflow, hoặc push
 # code trong ios-app/** (tự build + ký). Không dùng App Store.
 #
-# Kết quả: link CÀI TRỰC TIẾP (itms-services, bấm là cài — không cần Feather)
-# + link tải IPA đã ký, cả hai in trong job summary, hết hạn sau 7 ngày;
-# bản chưa ký vẫn lưu artifact Kepto-unsigned 30 ngày.
+# Kết quả: một TRANG CÀI ĐẶT (install.html trên R2) — link https hiện đúng
+# trong job summary, mở bằng Safari rồi bấm nút "Cài Kepto" là iOS hiện
+# bảng cài đặt, không cần Feather. Kèm link tải IPA trực tiếp.
+# VÌ SAO KHÔNG DÙNG PRESIGNED URL NỮA (v3): GitHub che secret trong job
+# summary — access key trong presigned URL thành *** nên chữ ký hỏng, bấm
+# vào là lỗi 403; và GitHub cũng lược bỏ link itms-services:// khỏi
+# summary nên dòng "bấm để cài" chỉ còn là chữ thường, không bấm được.
+# Vì vậy v4 dùng URL public của bucket (không có chữ ký, không secret
+# trong link) và đặt nút cài thật vào trong trang HTML.
+# Hệ quả: ai có link cũng tải được IPA (giống model Signed releases
+# public trước đây); file không tự hết hạn sau 7 ngày nữa — muốn xóa thì
+# xóa tay trong bucket.
 #
 # Cần có trong repo Kepto trước khi chạy:
 #   signer/certificate/cert.p12
@@ -20,7 +29,11 @@ name: Build IPA (unsigned)
 # Secret cần có trong repo Kepto (Settings → Secrets → Actions):
 #   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
 #   (tạo R2 API token trong Cloudflare dashboard, quyền Object Read & Write
-#   trên bucket; không cần bucket public vì dùng presigned URL)
+#   trên bucket)
+#   R2_PUBLIC_BASE                       (URL public của bucket, vd
+#   https://pub-xxxx.r2.dev — bật trong Cloudflare dashboard → R2 →
+#   bucket → Settings → Public URL (r2.dev) → Allow Access, rồi copy URL
+#   đó vào secret này. Chỉ cần làm một lần.)
 
 on:
   workflow_dispatch:
@@ -109,29 +122,37 @@ jobs:
           echo "SIGNED_IPA=$SIGNED_IPA" >> "$GITHUB_ENV"
           ls -lh "$SIGNED_IPA"
 
-      # 4. UPLOAD R2 + LINK CÀI TRỰC TIẾP: đẩy IPA đã ký lên R2, sinh
-      # manifest OTA (.plist) từ signer/ipa.py, đẩy manifest lên R2, rồi
-      # in link itms-services ra job summary — bấm link là iOS hiện bảng
-      # cài đặt, không cần Feather, không cần máy tính. aws cli có sẵn
-      # trên máy macOS. Không cần bucket public vì dùng presigned URL
-      # (cả IPA và manifest đều hết hạn sau 7 ngày).
+      # 4. UPLOAD R2 + TRANG CÀI ĐẶT: đẩy IPA đã ký + manifest OTA +
+      # trang install.html lên R2, dùng URL public của bucket (không
+      # presigned). Trang install.html chứa nút Cài Kepto thật (link
+      # itms-services trong HTML thường thì iOS xử lý được — chỉ có
+      # GitHub summary mới lược nó). aws cli có sẵn trên máy macOS.
       - name: Upload signed IPA to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
         run: |
           set -euo pipefail
+          if [ -z "${R2_PUBLIC_BASE:-}" ]; then
+            echo "::error::Thiếu secret R2_PUBLIC_BASE. Bật URL public của bucket trước: Cloudflare dashboard → R2 → bucket → Settings → Public URL (r2.dev) → Allow Access, rồi thêm secret R2_PUBLIC_BASE = URL đó (vd https://pub-xxxx.r2.dev)."
+            exit 1
+          fi
           TS="$(date +%Y%m%d-%H%M%S)"
           KEY="kepto-signed/Kepto-$TS.ipa"
           MKEY="kepto-signed/Kepto-$TS.plist"
+          IKEY="kepto-signed/install-$TS.html"
+          BASE="${R2_PUBLIC_BASE%/}"
+          IPA_URL="$BASE/$KEY"
+          MURL="$BASE/$MKEY"
+          PAGE_URL="$BASE/$IKEY"
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           aws s3 cp "$SIGNED_IPA" "s3://${R2_BUCKET}/${KEY}" --endpoint-url "$ENDPOINT"
-          URL="$(aws s3 presign "s3://${R2_BUCKET}/${KEY}" --endpoint-url "$ENDPOINT" --expires-in 604800)"
           # Manifest OTA: đọc bundle id / version / tên từ Info.plist
-          # trong IPA đã ký, nhúng link IPA (presigned) vào manifest.
-          python3 - "$SIGNED_IPA" "$URL" manifest.plist <<'EOF'
+          # trong IPA đã ký, nhúng link IPA (public) vào manifest.
+          python3 - "$SIGNED_IPA" "$IPA_URL" manifest.plist <<'EOF'
           import plistlib, sys, zipfile
           from signer.ipa import manifest
           ipa_path, ipa_url, out = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -145,18 +166,41 @@ jobs:
           print(f"manifest: {bundle_id} {version} {title}")
           EOF
           aws s3 cp manifest.plist "s3://${R2_BUCKET}/${MKEY}" --endpoint-url "$ENDPOINT" --content-type "application/x-plist"
-          MURL="$(aws s3 presign "s3://${R2_BUCKET}/${MKEY}" --endpoint-url "$ENDPOINT" --expires-in 604800)"
           ENC="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$MURL")"
           INSTALL="itms-services://?action=download-manifest&url=$ENC"
+          # Trang cài đặt: nút bấm thật nằm trong HTML, mở bằng Safari.
+          python3 - "$INSTALL" "$IPA_URL" <<'EOF'
+          import sys
+          install_url, ipa_url = sys.argv[1], sys.argv[2]
+          html = f"""<!doctype html>
+          <html lang="vi">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Cài Kepto</title>
+          </head>
+          <body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;text-align:center;padding:64px 20px">
+          <h1 style="font-size:28px;margin:0 0 8px">Kepto</h1>
+          <p style="color:#aaa;margin:0 0 32px">Bấm nút bên dưới để cài đặt.</p>
+          <a href="{install_url}" style="display:inline-block;padding:16px 36px;background:#0a84ff;color:#fff;border-radius:14px;text-decoration:none;font-size:20px;font-weight:600">Cài Kepto</a>
+          <p style="margin-top:28px"><a href="{ipa_url}" style="color:#0a84ff">Tải file IPA trực tiếp</a> (mở bằng Feather nếu cần)</p>
+          <p style="color:#888;font-size:13px;margin-top:28px">Nếu hiện "Untrusted Developer": Cài đặt → Cài đặt chung → VPN &amp; Quản lý thiết bị → tin cậy chứng chỉ.</p>
+          </body>
+          </html>
+          """
+          open("install.html", "w", encoding="utf-8").write(html)
+          EOF
+          aws s3 cp install.html "s3://${R2_BUCKET}/${IKEY}" --endpoint-url "$ENDPOINT" --content-type "text/html"
           {
             echo "## Signed IPA"
             echo ""
-            echo "- [Cài Kepto — bấm để cài]($INSTALL)"
-            echo "- IPA trực tiếp (hết hạn sau 7 ngày): $URL"
+            echo "- [Cài Kepto — bấm để cài]($PAGE_URL)"
+            echo "- IPA trực tiếp: $IPA_URL"
             echo "- File: \`$KEY\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "SIGNED_URL=$URL" >> "$GITHUB_ENV"
+          echo "SIGNED_URL=$IPA_URL" >> "$GITHUB_ENV"
           echo "INSTALL_URL=$INSTALL" >> "$GITHUB_ENV"
+          echo "INSTALL_PAGE_URL=$PAGE_URL" >> "$GITHUB_ENV"
 
       - name: Upload build log (on failure)
         if: failure()
