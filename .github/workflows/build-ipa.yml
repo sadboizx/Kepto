@@ -3,7 +3,8 @@ name: Build IPA (unsigned)
 # Build Kepto thành .ipa, ký bằng cert trong repo (signer/certificate/),
 # rồi đẩy IPA đã ký lên R2 và trả link tải tạm. Không qua Signed releases.
 # Không PPQ Protection: bundle id giữ nguyên com.sadboizx.kepto (signer
-# sẽ dừng lại nếu profile không cấp cho đúng bundle id đó).
+# giữ id gốc của app, không đổi sang id của profile). Lưu ý: với profile
+# explicit và không PPQ, Share Extension (PlugIns) sẽ bị bỏ.
 #
 # Cách chạy: tab Actions → "Build IPA (unsigned)" → Run workflow, hoặc push
 # code trong ios-app/** (tự build + ký). Không dùng App Store.
@@ -96,9 +97,9 @@ jobs:
           retention-days: 30
 
       # 3. SIGN: ký IPA vừa build bằng cert trong signer/certificate/
-      # (cert.p12 + cert.mobileprovision + cert.txt). Không PPQ Protection:
-      # bundle id giữ nguyên com.sadboizx.kepto; nếu profile không cấp cho
-      # đúng bundle id đó thì bước này dừng lại và báo lỗi rõ ràng.
+      # (cert.p12 + cert.mobileprovision + cert.txt). Không PPQ: bundle id
+      # giữ nguyên com.sadboizx.kepto; nếu app không giữ được đúng id đó
+      # thì bước này dừng lại và báo lỗi rõ ràng.
       - name: Sign IPA
         run: |
           set -euo pipefail
