@@ -1,61 +1,59 @@
-"""Sign one IPA with one pool certificate — no releases, no site.
+"""Sign one IPA with one certificate from the repository — no releases,
+no site, no PPQ Protection.
 
-Run from the repository root (where cert-url.txt lives):
+Run from the repository root:
 
-    python3 -m signer.sign_one --ipa Kepto-unsigned.ipa \
-        --cert Chengdu-Railway-Bureau --out signed
+    python3 -m signer.sign_one --ipa Kepto-unsigned.ipa --out signed
 
-The certificate is fetched from the NexCerts pool (cert-url.txt) exactly
-like the SideInstaller signer does. The signed IPA is written to
-<out>/kepto-<slug>.ipa. PPQ Protection uses the same suffix formula as
-signer.sync.ppq_suffix ("kepto:<display name>"), so the app keeps its own
-bundle id plus a per-pair suffix. No signing-assets embed (that is
+The certificate comes from signer/certificate/ in this repository (upload
+it there first):
+
+    signer/certificate/cert.p12
+    signer/certificate/cert.mobileprovision
+    signer/certificate/cert.txt          # the .p12 password (may be empty)
+
+The app keeps its own bundle id (com.sadboizx.kepto): the signer refuses
+to run when the profile authorizes a different id, instead of suffixing
+it the way the pool pipeline does. No signing-assets embed (that is
 Feather/Ksign only).
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 
-from . import certs, codesign, pool
-from .util import CommandError, Fatal, HTTPFailure, error, http_get, log, safe_name
+from . import certs, codesign
+from .certs import CertError
+from .util import CommandError, Fatal, HTTPFailure, error, http_get, log
 
 
-def ppq_suffix(app_id: str, display_name: str) -> str:
-    """Same formula as signer.sync.ppq_suffix."""
-    return hashlib.sha256(f"{app_id}:{display_name}".encode()).hexdigest()[:6]
-
-
-def sign_one(root: Path, unsigned_ipa: Path, cert_slug: str, out_dir: Path,
-             workdir: Path, app_id: str = "kepto") -> Path:
-    name = safe_name(cert_slug)
-    fetched = pool.fetch(root, workdir / "pool")
-    entry = fetched.entries.get(name)
-    if entry is None:
-        raise Fatal(f"certificate {cert_slug!r} is not in the pool "
-                    f"({len(fetched.entries)} entries)")
-    if entry.problem:
-        raise Fatal(f"certificate {entry.display_name}: {entry.problem}")
-    if entry.profile is None:
-        raise Fatal(f"certificate {entry.display_name} has no provisioning profile")
-    cert = certs.read_p12(entry.p12, entry.password)
-    profile = certs.read_profile(entry.profile)
-    log(f"Signing with {entry.display_name} (expires {cert.not_after.date()}, "
-        f"fingerprint {cert.fingerprint[:8]}...)")
+def sign_one(root: Path, unsigned_ipa: Path, out_dir: Path, workdir: Path,
+             cert_dir: Path | None = None, app_id: str = "kepto") -> Path:
+    cert_dir = cert_dir or root / "signer" / "certificate"
+    p12 = cert_dir / "cert.p12"
+    profile_path = cert_dir / "cert.mobileprovision"
+    missing = [p.name for p in (p12, profile_path) if not p.is_file()]
+    if missing:
+        raise Fatal(f"missing {', '.join(missing)} in {cert_dir} — upload "
+                    "cert.p12, cert.mobileprovision and cert.txt there first")
+    pw_file = cert_dir / "cert.txt"
+    password = pw_file.read_text(encoding="utf-8", errors="replace").strip() \
+        if pw_file.is_file() else ""
+    cert = certs.read_p12(p12, password)
+    profile = certs.read_profile(profile_path)
+    log(f"Signing with {cert.common_name} (expires {cert.not_after.date()}, "
+        f"profile {profile.name}, fingerprint {cert.fingerprint[:8]}...)")
     issuers: list[bytes] = []
     if cert.issuer_url:
         try:
             issuers.append(http_get(cert.issuer_url, timeout=20))
         except HTTPFailure as exc:
             log(f"Could not fetch issuer certificate: {exc}")
-    job = codesign.Job(name, entry.p12, entry.password, entry.profile, profile,
-                       cert.fingerprint,
-                       ppq_suffix=ppq_suffix(app_id, entry.display_name),
-                       embed=False)
+    job = codesign.Job("signed", p12, password, profile_path, profile,
+                       cert.fingerprint, ppq_suffix="", embed=False)
     out_dir.mkdir(parents=True, exist_ok=True)
     signdir = workdir / "sign"
     shutil.rmtree(signdir, ignore_errors=True)
@@ -63,9 +61,13 @@ def sign_one(root: Path, unsigned_ipa: Path, cert_slug: str, out_dir: Path,
     with codesign.Keychain(signdir) as keychain:
         usable = codesign.prepare_keychain(keychain, [job], issuers, signdir / "keychain")
         if job.fingerprint not in usable:
-            raise Fatal(f"certificate {entry.display_name} could not be loaded "
-                        "into the keychain")
+            raise Fatal("the certificate could not be loaded into the keychain")
         signer = codesign.Signer(unsigned_ipa, signdir, keychain)
+        bundle_id = signer.target_bundle_id(job)
+        if bundle_id != signer.info["bundle_id"]:
+            raise Fatal(f"the profile authorizes {bundle_id}, not "
+                        f"{signer.info['bundle_id']} — upload a provisioning "
+                        "profile for the app's bundle id")
         result = signer.sign(job, out_dir, app_id)
     if not result.ok:
         raise Fatal(f"signing failed: {result.error}")
@@ -80,20 +82,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m signer.sign_one",
                                      description=__doc__)
     parser.add_argument("--ipa", type=Path, required=True, help="unsigned .ipa")
-    parser.add_argument("--cert", required=True, help="certificate slug from pool.json")
     parser.add_argument("--out", type=Path, default=Path("signed"),
                         help="output directory (default: signed)")
+    parser.add_argument("--cert-dir", type=Path, default=None,
+                        help="folder with cert.p12, cert.mobileprovision, cert.txt "
+                             "(default: <root>/signer/certificate)")
     parser.add_argument("--root", type=Path, default=Path.cwd(),
-                        help="repository root holding cert-url.txt (default: cwd)")
+                        help="repository root (default: cwd)")
     parser.add_argument("--workdir", type=Path,
                         default=Path(tempfile.gettempdir()) / "signer-sign-one",
                         help="scratch space")
     parser.add_argument("--app-id", default="kepto",
-                        help="app id for the PPQ suffix (default: kepto)")
+                        help="prefix of the signed IPA name (default: kepto)")
     args = parser.parse_args(argv)
     try:
-        out = sign_one(args.root, args.ipa, args.cert, args.out, args.workdir, args.app_id)
-    except (Fatal, HTTPFailure, CommandError) as exc:
+        out = sign_one(args.root, args.ipa, args.out, args.workdir, args.cert_dir, args.app_id)
+    except (Fatal, CertError, HTTPFailure, CommandError) as exc:
         error(str(exc))
         return 1
     print(out)
