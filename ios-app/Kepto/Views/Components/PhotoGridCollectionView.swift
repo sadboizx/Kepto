@@ -341,6 +341,8 @@ struct PhotoGridCollectionView: UIViewRepresentable {
             // a scrolled cell gets a negative y exactly like before.
             let frameInWindow = cv.convert(attrs.frame, to: nil)
             parent.frameCache.set(id, frameInWindow)
+            // [Thumb] chẩn đoán zoom: khung cell lúc sắp hiện.
+            FileLog.log("[Thumb] willDisplay id=\(id) frame=\(Int(attrs.frame.width))x\(Int(attrs.frame.height)) winY=\(Int(frameInWindow.origin.y))")
 
             // Paged `items` preload: the old trigger was
             // gridCell.onAppear → maybeLoadMore, which never runs for
@@ -516,6 +518,8 @@ final class NoAnimationCollectionView: UICollectionView {
 final class GridCell: UICollectionViewCell {
     static let reuseID = "GridCell"
     private(set) var id: String?
+    // [Thumb] chẩn đoán zoom: kích thước bounds lần cuối đã log.
+    private var lastLoggedSize: CGSize = .zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -543,6 +547,9 @@ final class GridCell: UICollectionViewCell {
         _ layoutAttributes: UICollectionViewLayoutAttributes
     ) -> UICollectionViewLayoutAttributes {
         let attrs = super.preferredLayoutAttributesFitting(layoutAttributes)
+        if attrs.size != layoutAttributes.size {
+            FileLog.log("[Thumb] fitting id=\(id ?? "?") in=\(Int(layoutAttributes.size.width))x\(Int(layoutAttributes.size.height)) out=\(Int(attrs.size.width))x\(Int(attrs.size.height))")
+        }
         attrs.frame = layoutAttributes.frame
         attrs.size = layoutAttributes.size
         return attrs
@@ -550,6 +557,13 @@ final class GridCell: UICollectionViewCell {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        // [Thumb] chẩn đoán zoom: chỉ log khi bounds đổi — nếu
+        // khung nở dần trong lúc cuộn thì đây là bằng chứng
+        // layout/self-sizing đang animate khung cell.
+        if bounds.size != lastLoggedSize {
+            FileLog.log("[Thumb] layout id=\(id ?? "?") bounds=\(Int(bounds.width))x\(Int(bounds.height)) content=\(Int(contentView.frame.width))x\(Int(contentView.frame.height))")
+            lastLoggedSize = bounds.size
+        }
         // contentView phải luôn full cell bounds, không animate
         // (contentView tự resize khi cell bounds đổi, bên trong
         // scroll animation context — đây là nguồn zoom thứ hai).
@@ -565,6 +579,7 @@ final class GridCell: UICollectionViewCell {
         // Clear bất kỳ animation nào còn active từ cell cũ.
         contentView.layer.removeAllAnimations()
         layer.removeAllAnimations()
+        lastLoggedSize = .zero
     }
 
     func configure(
@@ -577,6 +592,8 @@ final class GridCell: UICollectionViewCell {
         contextMenu: AnyView
     ) {
         self.id = id
+        // [Thumb] chẩn đoán zoom: khung cell lúc configure.
+        FileLog.log("[Thumb] configure id=\(id) bounds=\(Int(bounds.width))x\(Int(bounds.height)) content=\(Int(contentView.frame.width))x\(Int(contentView.frame.height))")
         let content: AnyView
         if let source {
             // Không gắn contextMenu trong select mode — long-press
