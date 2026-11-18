@@ -1,0 +1,7 @@
+# Certificate pool for the SideInstaller site: NexCerts only.
+#
+# The signer (python3 -m signer sync) fetches this list on every run and
+# publishes pool.json for the website from it. A list request that fails,
+# or an empty list, is never published, so an API hiccup can never empty
+# the site's picker.
+https://sideloading.net
