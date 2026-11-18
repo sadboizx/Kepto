@@ -675,8 +675,6 @@ struct LibraryView: View {
     }
 
     private var daysGrid: some View {
-        // DEBUG — xoá sau khi xác định nguyên nhân.
-        FileLog.log("[Days] windowedDays=\(windowedDays.count) days=\(days.count) cachedDayGroups=\(viewModel.cachedDayGroups.count) items=\(viewModel.items.count) allMetadata=\(viewModel.allMetadata.count) allMetadataLoaded=\(viewModel.allMetadataLoaded) scrollViewport=\(scrollViewport) dayColumns=\(dayColumns)")
         return VStack(spacing: 0) {
             if windowedDays.isEmpty && !viewModel.isLoading {
                 ContentUnavailableView {

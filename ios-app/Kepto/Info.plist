@@ -17,13 +17,5 @@
 			</array>
 		</dict>
 	</array>
-	<!-- File sharing (Cách 3, tạm thời): để Documents/debug.log hiện
-	     trong Files app (On My iPhone → Kepto) — xem log [Days] /
-	     [RowSelect] khi không có Mac/PC. Xoá cùng với FileLog sau
-	     khi chẩn đoán xong. -->
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
 </dict>
 </plist>

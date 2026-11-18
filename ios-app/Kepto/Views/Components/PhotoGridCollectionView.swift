@@ -341,8 +341,6 @@ struct PhotoGridCollectionView: UIViewRepresentable {
             // a scrolled cell gets a negative y exactly like before.
             let frameInWindow = cv.convert(attrs.frame, to: nil)
             parent.frameCache.set(id, frameInWindow)
-            // [Thumb] chẩn đoán zoom: khung cell lúc sắp hiện.
-            FileLog.log("[Thumb] willDisplay id=\(id) frame=\(Int(attrs.frame.width))x\(Int(attrs.frame.height)) winY=\(Int(frameInWindow.origin.y))")
 
             // Paged `items` preload: the old trigger was
             // gridCell.onAppear → maybeLoadMore, which never runs for
@@ -490,7 +488,6 @@ struct PhotoGridCollectionView: UIViewRepresentable {
             // trong UIKit hierarchy). Mọi pan trên collection view
             // đều của chúng ta — không có pan khác.
             let allow = parent.selecting
-            FileLog.log("[RowSelect] shouldBegin=\(allow) parent.selecting=\(parent.selecting)")
             return allow
         }
     }
@@ -518,69 +515,64 @@ final class NoAnimationCollectionView: UICollectionView {
 final class GridCell: UICollectionViewCell {
     static let reuseID = "GridCell"
     private(set) var id: String?
-    // [Thumb] chẩn đoán zoom: kích thước bounds lần cuối đã log.
-    private var lastLoggedSize: CGSize = .zero
+
+    // Dùng UIHostingController thay vì UIHostingConfiguration.
+    // UIHostingConfiguration tự tạo một hosting view bên trong và
+    // UIKit có thể animate kích thước của nó khi cell được reuse
+    // (gây hiệu ứng zoom khi cuộn). Tự quản lý hosting controller
+    // cho phép ta tắt hoàn toàn animation khi thêm view vào hierarchy.
+    private let hostingController = UIHostingController(rootView: AnyView(EmptyView()))
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        // Zero insets để UIHostingConfiguration không tự cộng
-        // margin theo contentView.layoutMargins của cell cũ khi
-        // reuse — nguyên nhân phụ của hiệu ứng scale khi cuộn.
+
+        // Cấu hình contentView để không có margin, không clip
         contentView.directionalLayoutMargins = .zero
         contentView.layoutMargins = .zero
         contentView.insetsLayoutMarginsFromSafeArea = false
         contentView.clipsToBounds = true
         contentView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+
+        // Thêm hosting view vào contentView
+        hostingController.view.backgroundColor = .clear
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = true
+        hostingController.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        hostingController.view.frame = contentView.bounds
+
+        // Bọc addSubview trong performWithoutAnimation để chặn
+        // animation từ lúc view được thêm vào hierarchy.
+        UIView.performWithoutAnimation {
+            contentView.addSubview(hostingController.view)
+        }
+
+        // Kích hoạt hosting controller (cần parent view controller
+        // cho SwiftUI environment, nhưng ở đây chỉ cần view).
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Tắt self-sizing của UIHostingConfiguration: compositional
-    /// layout đã set frame tuyệt đối (`.absolute(cellWidth)`),
-    /// nhưng hosting controller vẫn có thể báo preferred size
-    /// khác (nhỏ hơn) khi cell mới dequeue (cell bounds còn zero).
-    /// UIKit layout cell với size nhỏ đó, rồi layout pass sau
-    /// mới ép size đúng — animate bên trong scroll context. Trả
-    /// về đúng frame của compositional layout để cell luôn có
-    /// bounds đúng ngay từ đầu.
-    override func preferredLayoutAttributesFitting(
-        _ layoutAttributes: UICollectionViewLayoutAttributes
-    ) -> UICollectionViewLayoutAttributes {
-        let attrs = super.preferredLayoutAttributesFitting(layoutAttributes)
-        if attrs.size != layoutAttributes.size {
-            FileLog.log("[Thumb] fitting id=\(id ?? "?") in=\(Int(layoutAttributes.size.width))x\(Int(layoutAttributes.size.height)) out=\(Int(attrs.size.width))x\(Int(attrs.size.height))")
-        }
-        attrs.frame = layoutAttributes.frame
-        attrs.size = layoutAttributes.size
-        return attrs
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        contentView.layer.removeAllAnimations()
+        layer.removeAllAnimations()
+        hostingController.view.layer.removeAllAnimations()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // [Thumb] chẩn đoán zoom: chỉ log khi bounds đổi — nếu
-        // khung nở dần trong lúc cuộn thì đây là bằng chứng
-        // layout/self-sizing đang animate khung cell.
-        if bounds.size != lastLoggedSize {
-            FileLog.log("[Thumb] layout id=\(id ?? "?") bounds=\(Int(bounds.width))x\(Int(bounds.height)) content=\(Int(contentView.frame.width))x\(Int(contentView.frame.height))")
-            lastLoggedSize = bounds.size
-        }
-        // contentView phải luôn full cell bounds, không animate
-        // (contentView tự resize khi cell bounds đổi, bên trong
-        // scroll animation context — đây là nguồn zoom thứ hai).
+        // Đảm bảo hosting view luôn fill contentView, không animation.
         UIView.performWithoutAnimation {
             if contentView.frame != bounds {
                 contentView.frame = bounds
             }
+            if hostingController.view.frame != contentView.bounds {
+                hostingController.view.frame = contentView.bounds
+            }
         }
     }
 
-    override func prepareForReuse() {
-        super.prepareForReuse()
-        // Clear bất kỳ animation nào còn active từ cell cũ.
-        contentView.layer.removeAllAnimations()
-        layer.removeAllAnimations()
-        lastLoggedSize = .zero
-    }
+    // Không cần override preferredLayoutAttributesFitting vì
+    // compositional layout đã cung cấp kích thước tuyệt đối.
 
     func configure(
         id: String,
@@ -592,23 +584,16 @@ final class GridCell: UICollectionViewCell {
         contextMenu: AnyView
     ) {
         self.id = id
-        // [Thumb] chẩn đoán zoom: khung cell lúc configure.
-        FileLog.log("[Thumb] configure id=\(id) bounds=\(Int(bounds.width))x\(Int(bounds.height)) content=\(Int(contentView.frame.width))x\(Int(contentView.frame.height))")
+
         let content: AnyView
         if let source {
-            // Không gắn contextMenu trong select mode — long-press
-            // (dù menu rỗng) vẫn attach UILongPressGestureRecognizer
-            // và ăn mất pan row-select. Trong select mode chỉ có
-            // tap + pan, không có long-press.
             let base = AssetThumbnail(source: source, selecting: selecting, selected: selected)
                 .environmentObject(viewModel)
                 .id(source.id)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onTap)
-                // Tắt hoàn toàn animation bên trong SwiftUI view —
-                // tránh hiệu ứng zoom nếu SwiftUI đang animate
-                // kích thước khi cell vừa được dequeue.
                 .transaction { $0.disablesAnimations = true }
+
             content = selecting
                 ? AnyView(base)
                 : AnyView(base.contextMenu { contextMenu })
@@ -618,44 +603,12 @@ final class GridCell: UICollectionViewCell {
                     .aspectRatio(1, contentMode: .fit)
             )
         }
-        // Đợt 2 fix (thử): UIHostingConfiguration mặc định inset
-        // content theo layoutMargins của cell — thumbnail bị nhỏ
-        // lại + lề so với LazyVGrid trước đây. Ép margins về 0 để
-        // thumbnail tràn đúng cell như Apple Photos. Nếu không phải
-        // nguyên nhân thì đây là no-op, sẽ loại trừ hướng này.
-        // Wrap in performWithoutAnimation: UIHostingConfiguration
-        // proposes zero (or the old cell's size) first, then the
-        // real cell bounds — UIKit animates that size change inside
-        // the scroll view's animation context (the "zoom while
-        // scrolling" effect). Disabling animation around the
-        // assignment makes the hosted view render at its final
-        // size on the first frame, no scale-in.
+
+        // Cập nhật rootView của hosting controller, không animation.
         UIView.performWithoutAnimation {
-            contentConfiguration = UIHostingConfiguration { content }.margins(.all, 0)
-            contentView.setNeedsLayout()
-            contentView.layoutIfNeeded()
-        }
-    }
-}
-
-// MARK: - File debug log (Cách 3, tạm thời)
-
-// Ghi log ra Documents/debug.log để xem trên iPhone qua Files app
-// (On My iPhone → Kepto → debug.log) — print() không xem được khi
-// không có Mac/PC. Cần UIFileSharingEnabled +
-// LSSupportsOpeningDocumentsInPlace trong Info.plist. Xoá cùng với
-// các log [Days]/[RowSelect] sau khi chẩn đoán xong.
-enum FileLog {
-    static func log(_ msg: String) {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let url = dir.appendingPathComponent("debug.log")
-        let line = "\(Date()): \(msg)\n"
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            try? handle.seekToEndOfFile()
-            try? handle.write(line.data(using: .utf8) ?? Data())
-        } else {
-            try? line.write(to: url, atomically: true, encoding: .utf8)
+            hostingController.rootView = content
+            hostingController.view.setNeedsLayout()
+            hostingController.view.layoutIfNeeded()
         }
     }
 }
