@@ -226,3 +226,29 @@ struct AssetThumbnail: View {
         }
     }
 }
+
+extension AssetThumbnail: Equatable {
+    /// Hot-path fix: when the parent's state changes (selection,
+    /// metadata refresh, window growth), SwiftUI skips body
+    /// evaluation for cells whose inputs did not change. Compares
+    /// the `source` fields one by one — never the `source`
+    /// existential itself — plus the cell's own props. If a new
+    /// UI-affecting prop is added to this view or to
+    /// `GridItemSource`, it MUST be added here or the cell goes
+    /// stale.
+    static func == (lhs: AssetThumbnail, rhs: AssetThumbnail) -> Bool {
+        lhs.source.id == rhs.source.id
+            && lhs.source.isFavorite == rhs.source.isFavorite
+            && lhs.source.isPending == rhs.source.isPending
+            && lhs.source.isFailed == rhs.source.isFailed
+            && lhs.source.isPhoto == rhs.source.isPhoto
+            && lhs.source.uploadProgress == rhs.source.uploadProgress
+            && lhs.source.durationText == rhs.source.durationText
+            && lhs.source.viewCountText == rhs.source.viewCountText
+            && lhs.selecting == rhs.selecting
+            && lhs.selected == rhs.selected
+            && lhs.cornerRadius == rhs.cornerRadius
+            && lhs.showBadge == rhs.showBadge
+            && lhs.showFavoriteMark == rhs.showFavoriteMark
+    }
+}

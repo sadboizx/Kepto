@@ -15,24 +15,46 @@ import UniformTypeIdentifiers
 /// shrink-to-thumbnail dismiss: when the viewer opens from a cell,
 /// the opener reads that cell's frame from here and hands it to the
 /// viewer, which shrinks the media onto it on a dismissing release.
-/// A plain class, NOT @State: the preference below fires on every
+/// A plain class, NOT @State: cells write their frame on every
 /// scroll frame (every visible cell's frame changes as it scrolls),
 /// and those writes must not re-render the grid — the viewer only
-/// reads the tapped cell's frame at tap time. Stale entries (cells
-/// scrolled away or deleted) are harmless: they are never read.
+/// reads the tapped cell's frame at tap time. Writes go through
+/// `set` (lock + dict write, no SwiftUI preference propagation —
+/// the old `CellFramePreferenceKey` walked the whole view tree on
+/// every scroll frame). Stale entries (cells scrolled away or
+/// deleted) are harmless: they are never read. Direct `frames`
+/// reads stay main-thread-only, as before; `set`/`get`/`prune`/
+/// `reset` take the lock.
 final class CellFrameCache {
     var frames: [String: CGRect] = [:]
-}
+    private let lock = NSLock()
 
-/// One preference per grid cell: its id + its frame in global
-/// (screen) coordinates. The grid merges them into the
-/// `CellFrameCache` above via `.onPreferenceChange`. The viewer's
-/// page is full-screen, so a global frame is directly comparable
-/// with the media's on-screen position.
-struct CellFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue()) { _, new in new }
+    func set(_ id: String, _ frame: CGRect) {
+        lock.lock()
+        frames[id] = frame
+        lock.unlock()
+    }
+
+    func get(_ id: String) -> CGRect? {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames[id]
+    }
+
+    /// Drop entries whose IDs are no longer in the visible window.
+    /// Call after the rendered window grows or after large `items`
+    /// mutations, so the cache cannot grow unbounded on a 10k+
+    /// library.
+    func prune(keeping ids: Set<String>) {
+        lock.lock()
+        frames = frames.filter { ids.contains($0.key) }
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        frames.removeAll()
+        lock.unlock()
     }
 }
 

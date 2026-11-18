@@ -88,8 +88,8 @@ struct LibraryView: View {
     /// onto it on release. Read from `cellFrameCache` at tap time.
     @State private var feedStartFrame: CGRect?
     /// Live cache of grid-cell global frames (see
-    /// `CellFrameCache`): written by the cells' preference, read
-    /// only when a cell is tapped.
+    /// `CellFrameCache`): written directly by the cells (no
+    /// PreferenceKey), read only when a cell is tapped.
     @State private var cellFrameCache = CellFrameCache()
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
@@ -432,12 +432,26 @@ struct LibraryView: View {
         }
     }
 
+    /// Fixed-width columns (hot-path fix): `.flexible()` re-measures
+    /// every layout pass and rounds sub-pixel widths differently per
+    /// row, causing 0.5px jitter while scrolling. `.fixed(floor(...))`
+    /// makes every cell an integer-pixel width. While the viewport is
+    /// still zero (first layout, before `.onGeometryChange` fires)
+    /// fall back to `.flexible()`. Column counts unchanged.
+    private func fixedColumns(count: Int, width: CGFloat) -> [GridItem] {
+        guard width > 0 else {
+            return Array(repeating: GridItem(.flexible(), spacing: 2), count: count)
+        }
+        let itemWidth = floor((width - 2 * CGFloat(count - 1)) / CGFloat(count))
+        return Array(repeating: GridItem(.fixed(itemWidth), spacing: 2), count: count)
+    }
+
     private var dayColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 2), count: sizeClass == .regular ? 5 : 3)
+        fixedColumns(count: sizeClass == .regular ? 5 : 3, width: scrollViewport.width)
     }
 
     private var allColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 2), count: sizeClass == .regular ? 8 : 4)
+        fixedColumns(count: sizeClass == .regular ? 8 : 4, width: scrollViewport.width)
     }
 
     private var scroll: some View {
@@ -489,12 +503,6 @@ struct LibraryView: View {
             .background(Color(uiColor: .systemBackground))
             .simultaneousGesture(pinch)
             .simultaneousGesture(dragSelectGesture)
-            // The cells report their global frames (see `gridCell`):
-            // keep them in the cache so a tap can hand the tapped cell's
-            // frame to the viewer for its shrink-to-thumbnail dismiss.
-            .onPreferenceChange(CellFramePreferenceKey.self) { frames in
-                cellFrameCache.frames.merge(frames) { _, new in new }
-            }
             .animation(.spring(response: 0.38, dampingFraction: 0.88), value: zoom)
             .onAppear {
                 scrollProxy = proxy
@@ -654,12 +662,18 @@ struct LibraryView: View {
             }
         }
         // Report this cell's global frame for the viewer's
-        // shrink-to-thumbnail dismiss (see `CellFramePreferenceKey`):
-        // the frame is read from the cache at tap time, so the viewer
-        // knows where its media must land on release.
+        // shrink-to-thumbnail dismiss: written straight into the
+        // cache (no PreferenceKey — preference propagation on every
+        // scroll frame was a top drop-frame source). The frame is
+        // read from the cache at tap time, so the viewer knows where
+        // its media must land on release.
         .background(
             GeometryReader { geo in
-                Color.clear.preference(key: CellFramePreferenceKey.self, value: [id: geo.frame(in: .global)])
+                Color.clear
+                    .onAppear { cellFrameCache.set(id, geo.frame(in: .global)) }
+                    .onChange(of: geo.frame(in: .global)) { _, newFrame in
+                        cellFrameCache.set(id, newFrame)
+                    }
             }
         )
         .onAppear {
@@ -811,6 +825,12 @@ struct LibraryView: View {
         guard windowTop > 0, index <= windowTop + 10 else { return }
         guard let proxy = scrollProxy else { return }
         visibleWindow += 120
+        // Prune stale cell frames (hot-path fix): the cache only
+        // needs the frames of the cells the grids currently render
+        // (All Photos window + Days window).
+        var keep = Set(windowedAllIDs)
+        keep.formUnion(windowedDays.flatMap(\.itemIDs))
+        cellFrameCache.prune(keeping: keep)
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
     }
 
@@ -1233,6 +1253,12 @@ struct PhotosGridCell: View {
     var isSelectionMode: Bool = false
     var isSelected: Bool = false
     var onTap: (() -> Void)? = nil
+    /// Frame cache of the parent grid (a class, passed by reference):
+    /// this cell writes its global frame straight into it — no
+    /// PreferenceKey. Required (not defaulted): the synthesized
+    /// memberwise init omits defaulted properties, so a defaulted
+    /// cache could not be passed at the call site.
+    let frameCache: CellFrameCache
 
     var body: some View {
         ZStack {
@@ -1302,12 +1328,17 @@ struct PhotosGridCell: View {
         // ZStack + .aspectRatio in AspectThumbnail is untouched.)
         .contentShape(Rectangle())
         // Report this cell's global frame for the viewer's
-        // shrink-to-thumbnail dismiss (see `CellFramePreferenceKey`
-        // in PhotoGridComponents): the parent reads it from its
-        // `CellFrameCache` at tap time.
+        // shrink-to-thumbnail dismiss: written straight into the
+        // `frameCache` (no PreferenceKey — preference propagation
+        // on every scroll frame was a top drop-frame source). The
+        // parent reads it from the cache at tap time.
         .background(
             GeometryReader { geo in
-                Color.clear.preference(key: CellFramePreferenceKey.self, value: [item.id: geo.frame(in: .global)])
+                Color.clear
+                    .onAppear { frameCache.set(item.id, geo.frame(in: .global)) }
+                    .onChange(of: geo.frame(in: .global)) { _, newFrame in
+                        frameCache.set(item.id, newFrame)
+                    }
             }
         )
         // One accessible element per cell (VoiceOver): the author /
@@ -1350,6 +1381,20 @@ struct PhotosGridCell: View {
     private var badgeText: String? {
         guard item.contentType?.hasPrefix("image/") != true else { return nil }
         return item.formattedDuration ?? item.formattedViewCount
+    }
+}
+
+extension PhotosGridCell: Equatable {
+    /// Hot-path fix: when the parent's state changes, SwiftUI skips
+    /// body evaluation for cells whose inputs did not change. `Item`
+    /// is Equatable, so one `==` covers every item-derived field
+    /// (status, favorite, badge, progress). The `onTap` closure is
+    /// excluded (closures are not Equatable) and so is `frameCache`
+    /// (same instance for the parent's lifetime).
+    static func == (lhs: PhotosGridCell, rhs: PhotosGridCell) -> Bool {
+        lhs.item == rhs.item
+            && lhs.isSelectionMode == rhs.isSelectionMode
+            && lhs.isSelected == rhs.isSelected
     }
 }
 

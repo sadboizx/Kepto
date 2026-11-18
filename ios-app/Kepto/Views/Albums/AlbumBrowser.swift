@@ -65,8 +65,8 @@ struct PhotoCollectionScreen: View {
     /// onto it on release. Read from `cellFrameCache` at tap time.
     @State private var feedStartFrame: CGRect?
     /// Live cache of grid-cell global frames (see
-    /// `CellFrameCache`): written by the cells' preference, read
-    /// only when a cell is tapped.
+    /// `CellFrameCache`): written directly by the cells (no
+    /// PreferenceKey), read only when a cell is tapped.
     @State private var cellFrameCache = CellFrameCache()
     /// The grid's ScrollView proxy, kept so the viewer's
     /// `onCurrentItemChange` can scroll the grid to the current
@@ -126,7 +126,7 @@ struct PhotoCollectionScreen: View {
     /// Detail-grid columns: 2 on narrow screens, 3 on wide ones
     /// (spec: "2 hoặc 3 cột tùy kích thước màn hình"). iPhone 12 Pro
     /// Max (428pt) gets 3; iPhone SE / 12 (375–390pt) get 2.
-    private var columns: [GridItem] { albumGridColumns() }
+    private var columns: [GridItem] { albumGridColumns(width: scrollViewport.width) }
 
     /// The title in the navigation bar.
     private var title: String {
@@ -579,6 +579,7 @@ struct PhotoCollectionScreen: View {
                         ForEach(sortedItems) { item in
                             PhotosGridCell(
                                 item: item,
+                                frameCache: cellFrameCache,
                                 isSelectionMode: isSelecting,
                                 isSelected: selectedIDs.contains(item.id),
                                 onTap: {
@@ -690,13 +691,6 @@ struct PhotoCollectionScreen: View {
             .contentMargins(.top, topChromeHeight, for: .scrollContent)
             .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
             .simultaneousGesture(dragSelectGesture)
-            // The cells report their global frames (see
-            // `PhotosGridCell`): keep them in the cache so a tap can hand
-            // the tapped cell's frame to the viewer for its
-            // shrink-to-thumbnail dismiss.
-            .onPreferenceChange(CellFramePreferenceKey.self) { frames in
-                cellFrameCache.frames.merge(frames) { _, new in new }
-            }
             .onAppear {
                 scrollProxy = proxy
                 // Render from the cache first (round-21): the grid is
@@ -711,6 +705,10 @@ struct PhotoCollectionScreen: View {
             .onChange(of: items) { oldItems, newItems in
                 let oldLast = cachedSortedItems.last?.id
                 refreshSortedItems()
+                // Prune stale cell frames (hot-path fix): the cache
+                // only needs the frames of the items currently in
+                // this album.
+                cellFrameCache.prune(keeping: Set(cachedSortedItems.map(\.id)))
                 maybeInitialScroll(proxy)
                 maybeScrollToNewItem(proxy, oldLast: oldLast, newLast: cachedSortedItems.last?.id, oldCount: oldItems.count, newCount: newItems.count)
             }
@@ -1365,8 +1363,14 @@ struct AddToAlbumSheet: View {
 /// Grid columns for album/collection detail grids: 2 columns on
 /// narrow screens, 3 on wide ones (spec: "2 hoặc 3 cột tùy kích
 /// thước màn hình"). iPhone 12 Pro Max (428pt) gets 3; iPhone SE /
-/// 12 (375–390pt) get 2.
-private func albumGridColumns() -> [GridItem] {
-    let count = UIScreen.main.bounds.width < 400 ? 2 : 3
-    return Array(repeating: GridItem(.flexible(), spacing: 2), count: count)
+/// 12 (375–390pt) get 2. Fixed integer-pixel widths (hot-path fix):
+/// `.flexible()` re-measures every layout pass and rounds sub-pixel
+/// widths differently per row, causing 0.5px jitter while scrolling.
+/// Falls back to the screen width while the viewport is still zero
+/// (first layout, before `.onGeometryChange` fires).
+private func albumGridColumns(width: CGFloat) -> [GridItem] {
+    let screenWidth = width > 0 ? width : UIScreen.main.bounds.width
+    let count = screenWidth < 400 ? 2 : 3
+    let itemWidth = floor((screenWidth - 2 * CGFloat(count - 1)) / CGFloat(count))
+    return Array(repeating: GridItem(.fixed(itemWidth), spacing: 2), count: count)
 }
