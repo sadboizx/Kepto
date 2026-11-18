@@ -675,10 +675,10 @@ struct PhotoCollectionScreen: View {
         }
         return PhotosGridCell(
             item: item,
-            frameCache: cellFrameCache,
             isSelectionMode: isSelecting,
             isSelected: selectedIDs.contains(item.id),
-            onTap: { handleCellTap(item) }
+            onTap: { handleCellTap(item) },
+            frameCache: cellFrameCache
         )
         .contextMenu {
             GridItemContextMenu(
