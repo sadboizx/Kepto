@@ -120,6 +120,7 @@ private struct ActivityRow: View {
             case .link: return "link"
             case .collection: return "rectangle.stack"
             case .upload: return "arrow.up.circle"
+            case .download: return "arrow.down.circle"
             }
         }
     }
