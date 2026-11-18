@@ -98,6 +98,9 @@ struct PhotoGridCollectionView: UIViewRepresentable {
     /// view ignores the top safe area, so the inset is applied
     /// manually (see `makeUIView`).
     let topInset: CGFloat
+    /// Column count — needed for the edge-row auto-select in
+    /// `handlePan` (row = indexPath.item / columnCount).
+    let columnCount: Int
     let frameCache: CellFrameCache
     let scrollController: GridScrollController
     let viewModel: LibraryViewModel
@@ -370,17 +373,71 @@ struct PhotoGridCollectionView: UIViewRepresentable {
 
         // MARK: Drag-to-select
 
+        /// Edge-row auto-select (Apple Photos): a drag that starts
+        /// on a first/last-column cell selects/deselects whole rows
+        /// as the finger moves vertically. Row is derived from
+        /// `indexPathForItem` (row = item / columnCount) so content
+        /// offset and insets are accounted for — never from raw y.
+        private var rowSelectMode: Bool = false
+        private var rowSelectInitialSelection: Bool = true
+        private var lastRowSelectRow: Int = -1
+
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard parent.selecting, collectionView != nil else { return }
+            guard parent.selecting, let cv = collectionView else { return }
             let location = gesture.location(in: nil) // window coords = global
             switch gesture.state {
             case .began:
                 dragSelect.reset()
-                applyDrag(at: location, start: location)
+                rowSelectMode = false
+                lastRowSelectRow = -1
+                // Row-select only when the drag starts on an edge
+                // column (first or last). Otherwise the regular
+                // DragSelectTracker path handles it.
+                let locInCV = gesture.location(in: cv)
+                if let indexPath = cv.indexPathForItem(at: locInCV) {
+                    let col = indexPath.item % parent.columnCount
+                    if col == 0 || col == parent.columnCount - 1 {
+                        rowSelectMode = true
+                        let firstID = parent.ids[indexPath.item]
+                        rowSelectInitialSelection = !parent.selectedIDs.contains(firstID)
+                        applyRowSelect(at: indexPath.item)
+                    }
+                }
+                if !rowSelectMode {
+                    applyDrag(at: location, start: location)
+                }
             case .changed:
-                applyDrag(at: location, start: location)
+                if rowSelectMode {
+                    let locInCV = gesture.location(in: cv)
+                    if let indexPath = cv.indexPathForItem(at: locInCV) {
+                        applyRowSelect(at: indexPath.item)
+                    }
+                } else {
+                    applyDrag(at: location, start: location)
+                }
             default:
                 dragSelect.reset()
+                rowSelectMode = false
+            }
+        }
+
+        /// Select/deselect every cell in the row containing `item`:
+        /// the row's select state follows the first cell hit at drag
+        /// start (selected → deselect the row, unselected → select
+        /// it). Re-selecting the same row is a no-op.
+        private func applyRowSelect(at item: Int) {
+            guard parent.columnCount > 0, item < parent.ids.count else { return }
+            let row = item / parent.columnCount
+            guard row != lastRowSelectRow else { return }
+            lastRowSelectRow = row
+            var updated = parent.selectedIDs
+            for col in 0..<parent.columnCount {
+                let idx = row * parent.columnCount + col
+                guard idx < parent.ids.count else { break }
+                if rowSelectInitialSelection { updated.insert(parent.ids[idx]) } else { updated.remove(parent.ids[idx]) }
+            }
+            if updated != parent.selectedIDs {
+                parent.onDragSelect(updated)
             }
         }
 

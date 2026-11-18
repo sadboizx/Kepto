@@ -431,6 +431,10 @@ struct LibraryView: View {
             // zooms — nil it out when entering .all so a stale proxy
             // is never used there.
             isAtBottom = false
+            // Đợt 2 fix: reset the window — Days/Months render only
+            // the newest `visibleWindow` items, so a grown window
+            // from another zoom must not leak across.
+            visibleWindow = 120
             if zoom == .all { scrollProxy = nil }
         }
     }
@@ -704,6 +708,7 @@ struct LibraryView: View {
             cellWidth: allCellWidth,
             spacing: 2,
             topInset: topChromeHeight,
+            columnCount: sizeClass == .regular ? 8 : 4,
             frameCache: cellFrameCache,
             scrollController: gridScroll,
             viewModel: viewModel,
@@ -1445,12 +1450,8 @@ struct PhotosGridCell: View {
             }
         }
         .background(Color(.systemGray5))
-        .overlay {
-            if isSelected {
-                Rectangle()
-                    .stroke(.blue, lineWidth: 3)
-            }
-        }
+        // Đợt 2 fix: bỏ viền xanh quanh cell khi select. Apple
+        // Photos chỉ hiện checkmark, không thêm viền khung.
         // The tappable region is exactly this cell's square bounds.
         // Without an explicit content shape, the thumbnail's content
         // can shift hit-testing so a tap on the bottom edge lands on
