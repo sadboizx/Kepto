@@ -1,19 +1,16 @@
 name: Build IPA (unsigned)
 
-# Build Kepto thành .ipa KHÔNG ký (unsigned) bằng runner macOS của GitHub.
-# File .ipa này chưa cài trực tiếp được — tải về rồi ký bằng cert của bạn
-# trong Feather (giống Muse Clone) để cài lên iOS 17.4.
-#
-# Cách chạy: tab Actions → "Build IPA (unsigned)" → Run workflow,
-# hoặc push code trong ios-app/** (tự build). Không dùng App Store.
-#
-# Kết quả: artifact Kepto-unsigned.ipa, giữ 30 ngày.
-
 on:
   workflow_dispatch:
   push:
     paths:
       - "ios-app/**"
+
+# 1. TỰ ĐỘNG HỦY JOB CŨ: Nếu bạn push 3 lần liên tiếp, GitHub sẽ tự hủy 2 job cũ 
+# đang xếp hàng, chỉ giữ lại job mới nhất. Tránh việc bạn phải chờ đợi vô ích.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -21,8 +18,9 @@ permissions:
 jobs:
   build:
     name: Build unsigned IPA
-    runs-on: macos-15 # macos-14 đã bị GitHub khai tử 2026-11-02; macos-15 có Xcode 16, vẫn build được target iOS 17.4
-    timeout-minutes: 30
+    runs-on: macos-15 
+    # (macos-15 là bắt buộc lúc này vì 14 đã chết. Hãy kiên nhẫn chờ, đừng hủy job)
+    timeout-minutes: 60 # Tăng lên 60 phút để không bị kill giữa chừng nếu build chậm
 
     steps:
       - name: Checkout
@@ -30,6 +28,16 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      # 2. CACHE DERIVED DATA: Lưu lại các file build trung gian.
+      # Lần build thứ 2 trở đi sẽ nhanh hơn từ 2-4 phút.
+      - name: Cache Xcode Build
+        uses: actions/cache@v4
+        with:
+          path: build/DerivedData
+          key: ${{ runner.os }}-xcode-${{ hashFiles('**/*.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode-
 
       - name: Build (no code signing)
         run: |
