@@ -97,6 +97,9 @@ struct Item: Codable, Identifiable, Equatable, Hashable {
     /// the synthesized Codable decode treats a missing key as nil.
     /// The grid ring reads it via `GridItemSource.uploadProgress`.
     var uploadProgress: Double? = nil
+    /// Download progress of a server item (0...1) while saving to
+    /// Photos. Nil when not downloading; mirrors uploadProgress.
+    var downloadProgress: Double? = nil
 
     /// Best human-readable title: title, else caption, else the URL itself.
     var displayTitle: String {
@@ -276,6 +279,10 @@ struct ItemMetadata: Codable, Identifiable, Equatable, Hashable {
     /// for every server item; never persisted (placeholders are
     /// filtered out of the disk cache).
     var uploadProgress: Double? = nil
+    /// Download progress of a server item (0...1) while saving to
+    /// Photos — the metadata twin of `Item.downloadProgress`.
+    /// Nil when not downloading; never persisted.
+    var downloadProgress: Double? = nil
 
     /// Full memberwise initializer. The synthesized one only takes
     /// the 13 properties without defaults, so a call site that must

@@ -738,6 +738,9 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    // Cache để throttle cập nhật UI (chỉ update mỗi 5%)
+    private var lastPublishedDownloadProgress: [String: Double] = [:]
+
     /// Download the item's media file and save it to the Photos
     /// library (camera roll) — the context menus' "Save to Photos".
     /// Works for videos and for image posts: the Photos resource type
@@ -746,20 +749,58 @@ final class LibraryViewModel: ObservableObject {
     /// permission on first use. Throws so the caller can show it.
     func saveToPhotos(item: Item) async throws {
         guard let api else { throw KeptoAPIError.notConfigured }
-        let fileURL = try await api.downloadVideoFile(for: item)
-        let isImage = item.contentType?.hasPrefix("image/") == true
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        if status == .notDetermined {
-            let newStatus = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-            guard newStatus == .authorized || newStatus == .limited else {
+        let taskID = taskStore.addTask(ActivityTask(kind: .download, title: item.displayTitle))
+
+        let progressCallback: (Double) -> Void = { [weak self] progress in
+            Task { @MainActor in
+                self?.setDownloadProgress(id: item.id, taskID: taskID, progress: progress)
+            }
+        }
+
+        do {
+            let fileURL = try await api.downloadVideoFileWithProgress(for: item, onProgress: progressCallback)
+            defer { try? FileManager.default.removeItem(at: fileURL) }
+
+            let isImage = item.contentType?.hasPrefix("image/") == true
+            let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+            if status == .notDetermined {
+                let newStatus = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+                guard newStatus == .authorized || newStatus == .limited else {
+                    throw KeptoAPIError.server("Chưa cấp quyền Photos.")
+                }
+            } else if status != .authorized && status != .limited {
                 throw KeptoAPIError.server("Chưa cấp quyền Photos.")
             }
-        } else if status != .authorized && status != .limited {
-            throw KeptoAPIError.server("Chưa cấp quyền Photos.")
+            try await PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                request.addResource(with: isImage ? .photo : .video, fileURL: fileURL, options: nil)
+            }
+
+            // Xong
+            setDownloadProgress(id: item.id, taskID: taskID, progress: 1.0)
+            taskStore.updateTask(id: taskID) { $0.done = 1 }
+            taskStore.setState(id: taskID, .done)
+
+        } catch {
+            setDownloadProgress(id: item.id, taskID: taskID, progress: nil)
+            taskStore.setState(id: taskID, .failed, errorText: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            throw error
         }
-        try await PHPhotoLibrary.shared().performChanges {
-            let request = PHAssetCreationRequest.forAsset()
-            request.addResource(with: isImage ? .photo : .video, fileURL: fileURL, options: nil)
+    }
+
+    private func setDownloadProgress(id: String, taskID: UUID, progress: Double?) {
+        if let progress = progress {
+            let clamped = min(max(progress, 0), 1)
+            if let last = lastPublishedDownloadProgress[id], clamped < 1, abs(clamped - last) < 0.05 { return }
+            lastPublishedDownloadProgress[id] = clamped
+
+            if let index = items.firstIndex(where: { $0.id == id }) { items[index].downloadProgress = clamped }
+            if let index = allMetadata.firstIndex(where: { $0.id == id }) { allMetadata[index].downloadProgress = clamped }
+            taskStore.updateTask(id: taskID) { $0.byteProgress = clamped }
+        } else {
+            lastPublishedDownloadProgress.removeValue(forKey: id)
+            if let index = items.firstIndex(where: { $0.id == id }) { items[index].downloadProgress = nil }
+            if let index = allMetadata.firstIndex(where: { $0.id == id }) { allMetadata[index].downloadProgress = nil }
         }
     }
 

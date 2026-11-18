@@ -467,6 +467,13 @@ private struct PhotoDetailPage: View {
     var onDismiss: (() -> Void)? = nil
     @EnvironmentObject private var viewModel: LibraryViewModel
 
+    /// Live copy of this page's item from the paging list, so the
+    /// download progress reads the value `saveToPhotos` publishes on
+    /// `items` — the page's own `item` is a snapshot and never changes.
+    private var liveItem: Item {
+        items.first(where: { $0.id == item.id }) ?? item
+    }
+
     @State private var player: AVPlayer?
     @State private var isPlaying = false
     @State private var currentTime: Double = 0
@@ -703,6 +710,18 @@ private struct PhotoDetailPage: View {
                 // with the dismiss drag.
                 VStack(spacing: 0) {
                     Spacer()
+                    if let progress = liveItem.downloadProgress, progress < 1 {
+                        VStack(spacing: 4) {
+                            ProgressView(value: progress)
+                                .progressViewStyle(.linear)
+                                .tint(.blue)
+                            Text("\(L10n.saving) \(Int(progress * 100))%")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 40)
+                        .padding(.bottom, 10)
+                    }
                     if item.status == .ready, !isImage {
                         FeedProgressBar(
                             currentTime: currentTime,
@@ -782,6 +801,17 @@ private struct PhotoDetailPage: View {
                                         }
                                     }
                                     .presentationCompactAdaptation(.popover)
+                                }
+                            }
+                            playerTabButton(systemName: "arrow.down.to.line", label: L10n.saveToPhotos) {
+                                Task {
+                                    do {
+                                        try await viewModel.saveToPhotos(item: item)
+                                        Haptics.success()
+                                        showNotice(L10n.savedToPhotosSingle)
+                                    } catch {
+                                        showNotice((error as? LocalizedError)?.errorDescription ?? "Lỗi lưu ảnh")
+                                    }
                                 }
                             }
                             playerTabButton(systemName: showingInfo ? "info.circle.fill" : "info.circle", label: L10n.info) {

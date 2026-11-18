@@ -177,6 +177,8 @@ enum L10n {
     static var duration: String { isVI ? "Thời lượng" : "Duration" }
     static var uploaded: String { isVI ? "Ngày tải lên" : "Uploaded" }
     static var saveToPhotos: String { isVI ? "Lưu vào Photos" : "Save to Photos" }
+    static var saving: String { isVI ? "Đang lưu..." : "Saving..." }
+    static var downloading: String { isVI ? "Đang tải..." : "Downloading..." }
     static var undo: String { isVI ? "Hoàn tác nét" : "Undo" }
     static var clear: String { isVI ? "Xoá nét" : "Clear" }
 

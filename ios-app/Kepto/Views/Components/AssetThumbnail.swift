@@ -23,6 +23,9 @@ protocol GridItemSource {
     /// Upload progress (0...1) of a LOCAL placeholder item while its
     /// file uploads from the device. Nil for every server item.
     var uploadProgress: Double? { get }
+    /// Download progress (0...1) while a cloud file is being saved
+    /// to Photos. Nil when no download is in flight.
+    var downloadProgress: Double? { get }
 }
 
 extension GridItemSource {
@@ -35,6 +38,9 @@ extension GridItemSource {
 
     /// No upload in progress (server items never upload).
     var uploadProgress: Double? { nil }
+
+    /// No download in progress.
+    var downloadProgress: Double? { nil }
 }
 
 /// Progress ring for a cell whose file is uploading from the device:
@@ -43,6 +49,7 @@ extension GridItemSource {
 /// device, only the upload is in flight.
 struct UploadProgressRing: View {
     let progress: Double
+    var symbolName: String? = nil
 
     var body: some View {
         ZStack {
@@ -52,6 +59,11 @@ struct UploadProgressRing: View {
                 .trim(from: 0, to: CGFloat(min(max(progress, 0), 1)))
                 .stroke(Color.white, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
+            if let symbolName {
+                Image(systemName: symbolName)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+            }
         }
         .frame(width: 26, height: 26)
     }
@@ -138,7 +150,14 @@ struct AssetThumbnail: View {
             .overlay(alignment: .bottomLeading) { if showBadge && !selecting { badgeRow } }
             .overlay(alignment: .bottomLeading) { favoriteMark }
             .overlay(alignment: .bottomTrailing) { selectionMark }
-            .overlay(alignment: .topTrailing) { uploadRing }
+            .overlay(alignment: .topTrailing) {
+                if let progress = source.downloadProgress, progress < 1, !selecting {
+                    UploadProgressRing(progress: progress, symbolName: "arrow.down")
+                        .padding(5)
+                } else {
+                    uploadRing
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .task(id: source.id) {
@@ -243,6 +262,7 @@ extension AssetThumbnail: Equatable {
             && lhs.source.isFailed == rhs.source.isFailed
             && lhs.source.isPhoto == rhs.source.isPhoto
             && lhs.source.uploadProgress == rhs.source.uploadProgress
+            && lhs.source.downloadProgress == rhs.source.downloadProgress
             && lhs.source.durationText == rhs.source.durationText
             && lhs.source.viewCountText == rhs.source.viewCountText
             && lhs.selecting == rhs.selecting

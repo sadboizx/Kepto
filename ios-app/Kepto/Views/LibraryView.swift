@@ -1417,8 +1417,12 @@ struct PhotosGridCell: View {
                         .tint(.white)
                 }
             }
-            if let progress = item.uploadProgress, progress < 1, !isSelectionMode {
-                UploadProgressRing(progress: progress)
+            if let progress = item.downloadProgress, progress < 1, !isSelectionMode {
+                UploadProgressRing(progress: progress, symbolName: "arrow.down")
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            } else if let progress = item.uploadProgress, progress < 1, !isSelectionMode {
+                UploadProgressRing(progress: progress, symbolName: "arrow.up")
                     .padding(6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }

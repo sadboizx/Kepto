@@ -9,6 +9,8 @@ enum ActivityTaskKind: String, Codable {
     case collection
     /// One file uploading from the device (PhotosPicker / Files).
     case upload
+    /// One file downloading from the cloud (Save to Photos).
+    case download
 }
 
 /// Lifecycle of one task. `done` tasks are pruned shortly after
@@ -158,7 +160,7 @@ final class TaskStore: ObservableObject {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
         mutate(&tasks[index])
         if tasks[index].state == .done { schedulePrune(id: id) }
-        if tasks[index].kind != .upload { persistLinkTasks() }
+        if tasks[index].kind == .link || tasks[index].kind == .collection { persistLinkTasks() }
     }
 
     func setState(id: UUID, _ state: ActivityTaskState, errorText: String? = nil) {

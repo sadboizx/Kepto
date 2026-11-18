@@ -704,6 +704,39 @@ final class KeptoAPI {
         return dest
     }
 
+    /// Tải file có track tiến trình (0...1). Dùng URLSessionDownloadDelegate
+    /// thay vì session.download(for:) vì hàm cũ không báo được %.
+    func downloadVideoFileWithProgress(for item: Item, onProgress: @escaping (Double) -> Void) async throws -> URL {
+        let request = authorizedRequest(url: playURL(for: item))
+        let delegate = DownloadProgressDelegate(onProgress: onProgress)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let task = session.downloadTask(with: request)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                delegate.onComplete = { result in
+                    switch result {
+                    case .success(let tmpURL):
+                        let dest = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("\(item.id).\(self.fileExtension(for: item))")
+                        try? FileManager.default.removeItem(at: dest)
+                        do {
+                            try FileManager.default.moveItem(at: tmpURL, to: dest)
+                            continuation.resume(returning: dest)
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+                task.resume()
+            }
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
     /// File extension for a downloaded item, from its content type.
     /// Image posts (photo posts) come back as image/* — they must keep
     /// an image extension so Photos / the share sheet treat them as
@@ -769,5 +802,37 @@ private final class UploadProgressDelegate: NSObject, URLSessionDataDelegate {
             return
         }
         onComplete(.success((receivedData, response)))
+    }
+}
+
+private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
+    private let onProgress: (Double) -> Void
+    var onComplete: (Result<URL, Error>) -> Void = { _ in }
+
+    init(onProgress: @escaping (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // Phải move file ngay trong hàm này, vì file tạm sẽ bị xoá sau khi return
+        let tempDest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        do {
+            try FileManager.default.moveItem(at: location, to: tempDest)
+            onComplete(.success(tempDest))
+        } catch {
+            onComplete(.failure(error))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        session.finishTasksAndInvalidate()
+        if let error {
+            onComplete(.failure(error))
+        }
     }
 }
