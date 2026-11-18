@@ -79,10 +79,9 @@ struct DayHeader: View {
         .padding(.horizontal, 14)
         .padding(.top, 14)
         .padding(.bottom, 6)
-        // Transparent cho title ngày tháng: ultraThinMaterial thay
-        // cho .bar (xám đậm) — vẫn che thumbnail trượt bên dưới
-        // header (pinned) nhưng nhẹ hơn nhiều.
-        .background(.ultraThinMaterial)
+        // Transparent cho title ngày tháng: Color.clear — ảnh
+        // trượt bên dưới header hiện rõ xuyên qua (theo yêu cầu).
+        .background(Color.clear)
     }
 }
 
