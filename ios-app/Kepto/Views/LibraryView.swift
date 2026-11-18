@@ -551,22 +551,14 @@ struct LibraryView: View {
                     // so the top looks exactly as before. Bottom margin so
                     // the last row scrolls clear of the floating
                     // Years/Months/Days/All Photos pill.
-                    // Open at the BOTTOM (newest) from the very first frame
-                    // (round-20): `.defaultScrollAnchor(.bottom)` (iOS 17+)
-                    // is a layout anchor, not a scroll — the ScrollView lays
-                    // out with its content pinned at the bottom edge, so
-                    // there is no onAppear scrollTo, no flash at the top and
-                    // no slide-down. The old `maybeInitialScroll` scrollTo
-                    // calls stay as a belt-and-braces fallback (they no-op
-                    // once the view is already at the bottom) and still set
-                    // the flags `maybeScrollToNewItem` needs. As async data
-                    // lands, the anchor keeps the bottom pinned (new content
-                    // grows upward); pull-to-refresh only swaps the page in
-                    // place, so it does not reset the position — and a
-                    // mid-list user is not yanked when items append below
-                    // the viewport. One anchor covers the three zooms that
-                    // share this ScrollView (Years / Months / Days).
-                    .defaultScrollAnchor(.bottom)
+                    // Anchor gỡ bỏ (Đợt 2 fix, thử): `.defaultScrollAnchor(.bottom)`
+                    // bị nghi là nguyên nhân Days đen xì — anchor pin bottom
+                    // khi LazyVStack chưa render xong, offset có thể kẹt
+                    // ngoài content. `maybeInitialScroll` (scrollTo) trở
+                    // lại làm cơ chế chính để mở ở cuối (mới nhất); có
+                    // thể thấy flash ở top như round-20 trước đây. Nếu
+                    // Days hết đen thì anchor là nguyên nhân; nếu vẫn
+                    // đen thì loại hướng này.
                     .ignoresSafeArea(.container, edges: .top)
                     // (EdgeInsets form of contentMargins is iOS 18+ — the
                     // project targets iOS 17.4, so top/bottom use the

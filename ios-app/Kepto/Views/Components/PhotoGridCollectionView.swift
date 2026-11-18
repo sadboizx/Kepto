@@ -386,7 +386,17 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         private var lastRowSelectRow: Int = -1
 
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard parent.selecting, let cv = collectionView else { return }
+            guard let cv = collectionView else { return }
+            // Row-select kéo: khoá scroll của collection view để
+            // content không chạy theo ngón tay — nếu không, toạ độ
+            // content của ngón tay đứng yên, row không đổi (log
+            // 08:07:38: y 682→599 mà row vẫn 39). Mở lại ở mọi trạng
+            // thái kết thúc, kể cả khi select mode đã tắt giữa chừng
+            // (guard selecting ở dưới sẽ chặn phần còn lại).
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                cv.isScrollEnabled = true
+            }
+            guard parent.selecting else { return }
             let location = gesture.location(in: nil) // window coords = global
             FileLog.log("[RowSelect] handlePan state=\(gesture.state.rawValue) locWindow=\(location)")
             switch gesture.state {
@@ -402,6 +412,10 @@ struct PhotoGridCollectionView: UIViewRepresentable {
                     let col = indexPath.item % parent.columnCount
                     if col == 0 || col == parent.columnCount - 1 {
                         rowSelectMode = true
+                        // Khoá scroll: nếu collection view cuộn theo
+                        // ngón tay thì toạ độ content đứng yên và row
+                        // không đổi — đây chính là lỗi log đã chỉ ra.
+                        cv.isScrollEnabled = false
                         let firstID = parent.ids[indexPath.item]
                         rowSelectInitialSelection = !parent.selectedIDs.contains(firstID)
                         applyRowSelect(at: indexPath.item)
@@ -422,6 +436,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
             default:
                 dragSelect.reset()
                 rowSelectMode = false
+                cv.isScrollEnabled = true
             }
         }
 
