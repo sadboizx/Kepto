@@ -251,7 +251,6 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         var lastSnapshotIDs: [String] = []
         var lastSelecting: Bool = false
         var lastSelectedIDs: Set<String> = []
-        private var dragSelect = DragSelectTracker()
         private var didInitialScroll = false
 
         init(_ parent: PhotoGridCollectionView) {
@@ -376,109 +375,99 @@ struct PhotoGridCollectionView: UIViewRepresentable {
 
         // MARK: Drag-to-select
 
-        /// Edge-row auto-select (Apple Photos): a drag that starts
-        /// on a first/last-column cell selects/deselects whole rows
-        /// as the finger moves vertically. Row is derived from
-        /// `indexPathForItem` (row = item / columnCount) so content
-        /// offset and insets are accounted for — never from raw y.
-        private var rowSelectMode: Bool = false
-        private var rowSelectInitialSelection: Bool = true
-        private var lastRowSelectRow: Int = -1
+        /// Rect select (mới, thay row-select): vuốt ngang bật
+        /// select, kéo lên/xuống mở rộng hình chữ nhật từ cell
+        /// bắt đầu đến cell hiện tại; kéo ngược co rect, cell
+        /// ra khỏi rect trở về trạng thái ban đầu. Mode (select/
+        /// deselect) cố định theo cell đầu tiên, giống Photos.
+        private var selectGestureActive = false
+        private var selectGestureStartItem: Int?
+        private var selectGestureInitialSelection: Set<String> = []
+        private var selectGestureMode: Bool = true   // true = select, false = deselect
 
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard let cv = collectionView else { return }
-            // Row-select kéo: khoá scroll của collection view để
-            // content không chạy theo ngón tay — nếu không, toạ độ
-            // content của ngón tay đứng yên, row không đổi (log
-            // 08:07:38: y 682→599 mà row vẫn 39). Mở lại ở mọi trạng
-            // thái kết thúc, kể cả khi select mode đã tắt giữa chừng
-            // (guard selecting ở dưới sẽ chặn phần còn lại).
-            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
-                cv.isScrollEnabled = true
+            guard parent.selecting, let cv = collectionView else {
+                resetSelectGesture()
+                return
             }
-            guard parent.selecting else { return }
-            let location = gesture.location(in: nil) // window coords = global
-            FileLog.log("[RowSelect] handlePan state=\(gesture.state.rawValue) locWindow=\(location)")
+            let locInCV = gesture.location(in: cv)
             switch gesture.state {
             case .began:
-                dragSelect.reset()
-                rowSelectMode = false
-                lastRowSelectRow = -1
-                // Row-select only when the drag starts on an edge
-                // column (first or last). Otherwise the regular
-                // DragSelectTracker path handles it.
-                let locInCV = gesture.location(in: cv)
-                if let indexPath = cv.indexPathForItem(at: locInCV) {
-                    let col = indexPath.item % parent.columnCount
-                    if col == 0 || col == parent.columnCount - 1 {
-                        rowSelectMode = true
-                        // Khoá scroll: nếu collection view cuộn theo
-                        // ngón tay thì toạ độ content đứng yên và row
-                        // không đổi — đây chính là lỗi log đã chỉ ra.
-                        cv.isScrollEnabled = false
-                        let firstID = parent.ids[indexPath.item]
-                        rowSelectInitialSelection = !parent.selectedIDs.contains(firstID)
-                        applyRowSelect(at: indexPath.item)
-                    }
-                }
-                if !rowSelectMode {
-                    applyDrag(at: location, start: location)
+                resetSelectGesture()
+                selectGestureInitialSelection = parent.selectedIDs
+                // Pin cell dưới ngón tay lúc bắt đầu.
+                if let ip = cv.indexPathForItem(at: locInCV) {
+                    selectGestureStartItem = ip.item
+                    let id = parent.ids[ip.item]
+                    // Mode: cell chưa chọn → select; đã chọn → deselect.
+                    selectGestureMode = !parent.selectedIDs.contains(id)
                 }
             case .changed:
-                if rowSelectMode {
-                    let locInCV = gesture.location(in: cv)
-                    if let indexPath = cv.indexPathForItem(at: locInCV) {
-                        applyRowSelect(at: indexPath.item)
+                // Chỉ bật select khi vuốt ngang > dọc (và đủ ngưỡng).
+                // Vuốt dọc không bật → pan vẫn chạy song song nhưng
+                // không làm gì, scroll xử lý như thường.
+                if !selectGestureActive, selectGestureStartItem != nil {
+                    let t = gesture.translation(in: cv)
+                    if abs(t.x) > abs(t.y) && abs(t.x) > 5 {
+                        selectGestureActive = true
+                        cv.isScrollEnabled = false
                     }
-                } else {
-                    applyDrag(at: location, start: location)
+                }
+                if selectGestureActive, let startItem = selectGestureStartItem,
+                   let endItem = cv.indexPathForItem(at: locInCV)?.item {
+                    // Bỏ qua điểm nil (ngón tay qua khe 2pt giữa các
+                    // cell hoặc ngoài content): giữ rect cũ thay vì
+                    // co sập về cell bắt đầu.
+                    applyRectSelection(from: startItem, to: endItem)
                 }
             default:
-                dragSelect.reset()
-                rowSelectMode = false
-                cv.isScrollEnabled = true
+                resetSelectGesture()
             }
         }
 
-        /// Select/deselect every cell in the row containing `item`:
-        /// the row's select state follows the first cell hit at drag
-        /// start (selected → deselect the row, unselected → select
-        /// it). Re-selecting the same row is a no-op.
-        private func applyRowSelect(at item: Int) {
-            guard parent.columnCount > 0, item < parent.ids.count else { return }
-            let row = item / parent.columnCount
-            FileLog.log("[RowSelect] applyRowSelect item=\(item) row=\(row) lastRow=\(lastRowSelectRow) initial=\(rowSelectInitialSelection) columnCount=\(parent.columnCount)")
-            guard row != lastRowSelectRow else { return }
-            lastRowSelectRow = row
-            var updated = parent.selectedIDs
-            for col in 0..<parent.columnCount {
-                let idx = row * parent.columnCount + col
-                guard idx < parent.ids.count else { break }
-                if rowSelectInitialSelection { updated.insert(parent.ids[idx]) } else { updated.remove(parent.ids[idx]) }
+        /// Áp selection theo hình chữ nhật từ cell bắt đầu đến cell
+        /// cuối, dựa trên mode:
+        /// - Mode select: `initial ∪ rect` (cell mới trong rect → chọn;
+        ///   kéo ngược ra khỏi rect → về initial → uncheck).
+        /// - Mode deselect: `initial - rect` (cell trong rect → bỏ chọn;
+        ///   kéo ngược ra khỏi rect → về initial → chọn lại).
+        private func applyRectSelection(from startItem: Int, to endItem: Int) {
+            guard parent.columnCount > 0 else { return }
+            let minItem = min(startItem, endItem)
+            let maxItem = max(startItem, endItem)
+            let minRow = minItem / parent.columnCount
+            let maxRow = maxItem / parent.columnCount
+            let startCol = minItem % parent.columnCount
+            let endCol = maxItem % parent.columnCount
+            let minCol = min(startCol, endCol)
+            let maxCol = max(startCol, endCol)
+
+            var cellsInRect: Set<String> = []
+            for row in minRow...maxRow {
+                for col in minCol...maxCol {
+                    let idx = row * parent.columnCount + col
+                    if idx < parent.ids.count {
+                        cellsInRect.insert(parent.ids[idx])
+                    }
+                }
             }
-            if updated != parent.selectedIDs {
-                parent.onDragSelect(updated)
+
+            let newSelection: Set<String>
+            if selectGestureMode {
+                newSelection = selectGestureInitialSelection.union(cellsInRect)
+            } else {
+                newSelection = selectGestureInitialSelection.subtracting(cellsInRect)
+            }
+            if newSelection != parent.selectedIDs {
+                parent.onDragSelect(newSelection)
             }
         }
 
-        private func applyDrag(at current: CGPoint, start: CGPoint) {
-            // DragSelectTracker expects ScrollView-local start/current,
-            // but with a direct pan we can pass global directly —
-            // the tracker's `toGlobal` closure then becomes identity.
-            // The tracker's disambiguation (vertical-first → scroll,
-            // horizontal → select, first-cell-hit pins the mode) is
-            // unchanged and still gates the collection view's own
-            // scroll from being hijacked.
-            let updated = dragSelect.update(
-                start: start,
-                current: current,
-                toGlobal: { $0 },
-                frames: parent.frameCache.frames,
-                selection: parent.selectedIDs
-            )
-            if updated != parent.selectedIDs {
-                parent.onDragSelect(updated)
-            }
+        private func resetSelectGesture() {
+            if let cv = collectionView { cv.isScrollEnabled = true }
+            selectGestureActive = false
+            selectGestureStartItem = nil
+            selectGestureInitialSelection = []
         }
 
         // MARK: Pull-to-refresh
@@ -533,9 +522,39 @@ final class GridCell: UICollectionViewCell {
         contentView.layoutMargins = .zero
         contentView.insetsLayoutMarginsFromSafeArea = false
         contentView.clipsToBounds = true
+        contentView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Tắt self-sizing của UIHostingConfiguration: compositional
+    /// layout đã set frame tuyệt đối (`.absolute(cellWidth)`),
+    /// nhưng hosting controller vẫn có thể báo preferred size
+    /// khác (nhỏ hơn) khi cell mới dequeue (cell bounds còn zero).
+    /// UIKit layout cell với size nhỏ đó, rồi layout pass sau
+    /// mới ép size đúng — animate bên trong scroll context. Trả
+    /// về đúng frame của compositional layout để cell luôn có
+    /// bounds đúng ngay từ đầu.
+    override func preferredLayoutAttributesFitting(
+        _ layoutAttributes: UICollectionViewLayoutAttributes
+    ) -> UICollectionViewLayoutAttributes {
+        let attrs = super.preferredLayoutAttributesFitting(layoutAttributes)
+        attrs.frame = layoutAttributes.frame
+        attrs.size = layoutAttributes.size
+        return attrs
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // contentView phải luôn full cell bounds, không animate
+        // (contentView tự resize khi cell bounds đổi, bên trong
+        // scroll animation context — đây là nguồn zoom thứ hai).
+        UIView.performWithoutAnimation {
+            if contentView.frame != bounds {
+                contentView.frame = bounds
+            }
+        }
+    }
 
     override func prepareForReuse() {
         super.prepareForReuse()
