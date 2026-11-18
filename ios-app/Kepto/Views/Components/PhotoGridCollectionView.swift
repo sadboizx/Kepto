@@ -138,7 +138,10 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         // the old ScrollView used as its top content margin), so the
         // system must not add its own adjustment on top.
         cv.contentInsetAdjustmentBehavior = .never
-        cv.contentInset = UIEdgeInsets(top: topInset, left: 0, bottom: 64, right: 0)
+        // Đợt 2 fix (theo diff DeepSeek): bottom 64 chuyển xuống
+        // section.contentInsets (xem makeLayout) thay vì contentInset
+        // — cell cuối vẫn cuộn clear khỏi zoom pill.
+        cv.contentInset = UIEdgeInsets(top: topInset, left: 0, bottom: 0, right: 0)
         cv.scrollIndicatorInsets = cv.contentInset
         cv.prefetchDataSource = context.coordinator
         cv.delegate = context.coordinator
@@ -183,7 +186,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         // the chrome is measured): keep content + indicator insets
         // in sync with the parent.
         if context.coordinator.lastTopInset != topInset {
-            cv.contentInset = UIEdgeInsets(top: topInset, left: 0, bottom: 64, right: 0)
+            cv.contentInset = UIEdgeInsets(top: topInset, left: 0, bottom: 0, right: 0)
             cv.scrollIndicatorInsets = cv.contentInset
             context.coordinator.lastTopInset = topInset
         }
@@ -221,7 +224,7 @@ struct PhotoGridCollectionView: UIViewRepresentable {
         group.interItemSpacing = .fixed(spacing)
         let section = NSCollectionLayoutSection(group: group)
         section.interGroupSpacing = spacing
-        section.contentInsets = .zero
+        section.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 64, trailing: 0)
         return UICollectionViewCompositionalLayout(section: section)
     }
 
@@ -525,6 +528,11 @@ final class GridCell: UICollectionViewCell {
                     .aspectRatio(1, contentMode: .fit)
             )
         }
-        contentConfiguration = UIHostingConfiguration { content }
+        // Đợt 2 fix (thử): UIHostingConfiguration mặc định inset
+        // content theo layoutMargins của cell — thumbnail bị nhỏ
+        // lại + lề so với LazyVGrid trước đây. Ép margins về 0 để
+        // thumbnail tràn đúng cell như Apple Photos. Nếu không phải
+        // nguyên nhân thì đây là no-op, sẽ loại trừ hướng này.
+        contentConfiguration = UIHostingConfiguration { content }.margins(.all, 0)
     }
 }
