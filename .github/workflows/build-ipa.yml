@@ -1,12 +1,33 @@
 name: Build IPA (unsigned)
 
+# Build Kepto thành .ipa, ký bằng cert trong repo (signer/certificate/),
+# rồi đẩy IPA đã ký lên R2 và trả link tải tạm. Không qua Signed releases.
+# Không PPQ Protection: bundle id giữ nguyên com.sadboizx.kepto (signer
+# sẽ dừng lại nếu profile không cấp cho đúng bundle id đó).
+#
+# Cách chạy: tab Actions → "Build IPA (unsigned)" → Run workflow, hoặc push
+# code trong ios-app/** (tự build + ký). Không dùng App Store.
+#
+# Kết quả: link CÀI TRỰC TIẾP (itms-services, bấm là cài — không cần Feather)
+# + link tải IPA đã ký, cả hai in trong job summary, hết hạn sau 7 ngày;
+# bản chưa ký vẫn lưu artifact Kepto-unsigned 30 ngày.
+#
+# Cần có trong repo Kepto trước khi chạy:
+#   signer/certificate/cert.p12
+#   signer/certificate/cert.mobileprovision
+#   signer/certificate/cert.txt          (mật khẩu .p12, có thể để trống)
+# Secret cần có trong repo Kepto (Settings → Secrets → Actions):
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+#   (tạo R2 API token trong Cloudflare dashboard, quyền Object Read & Write
+#   trên bucket; không cần bucket public vì dùng presigned URL)
+
 on:
   workflow_dispatch:
   push:
     paths:
       - "ios-app/**"
 
-# 1. TỰ ĐỘNG HỦY JOB CŨ: Nếu bạn push 3 lần liên tiếp, GitHub sẽ tự hủy 2 job cũ 
+# 1. TỰ ĐỘNG HỦY JOB CŨ: Nếu bạn push 3 lần liên tiếp, GitHub sẽ tự hủy 2 job cũ
 # đang xếp hàng, chỉ giữ lại job mới nhất. Tránh việc bạn phải chờ đợi vô ích.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,7 +39,7 @@ permissions:
 jobs:
   build:
     name: Build unsigned IPA
-    runs-on: macos-15 
+    runs-on: macos-15
     # (macos-15 là bắt buộc lúc này vì 14 đã chết. Hãy kiên nhẫn chờ, đừng hủy job)
     timeout-minutes: 60 # Tăng lên 60 phút để không bị kill giữa chừng nếu build chậm
 
@@ -73,6 +94,68 @@ jobs:
           path: Kepto-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
+
+      # 3. SIGN: ký IPA vừa build bằng cert trong signer/certificate/
+      # (cert.p12 + cert.mobileprovision + cert.txt). Không PPQ Protection:
+      # bundle id giữ nguyên com.sadboizx.kepto; nếu profile không cấp cho
+      # đúng bundle id đó thì bước này dừng lại và báo lỗi rõ ràng.
+      - name: Sign IPA
+        run: |
+          set -euo pipefail
+          python3 -m signer.sign_one --ipa Kepto-unsigned.ipa --out signed
+          SIGNED_IPA="$(ls signed/*.ipa | head -n 1)"
+          test -n "$SIGNED_IPA"
+          echo "SIGNED_IPA=$SIGNED_IPA" >> "$GITHUB_ENV"
+          ls -lh "$SIGNED_IPA"
+
+      # 4. UPLOAD R2 + LINK CÀI TRỰC TIẾP: đẩy IPA đã ký lên R2, sinh
+      # manifest OTA (.plist) từ signer/ipa.py, đẩy manifest lên R2, rồi
+      # in link itms-services ra job summary — bấm link là iOS hiện bảng
+      # cài đặt, không cần Feather, không cần máy tính. aws cli có sẵn
+      # trên máy macOS. Không cần bucket public vì dùng presigned URL
+      # (cả IPA và manifest đều hết hạn sau 7 ngày).
+      - name: Upload signed IPA to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          TS="$(date +%Y%m%d-%H%M%S)"
+          KEY="kepto-signed/Kepto-$TS.ipa"
+          MKEY="kepto-signed/Kepto-$TS.plist"
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 cp "$SIGNED_IPA" "s3://${R2_BUCKET}/${KEY}" --endpoint-url "$ENDPOINT"
+          URL="$(aws s3 presign "s3://${R2_BUCKET}/${KEY}" --endpoint-url "$ENDPOINT" --expires-in 604800)"
+          # Manifest OTA: đọc bundle id / version / tên từ Info.plist
+          # trong IPA đã ký, nhúng link IPA (presigned) vào manifest.
+          python3 - "$SIGNED_IPA" "$URL" manifest.plist <<'EOF'
+          import plistlib, sys, zipfile
+          from signer.ipa import manifest
+          ipa_path, ipa_url, out = sys.argv[1], sys.argv[2], sys.argv[3]
+          with zipfile.ZipFile(ipa_path) as zf:
+              name = next(n for n in zf.namelist() if n.endswith(".app/Info.plist"))
+              info = plistlib.loads(zf.read(name))
+          bundle_id = str(info.get("CFBundleIdentifier", ""))
+          title = str(info.get("CFBundleDisplayName") or info.get("CFBundleName") or "Kepto")
+          version = str(info.get("CFBundleShortVersionString", "") or "")
+          open(out, "w", encoding="utf-8").write(manifest(ipa_url, bundle_id, version, title))
+          print(f"manifest: {bundle_id} {version} {title}")
+          EOF
+          aws s3 cp manifest.plist "s3://${R2_BUCKET}/${MKEY}" --endpoint-url "$ENDPOINT" --content-type "application/x-plist"
+          MURL="$(aws s3 presign "s3://${R2_BUCKET}/${MKEY}" --endpoint-url "$ENDPOINT" --expires-in 604800)"
+          ENC="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$MURL")"
+          INSTALL="itms-services://?action=download-manifest&url=$ENC"
+          {
+            echo "## Signed IPA"
+            echo ""
+            echo "- [Cài Kepto — bấm để cài]($INSTALL)"
+            echo "- IPA trực tiếp (hết hạn sau 7 ngày): $URL"
+            echo "- File: \`$KEY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "SIGNED_URL=$URL" >> "$GITHUB_ENV"
+          echo "INSTALL_URL=$INSTALL" >> "$GITHUB_ENV"
 
       - name: Upload build log (on failure)
         if: failure()
