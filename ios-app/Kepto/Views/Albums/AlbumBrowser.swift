@@ -55,7 +55,8 @@ struct PhotoCollectionScreen: View {
     /// The item the feed opens on (nil = feed closed).
     @State private var feedStartItem: Item?
     /// Initial scroll to the bottom (newest, Apple Photos): the
-    /// album opens on the newest item. See maybeInitialScroll.
+    /// album opens on the newest item. The initial scroll itself
+    /// lives in AlbumGridCollectionView (first snapshot).
     @State private var didInitialScroll = false
     /// True while the last (newest) cell is on screen — i.e. the
     /// user is at the bottom. Gates the new-item follow scroll.
@@ -68,10 +69,11 @@ struct PhotoCollectionScreen: View {
     /// `CellFrameCache`): written directly by the cells (no
     /// PreferenceKey), read only when a cell is tapped.
     @State private var cellFrameCache = CellFrameCache()
-    /// The grid's ScrollView proxy, kept so the viewer's
-    /// `onCurrentItemChange` can scroll the grid to the current
-    /// thumbnail (same pattern as LibraryView's `scrollProxy`).
-    @State private var scrollProxy: ScrollViewProxy?
+    /// Handle for driving the album UICollectionView from SwiftUI
+    /// (scroll to bottom on open / re-tap, scroll to a specific
+    /// cell when the viewer pages). Populated by
+    /// `AlbumGridCollectionView` via a weak reference.
+    @State private var gridScroll = GridScrollController()
     /// The grid's visible viewport (same pattern as LibraryView):
     /// the viewer-follow check scrolls unless the current cell is
     /// fully inside it.
@@ -122,11 +124,6 @@ struct PhotoCollectionScreen: View {
     @State private var showingSettings = false
     /// Presents Photos' Add to Album sheet for the selection.
     @State private var showingAddToAlbum = false
-
-    /// Detail-grid columns: 2 on narrow screens, 3 on wide ones
-    /// (spec: "2 hoặc 3 cột tùy kích thước màn hình"). iPhone 12 Pro
-    /// Max (428pt) gets 3; iPhone SE / 12 (375–390pt) get 2.
-    private var columns: [GridItem] { albumGridColumns(width: scrollViewport.width) }
 
     /// The title in the navigation bar.
     private var title: String {
@@ -424,9 +421,6 @@ struct PhotoCollectionScreen: View {
                     selectBar
                 }
             }
-            .refreshable {
-                await fetch(reset: true)
-            }
             .task {
                 // Kick the full-metadata fetch off in parallel: the
                 // flag merge needs the cache, and the user may open
@@ -571,191 +565,110 @@ struct PhotoCollectionScreen: View {
         }
     }
 
+    /// Cell width tính toán dựa trên số cột (2 cho màn nhỏ, 3 cho màn to).
+    private var albumColumnCount: Int {
+        let width = scrollViewport.width > 0 ? scrollViewport.width : UIScreen.main.bounds.width
+        return width < 400 ? 2 : 3
+    }
+
+    private var albumCellWidth: CGFloat {
+        let spacing: CGFloat = 2
+        let totalSpacing = spacing * CGFloat(albumColumnCount - 1)
+        let width = scrollViewport.width > 0 ? scrollViewport.width : UIScreen.main.bounds.width
+        return floor((width - totalSpacing) / CGFloat(albumColumnCount))
+    }
+
     private var collectionGrid: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 0) {
-                    collectionLazyGrid
-                    skeletonGridIfNeeded
-                    loadMoreFooterIfNeeded
+        Group {
+            if sortedItems.isEmpty && isLoading {
+                skeletonGrid
+            } else {
+                AlbumGridCollectionView(
+                    items: sortedItems,
+                    selecting: isSelecting,
+                    selectedIDs: selectedIDs,
+                    cellWidth: albumCellWidth,
+                    spacing: 2,
+                    columnCount: albumColumnCount,
+                    topInset: topChromeHeight,
+                    hasMore: nextCursor != nil,
+                    isLoadingMore: isLoadingMore,
+                    frameCache: cellFrameCache,
+                    scrollController: gridScroll,
+                    viewModel: viewModel,
+                    contextMenuFor: { item in
+                        // Explicit if/else (not ternary): a closure + nil
+                        // ternary was the hardest inference case in the
+                        // old cell builder — same rule here.
+                        let removeClosure: ((Item) -> Void)?
+                        if sourceIsMyCollection {
+                            removeClosure = { target in
+                                Task { await removeFromCollection(target) }
+                            }
+                        } else {
+                            removeClosure = nil
+                        }
+                        return AnyView(GridItemContextMenu(
+                            item: item,
+                            isSelecting: isSelecting,
+                            onSaveToPhotos: { saveToPhotos($0) },
+                            onShare: { shareItem($0) },
+                            onToggleFavorite: { toggleGridFavorite($0) },
+                            onAddToAlbum: { itemForAlbumPicker = $0 },
+                            onDelete: { requestGridDelete($0) },
+                            onRemoveFromCollection: removeClosure
+                        ))
+                    },
+                    onTap: { item in
+                        handleCellTap(item)
+                    },
+                    // Load-more fires at the OLDEST end (index 0 is the
+                    // oldest in sortedItems); loadMore() self-guards
+                    // on nextCursor / isLoadingMore.
+                    onLoadMore: { Task { await loadMore() } },
+                    onDragSelect: { selectedIDs = $0 },
+                    onLastCellVisibilityChange: { visible in isAtBottom = visible },
+                    onRefresh: { await fetch(reset: true) }
+                )
+                .ignoresSafeArea(.container, edges: .top)
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
+            }
+        }
+        .onAppear {
+            seedItemsFromCache()
+            refreshSortedItems()
+            viewModel.prefetchMissingThumbnails(ids: items.map(\.id))
+            if !cachedSortedItems.isEmpty { didInitialScroll = true }
+        }
+        .onChange(of: items) { oldItems, newItems in
+            let oldLast = cachedSortedItems.last?.id
+            refreshSortedItems()
+            cellFrameCache.prune(keeping: Set(cachedSortedItems.map(\.id)))
+            if !cachedSortedItems.isEmpty { didInitialScroll = true }
+            maybeScrollToNewItem(oldLast: oldLast, newLast: cachedSortedItems.last?.id, oldCount: oldItems.count, newCount: newItems.count)
+        }
+    }
+
+    private var skeletonGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: albumColumnCount), spacing: 2) {
+                ForEach(0..<12, id: \.self) { _ in
+                    Color(.systemGray5)
+                        .aspectRatio(1, contentMode: .fit)
                 }
             }
-            // The grid must not move when the viewer closes
-            // (round-17): while the viewer is open the nav bar +
-            // status bar are hidden, so the top safe-area inset is
-            // 0; when they come back the inset grows by ~91pt and
-            // the ScrollView's offset compensation for it lands a
-            // frame late — the grid jerks up slightly at the swap
-            // instant. The 0.15s deferred merge was exonerated
-            // (the device video shows the grid pixel-stable across
-            // it). Ignoring the top safe area pins the content
-            // inset to 0 in both states, so the bars returning
-            // cannot move the content at all. The fixed top margin
-            // below (round-19) replaces the inset: without it the
-            // first row sat at y = 0, half-hidden under the
-            // transparent nav bar (the Favorites 1-item screenshot
-            // proves it — the only cell is stuck under the chrome).
-            // The margin is latched at max (see `topChromeHeight`),
-            // so it never changes while the viewer hides the chrome.
-            // Open at the BOTTOM (newest) from the very first frame
-            // (round-20): `.defaultScrollAnchor(.bottom)` (iOS 17+)
-            // is a layout anchor, not a scroll — the ScrollView lays
-            // out with its content pinned at the bottom edge, so
-            // there is no onAppear scrollTo, no flash at the top and
-            // no slide-down. The old `maybeInitialScroll` scrollTo
-            // calls stay as a belt-and-braces fallback (they no-op
-            // once the view is already at the bottom) and still set
-            // the flags `maybeScrollToNewItem` needs. As async data
-            // lands, the anchor keeps the bottom pinned (new content
-            // grows upward); pull-to-refresh swaps the page in place
-            // (`items = page`, never emptied first), so it does not
-            // reset the position — and a mid-list user is not yanked
-            // when items append below the viewport. Load-more
-            // prepends OLDER pages at the top; the anchor keeps the
-            // visible content stable (no jump).
-            .ignoresSafeArea(edges: .top)
-            .defaultScrollAnchor(.bottom)
-            .contentMargins(.top, topChromeHeight, for: .scrollContent)
-            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
-            .simultaneousGesture(dragSelectGesture)
-            .onAppear {
-                scrollProxy = proxy
-                // Render from the cache first (round-21): the grid is
-                // up before the first page returns.
-                seedItemsFromCache()
-                refreshSortedItems()
-                // Round-26: prefetch thumbnails for this album's
-                // items (delta load — cached ones are skipped).
-                viewModel.prefetchMissingThumbnails(ids: items.map(\.id))
-                maybeInitialScroll(proxy)
-            }
-            .onChange(of: items) { oldItems, newItems in
-                let oldLast = cachedSortedItems.last?.id
-                refreshSortedItems()
-                // Prune stale cell frames (hot-path fix): the cache
-                // only needs the frames of the items currently in
-                // this album.
-                cellFrameCache.prune(keeping: Set(cachedSortedItems.map(\.id)))
-                maybeInitialScroll(proxy)
-                maybeScrollToNewItem(proxy, oldLast: oldLast, newLast: cachedSortedItems.last?.id, oldCount: oldItems.count, newCount: newItems.count)
-            }
+            .padding(.top, topChromeHeight)
         }
+        .ignoresSafeArea(.container, edges: .top)
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { scrollViewport = $0 }
     }
 
-    /// The grid of cells. Extracted so the SwiftUI type-checker sees
-    /// each piece separately — the original inline ForEach + PhotosGridCell
-    /// + contextMenu + onAppear/onDisappear expression timed out
-    /// ("compiler is unable to type-check this expression in
-    /// reasonable time") because the four nested builders multiplied
-    /// the inference work.
-    private var collectionLazyGrid: some View {
-        LazyVGrid(columns: columns, spacing: 2) {
-            ForEach(sortedItems) { item in
-                collectionCell(for: item)
-            }
-        }
-    }
-
-    /// One cell + its menu + its appear/disappear hooks. Extracted
-    /// (same reason as `collectionLazyGrid`): each nested builder
-    /// (contextMenu, onAppear, onDisappear) is its own type-inference
-    /// problem when written inline; a helper collapses them into one
-    /// `some View` at the call site. The `removeClosure` is built
-    /// with explicit if/else (not ternary) — the ternary with a
-    /// closure + nil was the hardest inference case inside the
-    /// original expression.
-    private func collectionCell(for item: Item) -> some View {
-        let removeClosure: ((Item) -> Void)?
-        if sourceIsMyCollection {
-            removeClosure = { (target: Item) in
-                Task { await removeFromCollection(target) }
-            }
-        } else {
-            removeClosure = nil
-        }
-        return PhotosGridCell(
-            item: item,
-            isSelectionMode: isSelecting,
-            isSelected: selectedIDs.contains(item.id),
-            onTap: { handleCellTap(item) },
-            frameCache: cellFrameCache
-        )
-        .contextMenu {
-            GridItemContextMenu(
-                item: item,
-                isSelecting: isSelecting,
-                onSaveToPhotos: { saveToPhotos($0) },
-                onShare: { shareItem($0) },
-                onToggleFavorite: { toggleGridFavorite($0) },
-                onAddToAlbum: { itemForAlbumPicker = $0 },
-                onDelete: { requestGridDelete($0) },
-                onRemoveFromCollection: removeClosure
-            )
-        }
-        .onAppear { handleCellAppear(item) }
-        .onDisappear { handleCellDisappear(item) }
-    }
-
-    /// Tap behavior: in select mode toggle the selection; otherwise
-    /// capture the tapped cell's frame (for the viewer's shrink-to-
-    /// thumbnail dismiss) and open the viewer. Lifted out of the
-    /// inline `onTap:` closure so the compiler does not have to
-    /// infer it inside the ForEach/LazyVGrid nest.
     private func handleCellTap(_ item: Item) {
         if isSelecting {
             toggleSelection(item)
         } else {
             feedStartFrame = cellFrameCache.frames[item.id]
             feedStartItem = item
-        }
-    }
-
-    /// Load-more fires at the OLDEST end (top): the server pages go
-    /// older, so the oldest loaded cell appearing means the user
-    /// scrolled up into not-yet-loaded items.
-    private func handleCellAppear(_ item: Item) {
-        if item.id == sortedItems.first?.id {
-            Task { await loadMore() }
-        }
-        if item.id == sortedItems.last?.id { isAtBottom = true }
-    }
-
-    private func handleCellDisappear(_ item: Item) {
-        if item.id == sortedItems.last?.id { isAtBottom = false }
-    }
-
-    /// Cold-cache placeholder grid: gray cells in the exact grid
-    /// layout — no full-screen spinner, no layout flash when the real
-    /// cells land (round-21). Extracted with the same reasoning.
-    @ViewBuilder
-    private var skeletonGridIfNeeded: some View {
-        if sortedItems.isEmpty && isLoading {
-            LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(0..<12, id: \.self) { _ in
-                    Color(.systemGray5)
-                        .aspectRatio(1, contentMode: .fit)
-                }
-            }
-        }
-    }
-
-    /// Load-more footer. Extracted with the same reasoning as the
-    /// grid.
-    @ViewBuilder
-    private var loadMoreFooterIfNeeded: some View {
-        if nextCursor != nil {
-            HStack {
-                Spacer()
-                if isLoadingMore {
-                    ProgressView()
-                } else {
-                    Button(L10n.loadMore) {
-                        Task { await loadMore() }
-                    }
-                }
-                Spacer()
-            }
-            .padding(.vertical, 12)
         }
     }
 
@@ -867,25 +780,6 @@ struct PhotoCollectionScreen: View {
         }
     }
 
-    /// Drag-to-select (Photos): in select mode a drag across cells
-    /// selects/deselects them in bulk (see `DragSelectTracker`).
-    /// `minimumDistance: 12` keeps tap-to-toggle intact, and
-    /// `.simultaneousGesture` lets the ScrollView still scroll.
-    private var dragSelectGesture: some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                guard isSelecting else { return }
-                selectedIDs = dragSelect.update(
-                    start: value.startLocation,
-                    current: value.location,
-                    toGlobal: { CGPoint(x: scrollViewport.origin.x + $0.x, y: scrollViewport.origin.y + $0.y) },
-                    frames: cellFrameCache.frames,
-                    selection: selectedIDs
-                )
-            }
-            .onEnded { _ in dragSelect.reset() }
-    }
-
     /// Empty-state copy for this source.
     private var emptyTitle: String {
         switch source {
@@ -972,7 +866,6 @@ struct PhotoCollectionScreen: View {
     /// open, so the top edge is y = 0. An unknown frame (cell never
     /// laid out) still scrolls: `scrollTo` lays it out.
     private func scrollGridToCurrentItem(id: String) {
-        guard let proxy = scrollProxy else { return }
         guard sortedItems.contains(where: { $0.id == id }) else { return }
         // Round-30: match LibraryView — scroll unless the cell is
         // FULLY inside the viewport. The old `intersects` test
@@ -984,42 +877,16 @@ struct PhotoCollectionScreen: View {
             let visible = scrollViewport.insetBy(dx: 0, dy: 8)
             if visible.contains(frame) { return }
         }
-        var transaction = Transaction()
-        transaction.animation = nil
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { proxy.scrollTo(id, anchor: .center) }
+        gridScroll.scrollTo(id: id, at: .centeredVertically, animated: false)
     }
 
-    /// Instant (no-animation) scroll to the bottom (newest item).
-    /// The transaction disables animations outright — a plain
-    /// scrollTo could otherwise visibly slide down on open.
     /// Round-31: animated scroll to the bottom (re-tap on the
     /// Albums tab while inside this album). Same guards as the
     /// Library's: no-op when already at the bottom, when the
     /// viewer is open, or when there is no target (empty album).
     private func scrollToBottomAnimated() {
-        guard let proxy = scrollProxy, let id = sortedItems.last?.id, !isAtBottom, feedStartItem == nil else { return }
-        withAnimation(.easeOut(duration: 0.4)) { proxy.scrollTo(id, anchor: .bottom) }
-    }
-
-    private func scrollToBottomInstant(_ proxy: ScrollViewProxy) {
-        guard let id = sortedItems.last?.id else { return }
-        var transaction = Transaction()
-        transaction.animation = nil
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { proxy.scrollTo(id, anchor: .bottom) }
-    }
-
-    /// Scroll to the bottom (newest) once, instantly, on first open
-    /// (Apple Photos opens on the newest photo). Fires when the
-    /// first page is in; later pages are older, so the newest item
-    /// stays the last one and no re-anchor is ever needed. Never
-    /// fires while the viewer is open, and never on pull-to-refresh
-    /// (fetch(reset:) leaves the order and the once-flag alone).
-    private func maybeInitialScroll(_ proxy: ScrollViewProxy) {
-        guard !didInitialScroll, !sortedItems.isEmpty, feedStartItem == nil else { return }
-        scrollToBottomInstant(proxy)
-        didInitialScroll = true
+        guard !isAtBottom, feedStartItem == nil else { return }
+        gridScroll.scrollToBottom(animated: true)
     }
 
     /// A new item arrived at the end (bottom): if the user is at the
@@ -1028,10 +895,10 @@ struct PhotoCollectionScreen: View {
     /// and never while the viewer or select mode is open. (Load-more
     /// appends OLDER pages, so the displayed last item does not
     /// change there and this never fires on paging.)
-    private func maybeScrollToNewItem(_ proxy: ScrollViewProxy, oldLast: String?, newLast: String?, oldCount: Int, newCount: Int) {
+    private func maybeScrollToNewItem(oldLast: String?, newLast: String?, oldCount: Int, newCount: Int) {
         guard didInitialScroll, isAtBottom, feedStartItem == nil, !isSelecting else { return }
         guard newCount > oldCount, let newLast, newLast != oldLast else { return }
-        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(newLast, anchor: .bottom) }
+        gridScroll.scrollTo(id: newLast, at: .bottom, animated: true)
     }
 
     // MARK: - Loading
@@ -1402,19 +1269,4 @@ struct AddToAlbumSheet: View {
         if let item = viewModel.items.first(where: { $0.id == id }) { return item }
         return await viewModel.fetchItem(id: id)
     }
-}
-
-/// Grid columns for album/collection detail grids: 2 columns on
-/// narrow screens, 3 on wide ones (spec: "2 hoặc 3 cột tùy kích
-/// thước màn hình"). iPhone 12 Pro Max (428pt) gets 3; iPhone SE /
-/// 12 (375–390pt) get 2. Fixed integer-pixel widths (hot-path fix):
-/// `.flexible()` re-measures every layout pass and rounds sub-pixel
-/// widths differently per row, causing 0.5px jitter while scrolling.
-/// Falls back to the screen width while the viewport is still zero
-/// (first layout, before `.onGeometryChange` fires).
-private func albumGridColumns(width: CGFloat) -> [GridItem] {
-    let screenWidth = width > 0 ? width : UIScreen.main.bounds.width
-    let count = screenWidth < 400 ? 2 : 3
-    let itemWidth = floor((screenWidth - 2 * CGFloat(count - 1)) / CGFloat(count))
-    return Array(repeating: GridItem(.fixed(itemWidth), spacing: 2), count: count)
 }
