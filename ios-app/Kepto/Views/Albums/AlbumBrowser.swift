@@ -613,7 +613,7 @@ struct PhotoCollectionScreen: View {
                             onSaveToPhotos: { saveToPhotos($0) },
                             onShare: { shareItem($0) },
                             onToggleFavorite: { toggleGridFavorite($0) },
-                            onAddToAlbum: { Task { await openAddToAlbum($0.id) } },
+                            onAddToAlbum: { item in Task { await openAddToAlbum(item.id) } },
                             onDelete: { requestGridDelete($0) },
                             onRemoveFromCollection: removeClosure
                         ))
