@@ -18,6 +18,12 @@ name: Build IPA (unsigned)
 # summary nên dòng "bấm để cài" chỉ còn là chữ thường, không bấm được.
 # Vì vậy v4 dùng URL public của bucket (không có chữ ký, không secret
 # trong link) và đặt nút cài thật vào trong trang HTML.
+# v6: install.html tự nhảy sang itms-services bằng JS ngay khi mở trang
+# (kiểu Feather dùng cho WKWebView) — bấm badge 1 cái là tới bảng cài,
+# không cần bấm thêm; nút Cài vẫn giữ lại phòng khi Safari chặn cú nhảy.
+# Trình duyệt vẫn mở lên một nhịp vì link trong summary bắt buộc là https.
+# Không dùng redirect 302 sang itms-services: hướng dẫn OTA nói cách đó
+# không tin cậy, scheme phải nằm trực tiếp trong href của trang https.
 # Hệ quả: ai có link cũng tải được IPA (giống model Signed releases
 # public trước đây); file không tự hết hạn sau 7 ngày nữa — muốn xóa thì
 # xóa tay trong bucket.
@@ -145,6 +151,13 @@ jobs:
           MKEY="kepto-signed/Kepto-$TS.plist"
           IKEY="kepto-signed/install-$TS.html"
           BASE="${R2_PUBLIC_BASE%/}"
+          # v5: R2_PUBLIC_BASE lưu thiếu "https://" (chỉ có pub-xxx.r2.dev)
+          # thì link thành đường dẫn tương đối, trình duyệt ghép vào trang
+          # GitHub thay vì mở r2.dev — tự thêm https:// nếu thiếu.
+          case "$BASE" in
+            http://*|https://*) ;;
+            *) BASE="https://$BASE" ;;
+          esac
           IPA_URL="$BASE/$KEY"
           MURL="$BASE/$MKEY"
           PAGE_URL="$BASE/$IKEY"
@@ -178,10 +191,11 @@ jobs:
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
           <title>Cài Kepto</title>
+          <script>window.location.replace("{install_url}");</script>
           </head>
           <body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#000;color:#fff;text-align:center;padding:64px 20px">
           <h1 style="font-size:28px;margin:0 0 8px">Kepto</h1>
-          <p style="color:#aaa;margin:0 0 32px">Bấm nút bên dưới để cài đặt.</p>
+          <p style="color:#aaa;margin:0 0 32px">Đang mở bảng cài đặt… Nếu không tự mở, bấm nút bên dưới.</p>
           <a href="{install_url}" style="display:inline-block;padding:16px 36px;background:#0a84ff;color:#fff;border-radius:14px;text-decoration:none;font-size:20px;font-weight:600">Cài Kepto</a>
           <p style="margin-top:28px"><a href="{ipa_url}" style="color:#0a84ff">Tải file IPA trực tiếp</a> (mở bằng Feather nếu cần)</p>
           <p style="color:#888;font-size:13px;margin-top:28px">Nếu hiện "Untrusted Developer": Cài đặt → Cài đặt chung → VPN &amp; Quản lý thiết bị → tin cậy chứng chỉ.</p>
