@@ -36,10 +36,13 @@ name: Build IPA (unsigned)
 #   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
 #   (tạo R2 API token trong Cloudflare dashboard, quyền Object Read & Write
 #   trên bucket)
-#   R2_PUBLIC_BASE                       (URL public của bucket, vd
-#   https://pub-xxxx.r2.dev — bật trong Cloudflare dashboard → R2 →
-#   bucket → Settings → Public URL (r2.dev) → Allow Access, rồi copy URL
-#   đó vào secret này. Chỉ cần làm một lần.)
+# KHÔNG cần secret R2_PUBLIC_BASE nữa (v7): host public của bucket ghi
+# thẳng trong file workflow bên dưới. Lý do: GitHub che mọi giá trị secret
+# xuất hiện trong job summary — link chứa secret bị thay bằng *** nên thành
+# đường dẫn tương đối, bấm vào là về trang GitHub. Host r2.dev là public
+# (ai cũng tải được file) nên ghi thẳng là an toàn. Chỉ cần bật Public URL
+# một lần: Cloudflare dashboard → R2 → bucket → Settings → Public URL
+# (r2.dev) → Allow Access. Secret R2_PUBLIC_BASE cũ (nếu có) xoá cũng được.
 
 on:
   workflow_dispatch:
@@ -139,25 +142,19 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
         run: |
           set -euo pipefail
-          if [ -z "${R2_PUBLIC_BASE:-}" ]; then
-            echo "::error::Thiếu secret R2_PUBLIC_BASE. Bật URL public của bucket trước: Cloudflare dashboard → R2 → bucket → Settings → Public URL (r2.dev) → Allow Access, rồi thêm secret R2_PUBLIC_BASE = URL đó (vd https://pub-xxxx.r2.dev)."
-            exit 1
-          fi
           TS="$(date +%Y%m%d-%H%M%S)"
           KEY="kepto-signed/Kepto-$TS.ipa"
           MKEY="kepto-signed/Kepto-$TS.plist"
           IKEY="kepto-signed/install-$TS.html"
-          BASE="${R2_PUBLIC_BASE%/}"
-          # v5: R2_PUBLIC_BASE lưu thiếu "https://" (chỉ có pub-xxx.r2.dev)
-          # thì link thành đường dẫn tương đối, trình duyệt ghép vào trang
-          # GitHub thay vì mở r2.dev — tự thêm https:// nếu thiếu.
-          case "$BASE" in
-            http://*|https://*) ;;
-            *) BASE="https://$BASE" ;;
-          esac
+          # v7: host public ghi THẲNG ở đây, KHÔNG dùng secret R2_PUBLIC_BASE.
+          # GitHub che mọi giá trị secret xuất hiện trong job summary — link
+          # chứa secret bị thay bằng *** nên thành đường dẫn tương đối, bấm
+          # vào là về trang GitHub (đây mới là nguyên nhân thật; chẩn đoán
+          # v5 "secret thiếu https://" là SAI — secret vốn đã có https://).
+          # Host r2.dev là public nên ghi thẳng trong file workflow là an toàn.
+          BASE="https://pub-4c3a18d3984d4ddc9ea95f6106109a4d.r2.dev"
           IPA_URL="$BASE/$KEY"
           MURL="$BASE/$MKEY"
           PAGE_URL="$BASE/$IKEY"
