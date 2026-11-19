@@ -119,9 +119,11 @@ struct SelectBottomBar<More: View>: View {
                 .foregroundStyle(total > 0 ? Color.blue : Color.gray)
                 .disabled(total == 0)
         }
-        .padding(.top, 6)
-        .padding(.bottom, 2)
-        .background(.bar)
+        .frame(height: 49)  // UITabBar standard content height
+        .background {
+            Color(uiColor: .systemGray6)
+                .ignoresSafeArea(edges: .bottom)  // Fill into bottom safe area (home indicator)
+        }
     }
 
     private func iconButton(_ symbol: String, action: @escaping () -> Void) -> some View {
@@ -287,9 +289,8 @@ struct DocumentPickerView: UIViewControllerRepresentable {
 /// (Photos): a gray placeholder with the Add-to-Album icon
 /// (rectangle.stack.badge.plus, same as the "Add to Album" action)
 /// and the "New Album..." label below, same size as an album card.
-/// Tapping it opens the New Album name alert. Shared by the
-/// import picker (ImportAlbumPickerView) and the long-press
-/// picker (AddToCollectionPickerView).
+/// Tapping it opens the New Album name alert. Used by the Add to
+/// Album picker (ImportAlbumPickerView).
 struct NewAlbumCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -312,9 +313,8 @@ struct NewAlbumCardView: View {
 
 /// One album card in an Add to Album sheet: cover thumbnail + name +
 /// count, laid out like the Photos See All grid (square cover,
-/// name + count underneath, regular weight — not bold). Shared by
-/// the import picker (ImportAlbumPickerView) and the long-press
-/// picker (AddToCollectionPickerView).
+/// name + count underneath, regular weight — not bold). Used by
+/// the Add to Album picker (ImportAlbumPickerView).
 struct PickerAlbumCardView: View {
     let collection: MyCollection
 

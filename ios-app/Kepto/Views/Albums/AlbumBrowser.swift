@@ -91,10 +91,6 @@ struct PhotoCollectionScreen: View {
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
-    /// Items the Add to Album picker is open for (nil = picker
-    /// closed). Single item (context menu) và bulk (select bar) dùng
-    /// chung một overlay picker này (như LibraryView).
-    @State private var albumPickerItems: [Item]? = nil
     /// A downloaded file ready for the iOS share sheet (nil = closed).
     @State private var shareFile: ShareFile?
     /// Downloaded files for the bulk share sheet.
@@ -207,12 +203,6 @@ struct PhotoCollectionScreen: View {
     /// property so the compiler type-checks it apart from `body`.
     private var collectionWithNavigation: some View {
         collectionWithAlerts
-            // Add to Album mở: grid phía sau thu nhỏ + bo góc (Apple
-            // Photos), như LibraryView. Scale là render transform nên
-            // thumbnail không di chuyển; viewer overlay gắn sau không
-            // bị scale.
-            .scaleEffect(albumPickerItems != nil ? 0.92 : 1.0)
-            .clipShape(RoundedRectangle(cornerRadius: albumPickerItems != nil ? 30 : 0))
             // Viewer as a full-screen OVERLAY over this grid, not a
             // push — see PhotoDetailView's header comment for why
             // (a push's hosting layer is opaque: the grid never
@@ -256,29 +246,6 @@ struct PhotoCollectionScreen: View {
                     .ignoresSafeArea()
                 }
             }
-            // Add to Album picker: overlay (không phải .sheet hệ
-            // thống) để grid phía sau scale được — overlay là sibling
-            // của grid đã scale, nên sheet luôn full-size. Một
-            // .animation duy nhất ở cuối lo cả trượt sheet lẫn scale
-            // grid, cả lúc mở lẫn lúc đóng.
-            .overlay {
-                if let items = albumPickerItems {
-                    AddToAlbumPickerView(
-                        items: items,
-                        onDone: { name, added in
-                            if isSelecting {
-                                viewModel.showToast(L10n.addedCountToCollection(added, name))
-                                exitSelectionMode()
-                            } else {
-                                viewModel.showToast(added > 0 ? L10n.addedToCollection(name) : L10n.alreadyInCollection(name))
-                            }
-                            albumPickerItems = nil
-                        },
-                        onCancel: { albumPickerItems = nil }
-                    )
-                    .transition(.move(edge: .bottom))
-                }
-            }
             .fullScreenCover(isPresented: $showingSlideshow) {
                 SlideshowView(items: slideshowItems)
             }
@@ -288,7 +255,16 @@ struct PhotoCollectionScreen: View {
             .sheet(isPresented: $showingBulkShare) {
                 ShareSheet(activityItems: shareURLs)
             }
-            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: albumPickerItems != nil)
+            .onChange(of: viewModel.lastAddedToAlbum) { _, newValue in
+                guard let result = newValue, result.source == .albumBrowser else { return }
+                if isSelecting {
+                    viewModel.showToast(L10n.addedCountToCollection(result.addedCount, result.name))
+                    exitSelectionMode()
+                } else {
+                    viewModel.showToast(result.addedCount > 0 ? L10n.addedToCollection(result.name) : L10n.alreadyInCollection(result.name))
+                }
+                viewModel.lastAddedToAlbum = nil
+            }
     }
 
     /// Alerts + the delete-album dialog over the grid. Kept apart
@@ -637,7 +613,7 @@ struct PhotoCollectionScreen: View {
                             onSaveToPhotos: { saveToPhotos($0) },
                             onShare: { shareItem($0) },
                             onToggleFavorite: { toggleGridFavorite($0) },
-                            onAddToAlbum: { albumPickerItems = [$0] },
+                            onAddToAlbum: { Task { await openAddToAlbum($0.id) } },
                             onDelete: { requestGridDelete($0) },
                             onRemoveFromCollection: removeClosure
                         ))
@@ -879,13 +855,35 @@ struct PhotoCollectionScreen: View {
 
     /// Bulk Add to Album: resolve the selection to full Items rồi mở
     /// overlay picker chung (như LibraryView.presentAddToAlbum).
+    private func openAddToAlbum(_ id: String) async {
+        guard !viewModel.isUploading else {
+            viewModel.showToast("Đang tải lên, vui lòng chờ.", isError: true)
+            return
+        }
+        guard let item = await resolveItem(id: id) else { return }
+        viewModel.importPickerItems = [item]
+        viewModel.chosenImportAlbum = nil
+        viewModel.pendingAddSource = .albumBrowser
+        viewModel.showingImportAlbumPicker = true
+    }
+
     private func presentAddToAlbum() async {
+        guard !viewModel.isUploading else {
+            viewModel.showToast("Đang tải lên, vui lòng chờ.", isError: true)
+            return
+        }
         var resolved: [Item] = []
         for id in selectedIDs {
             if let item = await resolveItem(id: id) { resolved.append(item) }
         }
-        guard !resolved.isEmpty else { return }
-        albumPickerItems = resolved
+        guard !resolved.isEmpty else {
+            viewModel.showToast(L10n.loadItemsToAddFailed, isError: true)
+            return
+        }
+        viewModel.importPickerItems = resolved
+        viewModel.chosenImportAlbum = nil
+        viewModel.pendingAddSource = .albumBrowser
+        viewModel.showingImportAlbumPicker = true
     }
 
     // MARK: - Scroll to bottom (Apple Photos order)

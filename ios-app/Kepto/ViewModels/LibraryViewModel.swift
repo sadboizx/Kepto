@@ -7,6 +7,21 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+/// Result of a manual Add to Album (Library/Albums tab) via the
+/// import picker: which tab asked, the album name, and how many
+/// items were newly added. Published so the calling tab can toast
+/// + exit select mode when the add finishes.
+struct AddedToAlbumResult: Equatable {
+    let source: AddToAlbumSource
+    let name: String
+    let addedCount: Int
+}
+
+enum AddToAlbumSource: Equatable {
+    case library
+    case albumBrowser
+}
+
 /// Owns the library state. Cloud-only: media lives in R2/D1 behind
 /// the Worker API; no photo or video is ever stored on disk. Only the
 /// light listAll metadata (ids, titles, dates, flags) is cached on
@@ -178,6 +193,14 @@ final class LibraryViewModel: ObservableObject {
     @Published var showingImportAlbumPicker = false
     /// The just-uploaded items awaiting an album choice.
     @Published var importPickerItems: [Item] = []
+    /// Result of the latest manual Add to Album (nil = none /
+    /// already consumed). Set by addItemsToChosenAlbum when
+    /// pendingAddSource is set; the calling tab observes it.
+    @Published var lastAddedToAlbum: AddedToAlbumResult?
+    /// Which tab opened the import picker for a manual Add to
+    /// Album (nil = the picker is an import flow). Cleared when
+    /// the add runs, or when a new upload/import starts.
+    var pendingAddSource: AddToAlbumSource?
     /// Ids of items this session just imported (Photos/Files upload),
     /// set the moment an upload returns — before the Library refresh.
     /// The Library follows the newest one to the bottom even when the
@@ -1447,11 +1470,13 @@ final class LibraryViewModel: ObservableObject {
     /// cancels the picker without choosing, KeptoApp clears the
     /// pre-choice so a later import doesn't land in the wrong album.
     func addPhotos(to collection: MyCollection) {
+        pendingAddSource = nil
         chosenImportAlbum = collection
         showingPhotoPicker = true
     }
 
     func uploadPickedPhotos(_ items: [PhotosPickerItem]) async {
+        pendingAddSource = nil  // Xóa stale state từ cancel trước
         isUploading = true
         uploadTotal = items.count
         uploadDone = 0
@@ -1468,7 +1493,7 @@ final class LibraryViewModel: ObservableObject {
         // Otherwise show the picker so the user chooses.
         let preChosenAlbum = chosenImportAlbum
         await fetchMyCollections()
-        if preChosenAlbum == nil {
+        if preChosenAlbum == nil && !showingImportAlbumPicker {
             showingImportAlbumPicker = true
         }
         defer {
@@ -1564,6 +1589,7 @@ final class LibraryViewModel: ObservableObject {
     /// `uploadPickedPhotos` on purpose (same calls, same order) so
     /// the two paths cannot drift apart in behavior.
     func uploadPickedFiles(_ urls: [URL]) async {
+        pendingAddSource = nil  // Xóa stale state từ cancel trước
         isUploading = true
         uploadTotal = urls.count
         uploadDone = 0
@@ -1580,7 +1606,7 @@ final class LibraryViewModel: ObservableObject {
         // Otherwise show the picker so the user chooses.
         let preChosenAlbum = chosenImportAlbum
         await fetchMyCollections()
-        if preChosenAlbum == nil {
+        if preChosenAlbum == nil && !showingImportAlbumPicker {
             showingImportAlbumPicker = true
         }
         defer {
@@ -1759,6 +1785,14 @@ final class LibraryViewModel: ObservableObject {
                 added += 1
             }
         }
+
+        // Manual Add to Album: notify caller, suppress import toast
+        if let source = pendingAddSource {
+            pendingAddSource = nil
+            lastAddedToAlbum = AddedToAlbumResult(source: source, name: collection.name, addedCount: added)
+            return
+        }
+
         var notice = "Đã thêm \(added) ảnh/video vào album “\(collection.name)”."
         var skipped: [String] = []
         if uploadDuplicateCount > 0 { skipped.append("\(uploadDuplicateCount) trùng, đã bỏ qua") }
