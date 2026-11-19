@@ -78,9 +78,14 @@ struct LibraryView: View {
     @State private var isAtBottom = false
     @State private var selecting = false
     @State private var selection: Set<String> = []
-    /// Drag-to-select state (see `DragSelectTracker`): reset on
-    /// gesture end and on leaving select mode.
-    @State private var dragSelect = DragSelectTracker()
+    /// Rect-select state for Days (port từ All Photos/Album):
+    /// item bắt đầu kéo, selection lúc bắt đầu, mode cố định theo
+    /// cell đầu (true = chọn thêm, false = bỏ chọn), và cờ đang kéo
+    /// ngang (chặn ScrollView scroll trong lúc kéo).
+    @State private var selectGestureStartItem: String? = nil
+    @State private var selectGestureInitialSelection: Set<String> = []
+    @State private var selectGestureMode: Bool = true
+    @State private var isDraggingSelect = false
     /// The item the Photos detail viewer opens on (nil = closed).
     @State private var feedStartItem: Item?
     /// The global frame of the thumbnail the viewer opened from
@@ -100,17 +105,15 @@ struct LibraryView: View {
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
-    /// The video the context menu's "Add to Album" opened the picker
-    /// for (nil = picker closed).
-    @State private var itemForAlbumPicker: Item?
+    /// Items the Add to Album picker is open for (nil = picker
+    /// closed). Single item (context menu/viewer) và bulk (select
+    /// bar) dùng chung một overlay picker này.
+    @State private var albumPickerItems: [Item]? = nil
     /// A downloaded file ready for the iOS share sheet (nil = closed).
     @State private var shareFile: ShareFile?
     /// Downloaded files for a bulk share (nil = closed).
     @State private var shareURLs: [URL]?
     @State private var showingBulkShare = false
-    /// Items resolved for the bulk Add-to-Album sheet.
-    @State private var addToAlbumItems: [Item] = []
-    @State private var showingAddToAlbum = false
     /// Ids awaiting delete confirmation (one item or the selection).
     @State private var pendingDelete: [String] = []
     @State private var showDelete = false
@@ -130,9 +133,10 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if !viewModel.isConfigured {
+        ZStack {
+            NavigationStack {
+                Group {
+                    if !viewModel.isConfigured {
                     setupView
                 } else if viewModel.isLoading && viewModel.items.isEmpty && viewModel.allMetadata.isEmpty {
                     // Round-27: cold cache (first-ever launch) shows
@@ -232,7 +236,7 @@ struct LibraryView: View {
                             }
                             Button {
                                 Haptics.tap()
-                                withAnimation { selecting = true }
+                                selecting = true
                             } label: {
                                 Text(L10n.select)
                                     .font(.footnote)
@@ -365,6 +369,12 @@ struct LibraryView: View {
                 }
             }
         }
+        // Add to Album mở: grid phía sau thu nhỏ + bo góc (Apple
+        // Photos). Scale là render transform trên toàn bộ
+        // NavigationStack nên thumbnail không di chuyển tương đối nhau;
+        // tab bar nằm ngoài NavigationStack nên không bị scale.
+        .scaleEffect(albumPickerItems != nil ? 0.92 : 1.0)
+        .clipShape(RoundedRectangle(cornerRadius: albumPickerItems != nil ? 30 : 0))
         .sheet(isPresented: $showingSettings, onDismiss: {
             viewModel.reloadConfig()
             Task { await viewModel.fetch() }
@@ -373,24 +383,6 @@ struct LibraryView: View {
         }
         .fullScreenCover(isPresented: $showingSlideshow) {
             SlideshowView(items: slideshowItems)
-        }
-        .sheet(item: $itemForAlbumPicker) { pickerItem in
-            AddToCollectionPickerView(
-                item: pickerItem,
-                onAddedToCollection: { name, added in
-                    viewModel.showToast(added ? L10n.addedToCollection(name) : L10n.alreadyInCollection(name))
-                },
-                onCancel: { itemForAlbumPicker = nil }
-            )
-        }
-        .sheet(isPresented: $showingAddToAlbum) {
-            AddToAlbumSheet(
-                ids: addToAlbumItems.map(\.id),
-                onDone: { name, added in
-                    viewModel.showToast(L10n.addedCountToCollection(added, name))
-                    exitSelection()
-                }
-            )
         }
         .sheet(item: $shareFile) { file in
             ShareSheet(activityItems: [file.url])
@@ -437,6 +429,30 @@ struct LibraryView: View {
             visibleWindow = 120
             if zoom == .all { scrollProxy = nil }
         }
+        // Add to Album picker: overlay (không phải .sheet hệ thống)
+        // để grid phía sau scale được — overlay là SIBLING của
+        // NavigationStack đã scale, nên sheet luôn full-size. Một
+        // .animation duy nhất ở ZStack lo cả trượt sheet lẫn scale
+        // grid, cả lúc mở lẫn lúc đóng.
+        if let items = albumPickerItems {
+            AddToAlbumPickerView(
+                items: items,
+                onDone: { name, added in
+                    if selecting {
+                        viewModel.showToast(L10n.addedCountToCollection(added, name))
+                        exitSelection()
+                    } else {
+                        viewModel.showToast(added > 0 ? L10n.addedToCollection(name) : L10n.alreadyInCollection(name))
+                    }
+                    albumPickerItems = nil
+                },
+                onCancel: { albumPickerItems = nil }
+            )
+            .transition(.move(edge: .bottom))
+            .zIndex(1)
+        }
+    }
+    .animation(.spring(response: 0.4, dampingFraction: 0.85), value: albumPickerItems != nil)
     }
 
     private var setupView: some View {
@@ -569,6 +585,10 @@ struct LibraryView: View {
                     .background(Color(uiColor: .systemBackground))
                     .simultaneousGesture(pinch)
                     .simultaneousGesture(dragSelectGesture)
+                    // Chặn ScrollView scroll trong lúc rect-select đang
+                    // kéo ngang (Days): không có dòng này thì kéo ngang
+                    // vừa chọn vừa cuộn.
+                    .scrollDisabled(isDraggingSelect)
                     .onAppear {
                         scrollProxy = proxy
                         maybeInitialScroll(proxy)
@@ -1119,33 +1139,69 @@ struct LibraryView: View {
     /// selects/deselects them in bulk (see `DragSelectTracker`).
     /// `minimumDistance: 12` keeps tap-to-toggle intact, and
     /// `.simultaneousGesture` lets the ScrollView still scroll.
+    /// Rect-select cho Days (port từ All Photos/Album): kéo ngang là
+    /// chủ đạo thì kích hoạt, mode cố định theo cell đầu, vùng chọn là
+    /// khoảng index liên tục trong allIDs giữa cell đầu và cell hiện
+    /// tại (allIDs xếp oldest-first, cùng thứ tự hiển thị của Days),
+    /// kéo ngược thu hẹp về selection ban đầu. Kéo dọc thuần vẫn scroll.
     private var dragSelectGesture: some Gesture {
-        DragGesture(minimumDistance: 12)
+        DragGesture(minimumDistance: 10)
             .onChanged { value in
-                // Đợt 2: never runs for All Photos — the collection
-                // view's own UIPanGestureRecognizer owns drag-select
-                // there (two independent DragSelectTrackers would
-                // pin conflicting modes). The .all branch of `scroll`
-                // does not attach this gesture at all; this guard is
-                // belt-and-braces.
                 guard selecting, zoom != .all else { return }
-                selection = dragSelect.update(
-                    start: value.startLocation,
-                    current: value.location,
-                    toGlobal: { CGPoint(x: scrollViewport.origin.x + $0.x, y: scrollViewport.origin.y + $0.y) },
-                    frames: cellFrameCache.frames,
-                    selection: selection
-                )
+
+                if selectGestureStartItem == nil {
+                    // Xác định item bắt đầu dựa vào frame
+                    let loc = CGPoint(x: scrollViewport.origin.x + value.startLocation.x, y: scrollViewport.origin.y + value.startLocation.y)
+                    for (id, frame) in cellFrameCache.frames {
+                        if frame.contains(loc) {
+                            selectGestureStartItem = id
+                            selectGestureInitialSelection = selection
+                            selectGestureMode = !selection.contains(id)
+                            break
+                        }
+                    }
+                }
+
+                if !isDraggingSelect, selectGestureStartItem != nil {
+                    if abs(value.translation.width) > abs(value.translation.height) && abs(value.translation.width) > 5 {
+                        isDraggingSelect = true
+                    }
+                }
+
+                if isDraggingSelect, let startItem = selectGestureStartItem {
+                    let loc = CGPoint(x: scrollViewport.origin.x + value.location.x, y: scrollViewport.origin.y + value.location.y)
+                    var endItem: String? = nil
+                    for (id, frame) in cellFrameCache.frames {
+                        if frame.contains(loc) { endItem = id; break }
+                    }
+
+                    if let endItem = endItem, let startIdx = allIDs.firstIndex(of: startItem), let endIdx = allIDs.firstIndex(of: endItem) {
+                        let minIdx = min(startIdx, endIdx)
+                        let maxIdx = max(startIdx, endIdx)
+                        var range = Set<String>()
+                        for i in minIdx...maxIdx { range.insert(allIDs[i]) }
+
+                        if selectGestureMode {
+                            selection = selectGestureInitialSelection.union(range)
+                        } else {
+                            selection = selectGestureInitialSelection.subtracting(range)
+                        }
+                    }
+                }
             }
-            .onEnded { _ in dragSelect.reset() }
+            .onEnded { _ in
+                selectGestureStartItem = nil
+                isDraggingSelect = false
+                selectGestureInitialSelection = []
+            }
     }
 
     private func exitSelection() {
-        withAnimation {
-            selecting = false
-            selection.removeAll()
-            dragSelect.reset()
-        }
+        selecting = false
+        selection.removeAll()
+        selectGestureStartItem = nil
+        isDraggingSelect = false
+        selectGestureInitialSelection = []
     }
 
     private func handleTap(_ id: String) {
@@ -1269,8 +1325,7 @@ struct LibraryView: View {
             viewModel.showToast(L10n.loadItemsToAddFailed, isError: true)
             return
         }
-        addToAlbumItems = resolved
-        showingAddToAlbum = true
+        albumPickerItems = resolved
     }
 
     private func saveSelectionToPhotos() async {
@@ -1320,7 +1375,7 @@ struct LibraryView: View {
 
     private func openAddToAlbum(_ id: String) async {
         guard let item = await resolveItem(id: id) else { return }
-        itemForAlbumPicker = item
+        albumPickerItems = [item]
     }
 
     // MARK: - Saving

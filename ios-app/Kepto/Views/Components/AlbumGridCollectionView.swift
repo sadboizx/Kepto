@@ -380,7 +380,7 @@ final class AlbumGridCell: UICollectionViewCell {
         // FIX BUG 1: Ép SwiftUI huỷ state cũ và tạo mới khi cell
         // được tái sử dụng sang item khác. Nếu thiếu dòng này, ảnh
         // của item cũ sẽ bị giữ lại trong @State của AuthenticatedThumbnail.
-        .id(item.id)
+        .id("\(item.id)-\(selecting)-\(selected)")
 
         let content = selecting ? AnyView(base) : AnyView(base.contextMenu { contextMenu })
 

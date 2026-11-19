@@ -1474,14 +1474,18 @@ private struct PhotoDetailPage: View {
 /// refreshes when it opens. Shared by the grid context menus
 /// ("Add to Album") — presented as its own sheet from the menu.
 /// `onCancel` dismisses the sheet.
-struct AddToCollectionPickerView: View {
-    let item: Item
-    /// Called after a successful add (collection name, newly added?).
-    let onAddedToCollection: (String, Bool) -> Void
+/// Add to Album picker duy nhất (thống nhất single + bulk, Library +
+/// Albums tab): nhận [Item], hiển thị như bottom-sheet overlay (không
+/// dùng .sheet hệ thống) để grid phía sau scale được. Header: thumb
+/// item đầu + count ("N Photos" / "N Videos" / "N Items").
+struct AddToAlbumPickerView: View {
+    let items: [Item]
+    /// Called after adding, with the album name + how many items were
+    /// newly added. The caller toasts + closes the picker.
+    let onDone: (String, Int) -> Void
     let onCancel: () -> Void
 
     @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
     @State private var newCollectionName = ""
     @State private var pickerError: String?
     @State private var isAdding = false
@@ -1492,134 +1496,182 @@ struct AddToCollectionPickerView: View {
     /// The album awaiting delete confirmation (nil = none).
     @State private var albumPendingDelete: MyCollection?
     @State private var showingDeleteConfirmation = false
+    /// Kéo tay cầm xuống để đóng (drag-to-dismiss): offset theo ngón
+    /// tay, quá ngưỡng thì đóng. Chỉ gắn ở tay cầm, không gắn cả card
+    /// để không chặn scroll danh sách album. Grid chỉ phóng về lúc
+    /// đóng hẳn (không track theo ngón tay giữa chừng).
+    @State private var dragOffset: CGFloat = 0
     /// 2-column album grid (Photos See All style): 12pt gaps.
     private let pickerColumns = [
         GridItem(.flexible(), spacing: 12),
         GridItem(.flexible(), spacing: 12),
     ]
 
+    private var headerLabel: String {
+        let photos = items.filter { $0.contentType?.hasPrefix("image/") == true }.count
+        let videos = items.count - photos
+        if photos > 0 && videos == 0 { return L10n.photoCount(photos) }
+        if videos > 0 && photos == 0 { return L10n.videoCount(videos) }
+        return L10n.itemsCount(items.count)
+    }
+
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Header: the one item being added (Photos shows
-                    // the first photo + "1 Photo").
-                    HStack(spacing: 12) {
-                        AspectThumbnail(itemId: item.id)
-                            .frame(width: 50, height: 50)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                        Text(item.contentType?.hasPrefix("image/") == true ? L10n.photoCount(1) : L10n.videoCount(1))
-                            .font(.title3)
-                            .fontWeight(.semibold)
-                    }
-                    if let pickerError {
-                        Text(pickerError)
-                            .font(.subheadline)
-                            .foregroundStyle(.red)
-                    }
-                    // "New Album..." card (Photos): a gray placeholder
-                    // with the Add-to-Album icon, same size as an
-                    // album card, first in the grid.
-                    LazyVGrid(columns: pickerColumns, spacing: 16) {
-                        Button { showingNewAlbum = true } label: {
-                            NewAlbumCardView()
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    // "My Albums" section.
-                    Text(L10n.myAlbums)
-                        .font(.title2)
-                        .bold()
-                    if viewModel.myCollections.isEmpty {
-                        Text(L10n.noAlbumsHint)
-                            .foregroundStyle(.secondary)
-                    }
-                    // 2-column album grid with cover thumbnails,
-                    // laid out like the Photos See All page (v57).
-                    LazyVGrid(columns: pickerColumns, spacing: 16) {
-                        ForEach(viewModel.myCollections) { collection in
-                            // The minus badge is a SIBLING of the card
-                            // button (not inside it): the card button
-                            // is disabled in Edit mode, which would
-                            // also disable a badge nested inside it.
-                            ZStack(alignment: .topLeading) {
-                                Button {
-                                    Task { await addToCollection(collection) }
-                                } label: {
-                                    PickerAlbumCardView(collection: collection)
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture { onCancel() }
+                .transition(.opacity)
+
+            VStack(spacing: 0) {
+                // Drag indicator (cũng là tay cầm kéo-để-đóng).
+                Capsule()
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(width: 40, height: 5)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                dragOffset = max(0, value.translation.height)
+                            }
+                            .onEnded { value in
+                                if value.translation.height > 100 {
+                                    onCancel()
+                                }
+                                dragOffset = 0
+                            }
+                    )
+
+                NavigationStack {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            // Header: thumb item đầu + count (Photos
+                            // shows the first photo + "1 Photo").
+                            HStack(spacing: 12) {
+                                if let first = items.first {
+                                    AspectThumbnail(itemId: first.id)
+                                        .frame(width: 50, height: 50)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                Text(headerLabel)
+                                    .font(.title3)
+                                    .fontWeight(.semibold)
+                            }
+                            if let pickerError {
+                                Text(pickerError)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.red)
+                            }
+                            // "New Album..." card (Photos): a gray placeholder
+                            // with the Add-to-Album icon, same size as an
+                            // album card, first in the grid.
+                            LazyVGrid(columns: pickerColumns, spacing: 16) {
+                                Button { showingNewAlbum = true } label: {
+                                    NewAlbumCardView()
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(isEditing || isAdding)
-                                // Red minus badge (Photos Edit mode).
-                                if isEditing {
-                                    Button {
-                                        albumPendingDelete = collection
-                                        showingDeleteConfirmation = true
-                                    } label: {
-                                        Image(systemName: "minus.circle.fill")
-                                            .font(.system(size: 22))
-                                            .foregroundStyle(.red)
-                                            .background(Color.white, in: Circle())
+                            }
+                            // "My Albums" section.
+                            Text(L10n.myAlbums)
+                                .font(.title2)
+                                .bold()
+                            if viewModel.myCollections.isEmpty {
+                                Text(L10n.noAlbumsHint)
+                                    .foregroundStyle(.secondary)
+                            }
+                            // 2-column album grid with cover thumbnails,
+                            // laid out like the Photos See All page (v57).
+                            LazyVGrid(columns: pickerColumns, spacing: 16) {
+                                ForEach(viewModel.myCollections) { collection in
+                                    // The minus badge is a SIBLING of the card
+                                    // button (not inside it): the card button
+                                    // is disabled in Edit mode, which would
+                                    // also disable a badge nested inside it.
+                                    ZStack(alignment: .topLeading) {
+                                        Button {
+                                            Task { await addToCollection(collection) }
+                                        } label: {
+                                            PickerAlbumCardView(collection: collection)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(isEditing || isAdding)
+                                        // Red minus badge (Photos Edit mode).
+                                        if isEditing {
+                                            Button {
+                                                albumPendingDelete = collection
+                                                showingDeleteConfirmation = true
+                                            } label: {
+                                                Image(systemName: "minus.circle.fill")
+                                                    .font(.system(size: 22))
+                                                    .foregroundStyle(.red)
+                                                    .background(Color.white, in: Circle())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .offset(x: -8, y: -8)
+                                        }
                                     }
-                                    .buttonStyle(.plain)
-                                    .offset(x: -8, y: -8)
                                 }
                             }
                         }
+                        .padding()
+                    }
+                    .navigationTitle(L10n.addToAlbum)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        // Photos puts Cancel at the top-right; Edit stays
+                        // at the top-left (the "+" is gone — the "New
+                        // Album..." card is the way to create an album).
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button(isEditing ? L10n.done : L10n.edit) {
+                                isEditing.toggle()
+                            }
+                            .fontWeight(isEditing ? .bold : .regular)
+                            .foregroundStyle(.blue)
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button(L10n.cancel) {
+                                onCancel()
+                            }
+                            .foregroundStyle(.blue)
+                        }
+                    }
+                    .alert(L10n.newAlbum, isPresented: $showingNewAlbum) {
+                        TextField(L10n.title, text: $newCollectionName)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Button(L10n.cancel, role: .cancel) { newCollectionName = "" }
+                        Button(L10n.save) {
+                            Task { await createAndAdd() }
+                        }
+                    } message: {
+                        Text(L10n.newAlbumMessage)
+                    }
+                    .confirmationDialog(
+                        L10n.deleteAlbumTitle(albumPendingDelete?.name ?? ""),
+                        isPresented: $showingDeleteConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        if let collection = albumPendingDelete {
+                            Button(L10n.deleteAlbumAndVideos, role: .destructive) {
+                                Task { await deleteAlbum(collection, deleteItems: true) }
+                            }
+                            Button(L10n.deleteAlbumOnly, role: .destructive) {
+                                Task { await deleteAlbum(collection, deleteItems: false) }
+                            }
+                        }
+                        Button(L10n.cancel, role: .cancel) { albumPendingDelete = nil }
+                    } message: {
+                        if let collection = albumPendingDelete {
+                            Text(L10n.deleteAlbumMessage(collection.count))
+                        }
                     }
                 }
-                .padding()
+                .frame(height: UIScreen.main.bounds.height * 0.75)
+                .background(Color(uiColor: .systemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
-            .navigationTitle(L10n.addToAlbum)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                // Photos puts Cancel at the top-right; Edit stays
-                // at the top-left (the "+" is gone — the "New
-                // Album..." card is the way to create an album).
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(isEditing ? L10n.done : L10n.edit) {
-                        isEditing.toggle()
-                    }
-                    .fontWeight(isEditing ? .bold : .regular)
-                    .foregroundStyle(.blue)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(L10n.cancel) {
-                        onCancel()
-                    }
-                    .foregroundStyle(.blue)
-                }
-            }
-            .alert(L10n.newAlbum, isPresented: $showingNewAlbum) {
-                TextField(L10n.title, text: $newCollectionName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button(L10n.cancel, role: .cancel) { newCollectionName = "" }
-                Button(L10n.save) {
-                    Task { await createAndAdd() }
-                }
-            } message: {
-                Text(L10n.newAlbumMessage)
-            }
-            .confirmationDialog(
-                L10n.deleteAlbumTitle(albumPendingDelete?.name ?? ""),
-                isPresented: $showingDeleteConfirmation,
-                titleVisibility: .visible
-            ) {
-                if let collection = albumPendingDelete {
-                    Button(L10n.deleteAlbumAndVideos, role: .destructive) {
-                        Task { await deleteAlbum(collection, deleteItems: true) }
-                    }
-                    Button(L10n.deleteAlbumOnly, role: .destructive) {
-                        Task { await deleteAlbum(collection, deleteItems: false) }
-                    }
-                }
-                Button(L10n.cancel, role: .cancel) { albumPendingDelete = nil }
-            } message: {
-                if let collection = albumPendingDelete {
-                    Text(L10n.deleteAlbumMessage(collection.count))
-                }
-            }
+            .offset(y: dragOffset)
         }
         .task {
             await viewModel.fetchMyCollections()
@@ -1631,12 +1683,17 @@ struct AddToCollectionPickerView: View {
         isAdding = true
         pickerError = nil
         defer { isAdding = false }
-        if let added = await viewModel.addItemToMyCollection(collectionId: collection.id, item: item) {
-            onAddedToCollection(collection.name, added)
-            dismiss()
-        } else {
-            pickerError = L10n.addToCollectionFailed
+        var addedCount = 0
+        for item in items {
+            // addItemToMyCollection trả Bool? — nil = lỗi, không phải
+            // "đã có trong album": báo lỗi, không gọi onDone.
+            guard let added = await viewModel.addItemToMyCollection(collectionId: collection.id, item: item) else {
+                pickerError = L10n.addToCollectionFailed
+                return
+            }
+            if added { addedCount += 1 }
         }
+        onDone(collection.name, addedCount)
     }
 
     private func createAndAdd() async {
@@ -1649,12 +1706,15 @@ struct AddToCollectionPickerView: View {
             pickerError = L10n.createCollectionFailed
             return
         }
-        if let added = await viewModel.addItemToMyCollection(collectionId: created.id, item: item) {
-            onAddedToCollection(created.name, added)
-            dismiss()
-        } else {
-            pickerError = L10n.createdButNotAdded(created.name)
+        var addedCount = 0
+        for item in items {
+            guard let added = await viewModel.addItemToMyCollection(collectionId: created.id, item: item) else {
+                pickerError = L10n.createdButNotAdded(created.name)
+                return
+            }
+            if added { addedCount += 1 }
         }
+        onDone(created.name, addedCount)
     }
 
     /// Delete an album from the picker's Edit mode. Refreshes the
@@ -1667,7 +1727,6 @@ struct AddToCollectionPickerView: View {
         }
     }
 }
-
 
 /// Thin progress bar at the very bottom edge of a viewer page: a 2pt line — track white 30%, played portion white.
 /// Dragging scrubs; while dragging, a preview popup (sprite frame at

@@ -91,9 +91,10 @@ struct PhotoCollectionScreen: View {
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
-    /// The item the context menu's "Add to Album" opened the picker
-    /// for (nil = picker closed).
-    @State private var itemForAlbumPicker: Item?
+    /// Items the Add to Album picker is open for (nil = picker
+    /// closed). Single item (context menu) và bulk (select bar) dùng
+    /// chung một overlay picker này (như LibraryView).
+    @State private var albumPickerItems: [Item]? = nil
     /// A downloaded file ready for the iOS share sheet (nil = closed).
     @State private var shareFile: ShareFile?
     /// Downloaded files for the bulk share sheet.
@@ -122,9 +123,6 @@ struct PhotoCollectionScreen: View {
     @State private var showingBulkDeleteConfirmation = false
     /// Presents the Settings sheet from the "…" menu.
     @State private var showingSettings = false
-    /// Presents Photos' Add to Album sheet for the selection.
-    @State private var showingAddToAlbum = false
-
     /// The title in the navigation bar.
     private var title: String {
         switch source {
@@ -209,6 +207,12 @@ struct PhotoCollectionScreen: View {
     /// property so the compiler type-checks it apart from `body`.
     private var collectionWithNavigation: some View {
         collectionWithAlerts
+            // Add to Album mở: grid phía sau thu nhỏ + bo góc (Apple
+            // Photos), như LibraryView. Scale là render transform nên
+            // thumbnail không di chuyển; viewer overlay gắn sau không
+            // bị scale.
+            .scaleEffect(albumPickerItems != nil ? 0.92 : 1.0)
+            .clipShape(RoundedRectangle(cornerRadius: albumPickerItems != nil ? 30 : 0))
             // Viewer as a full-screen OVERLAY over this grid, not a
             // push — see PhotoDetailView's header comment for why
             // (a push's hosting layer is opaque: the grid never
@@ -252,15 +256,31 @@ struct PhotoCollectionScreen: View {
                     .ignoresSafeArea()
                 }
             }
+            // Add to Album picker: overlay (không phải .sheet hệ
+            // thống) để grid phía sau scale được — overlay là sibling
+            // của grid đã scale, nên sheet luôn full-size. Một
+            // .animation duy nhất ở cuối lo cả trượt sheet lẫn scale
+            // grid, cả lúc mở lẫn lúc đóng.
+            .overlay {
+                if let items = albumPickerItems {
+                    AddToAlbumPickerView(
+                        items: items,
+                        onDone: { name, added in
+                            if isSelecting {
+                                viewModel.showToast(L10n.addedCountToCollection(added, name))
+                                exitSelectionMode()
+                            } else {
+                                viewModel.showToast(added > 0 ? L10n.addedToCollection(name) : L10n.alreadyInCollection(name))
+                            }
+                            albumPickerItems = nil
+                        },
+                        onCancel: { albumPickerItems = nil }
+                    )
+                    .transition(.move(edge: .bottom))
+                }
+            }
             .fullScreenCover(isPresented: $showingSlideshow) {
                 SlideshowView(items: slideshowItems)
-            }
-            .sheet(item: $itemForAlbumPicker) { pickerItem in
-                AddToCollectionPickerView(
-                    item: pickerItem,
-                    onAddedToCollection: { _, _ in },
-                    onCancel: { itemForAlbumPicker = nil }
-                )
             }
             .sheet(item: $shareFile) { file in
                 ShareSheet(activityItems: [file.url])
@@ -268,9 +288,7 @@ struct PhotoCollectionScreen: View {
             .sheet(isPresented: $showingBulkShare) {
                 ShareSheet(activityItems: shareURLs)
             }
-            .sheet(isPresented: $showingAddToAlbum) {
-                AddToAlbumSheet(ids: Array(selectedIDs))
-            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: albumPickerItems != nil)
     }
 
     /// Alerts + the delete-album dialog over the grid. Kept apart
@@ -619,7 +637,7 @@ struct PhotoCollectionScreen: View {
                             onSaveToPhotos: { saveToPhotos($0) },
                             onShare: { shareItem($0) },
                             onToggleFavorite: { toggleGridFavorite($0) },
-                            onAddToAlbum: { itemForAlbumPicker = $0 },
+                            onAddToAlbum: { albumPickerItems = [$0] },
                             onDelete: { requestGridDelete($0) },
                             onRemoveFromCollection: removeClosure
                         ))
@@ -770,7 +788,7 @@ struct PhotoCollectionScreen: View {
                 Button { Task { await saveSelectionToPhotos() } } label: {
                     Label(L10n.saveToPhotos, systemImage: "arrow.down.to.line")
                 }
-                Button { showingAddToAlbum = true } label: {
+                Button { Task { await presentAddToAlbum() } } label: {
                     Label(L10n.addToAlbum, systemImage: "rectangle.stack.badge.plus")
                 }
                 Button { Task { await favoriteSelection() } } label: {
@@ -823,16 +841,14 @@ struct PhotoCollectionScreen: View {
         if isSelecting {
             exitSelectionMode()
         } else {
-            withAnimation { isSelecting = true }
+            isSelecting = true
         }
     }
 
     private func exitSelectionMode() {
-        withAnimation {
-            isSelecting = false
-            selectedIDs.removeAll()
-            dragSelect.reset()
-        }
+        isSelecting = false
+        selectedIDs.removeAll()
+        dragSelect.reset()
     }
 
     private func toggleSelection(_ item: Item) {
@@ -859,6 +875,17 @@ struct PhotoCollectionScreen: View {
         guard !resolved.isEmpty else { return }
         slideshowItems = resolved
         showingSlideshow = true
+    }
+
+    /// Bulk Add to Album: resolve the selection to full Items rồi mở
+    /// overlay picker chung (như LibraryView.presentAddToAlbum).
+    private func presentAddToAlbum() async {
+        var resolved: [Item] = []
+        for id in selectedIDs {
+            if let item = await resolveItem(id: id) { resolved.append(item) }
+        }
+        guard !resolved.isEmpty else { return }
+        albumPickerItems = resolved
     }
 
     // MARK: - Scroll to bottom (Apple Photos order)
@@ -1155,125 +1182,5 @@ struct PhotoCollectionScreen: View {
         } else {
             viewModel.showToast(L10n.savedToPhotosPartial(saved, failed), isError: true)
         }
-    }
-}
-
-/// Add-to-Album sheet for a multi-select (Photos'
-/// `AddToAlbumSheet`): pick one user album, add every selected item
-/// to it — or create a new album and add them there. (The
-/// single-item picker `AddToCollectionPickerView` in PhotoDetailView.swift
-/// cannot take a list; the Library tab uses this sheet too (via
-/// `onDone`, since step 9).
-struct AddToAlbumSheet: View {
-    let ids: [String]
-    /// Called after adding, with the album name + how many items
-    /// were added (nil = just dismiss, as the Albums tab does).
-    var onDone: ((String, Int) -> Void)? = nil
-
-    @EnvironmentObject private var viewModel: LibraryViewModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var showNew = false
-    @State private var name = ""
-    @State private var isAdding = false
-    @State private var addError: String?
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button {
-                        showNew = true
-                    } label: {
-                        Label(L10n.newAlbum, systemImage: "plus")
-                    }
-                }
-                Section(L10n.myAlbums) {
-                    if viewModel.myCollections.isEmpty {
-                        Text(L10n.noAlbumsYet)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(viewModel.myCollections) { collection in
-                        Button {
-                            Task { await addToCollection(collection) }
-                        } label: {
-                            HStack(spacing: 12) {
-                                if let cover = collection.coverItemId {
-                                    AspectThumbnail(itemId: cover)
-                                        .frame(width: 48, height: 48)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                } else {
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(Color(uiColor: .secondarySystemFill))
-                                        .frame(width: 48, height: 48)
-                                }
-                                VStack(alignment: .leading) {
-                                    Text(collection.name)
-                                    Text(L10n.collectionVideoCount(collection.count))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .disabled(isAdding)
-                    }
-                }
-            }
-            .navigationTitle(L10n.addToAlbum)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(L10n.cancel) { dismiss() }
-                }
-            }
-            .alert(L10n.newAlbum, isPresented: $showNew) {
-                TextField(L10n.title, text: $name)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button(L10n.create) {
-                    Task { await createAlbumAndAdd() }
-                }
-                Button(L10n.cancel, role: .cancel) {}
-            } message: {
-                Text(L10n.newAlbumMessage)
-            }
-            .alert("Kepto", isPresented: .constant(addError != nil)) {
-                Button("OK") { addError = nil }
-            } message: {
-                Text(addError ?? "")
-            }
-            .task {
-                await viewModel.fetchMyCollections()
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func addToCollection(_ collection: MyCollection) async {
-        guard !isAdding else { return }
-        isAdding = true
-        defer { isAdding = false }
-        var added = 0
-        for id in ids {
-            guard let item = await resolveItem(id: id) else { continue }
-            if await viewModel.addItemToMyCollection(collectionId: collection.id, item: item) == true {
-                added += 1
-            }
-        }
-        onDone?(collection.name, added)
-        dismiss()
-    }
-
-    private func createAlbumAndAdd() async {
-        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        guard let created = await viewModel.createMyCollection(name: title) else { return }
-        await addToCollection(created)
-    }
-
-    /// The full `Item` for one id: the Library's loaded pages first,
-    /// else one fetch by id.
-    private func resolveItem(id: String) async -> Item? {
-        if let item = viewModel.items.first(where: { $0.id == id }) { return item }
-        return await viewModel.fetchItem(id: id)
     }
 }

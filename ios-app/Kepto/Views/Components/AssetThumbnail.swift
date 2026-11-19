@@ -160,10 +160,26 @@ struct AssetThumbnail: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            // FIX BUG 2: Tách logic tải ảnh ra hàm riêng để có thể
+            // gọi lại khi cell hiện lại (LazyVGrid hay tái sử dụng
+            // cell từ pool mà không chạy lại .task).
             .task(id: source.id) {
-                guard let api = viewModel.api else { return }
-                image = await ThumbnailPipeline.shared.thumbnail(id: source.id, api: api)
+                await loadImage()
             }
+            .onAppear {
+                if image == nil {
+                    Task { await loadImage() }
+                }
+            }
+    }
+
+    private func loadImage() async {
+        guard image == nil, let api = viewModel.api else { return }
+        // Chỉ gán nếu kết quả khác nil để tránh việc tải lỗi/bị huỷ
+        // xoá mất ảnh cũ đang hiển thị (nếu có).
+        if let fetched = await ThumbnailPipeline.shared.thumbnail(id: source.id, api: api) {
+            image = fetched
+        }
     }
 
     @ViewBuilder

@@ -589,7 +589,10 @@ final class GridCell: UICollectionViewCell {
         if let source {
             let base = AssetThumbnail(source: source, selecting: selecting, selected: selected)
                 .environmentObject(viewModel)
-                .id(source.id)
+                // Fix checkmark sót: thêm selecting/selected vào ID để ép
+                // tạo mới state khi trạng thái select đổi (cell tái sử dụng
+                // giữ lại checkmark cũ nếu chỉ dùng source.id).
+                .id("\(source.id)-\(selecting)-\(selected)")
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onTap)
                 .transaction { $0.disablesAnimations = true }
