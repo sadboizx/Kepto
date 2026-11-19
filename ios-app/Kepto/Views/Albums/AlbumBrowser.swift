@@ -361,23 +361,27 @@ struct PhotoCollectionScreen: View {
             // only when not selecting.
             .toolbar {
                 if isSelecting {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button {
-                            if selectedIDs.count == items.count {
-                                selectedIDs.removeAll()
-                            } else {
-                                selectedIDs = Set(items.map(\.id))
+                    // Recents = All Photos: không hiện Select All.
+                    // (AlbumSource: Hashable nên so sánh != được.)
+                    if source != .kind(.recents) {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button {
+                                if selectedIDs.count == items.count {
+                                    selectedIDs.removeAll()
+                                } else {
+                                    selectedIDs = Set(items.map(\.id))
+                                }
+                            } label: {
+                                Text(selectedIDs.count == items.count ? L10n.deselectAll : L10n.selectAll)
+                                    .font(.footnote)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(.regularMaterial, in: Capsule())
                             }
-                        } label: {
-                            Text(selectedIDs.count == items.count ? L10n.deselectAll : L10n.selectAll)
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(.regularMaterial, in: Capsule())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button { exitSelectionMode() } label: {
@@ -416,6 +420,7 @@ struct PhotoCollectionScreen: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
+            .toolbar(isSelecting ? .hidden : .visible, for: .tabBar)
             .safeAreaInset(edge: .bottom) {
                 if isSelecting {
                     selectBar
@@ -818,14 +823,16 @@ struct PhotoCollectionScreen: View {
         if isSelecting {
             exitSelectionMode()
         } else {
-            isSelecting = true
+            withAnimation { isSelecting = true }
         }
     }
 
     private func exitSelectionMode() {
-        isSelecting = false
-        selectedIDs.removeAll()
-        dragSelect.reset()
+        withAnimation {
+            isSelecting = false
+            selectedIDs.removeAll()
+            dragSelect.reset()
+        }
     }
 
     private func toggleSelection(_ item: Item) {

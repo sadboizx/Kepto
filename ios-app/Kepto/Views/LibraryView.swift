@@ -158,7 +158,7 @@ struct LibraryView: View {
             // No "Library" title (user request): the bar shows only
             // the trailing Select / "…" buttons. In select mode the
             // count ("N Selected") still shows, centred inline.
-            .navigationTitle(selecting ? L10n.selectedCount(selection.count) : "")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             // Transparent status bar / nav bar (Photos): the grid
             // shows through under the status bar and the bar, no
@@ -190,7 +190,7 @@ struct LibraryView: View {
             .onChange(of: retapRequest) { _, _ in scrollToBottomAnimated() }
             .toolbar {
                 if selecting {
-                    ToolbarItem(placement: .cancellationAction) {
+                    ToolbarItem(placement: .confirmationAction) {
                         Button { exitSelection() } label: {
                             Text(L10n.cancel)
                                 .font(.footnote)
@@ -232,7 +232,7 @@ struct LibraryView: View {
                             }
                             Button {
                                 Haptics.tap()
-                                selecting = true
+                                withAnimation { selecting = true }
                             } label: {
                                 Text(L10n.select)
                                     .font(.footnote)
@@ -1141,9 +1141,11 @@ struct LibraryView: View {
     }
 
     private func exitSelection() {
-        selecting = false
-        selection.removeAll()
-        dragSelect.reset()
+        withAnimation {
+            selecting = false
+            selection.removeAll()
+            dragSelect.reset()
+        }
     }
 
     private func handleTap(_ id: String) {
@@ -1608,8 +1610,22 @@ struct AuthenticatedThumbnail: View {
             }
         }
         .task(id: itemId) {
-            guard image == nil, let api = viewModel.api else { return }
-            image = await ThumbnailPipeline.shared.thumbnail(id: itemId, api: api)
+            await loadImage()
+        }
+        .onAppear {
+            // FIX BUG 2: LazyVGrid tái sử dụng cell cũ (không huỷ)
+            // khi scroll lên. Khi ảnh nil (bị cancel lúc lướt qua),
+            // onAppear sẽ kích hoạt tải lại.
+            if image == nil {
+                Task { await loadImage() }
+            }
+        }
+    }
+
+    private func loadImage() async {
+        guard image == nil, let api = viewModel.api else { return }
+        if let fetched = await ThumbnailPipeline.shared.thumbnail(id: itemId, api: api) {
+            image = fetched
         }
     }
 }

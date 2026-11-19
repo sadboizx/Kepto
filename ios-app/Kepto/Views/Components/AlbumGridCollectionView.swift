@@ -145,8 +145,13 @@ struct AlbumGridCollectionView: UIViewRepresentable {
         var lastSnapshotIDs: [String] = []
         var lastSelecting: Bool = false
         var lastSelectedIDs: Set<String> = []
-        private var dragSelect = DragSelectTracker()
         private var didInitialScroll = false
+
+        // State cho rect-select (giống All Photos)
+        private var selectGestureActive = false
+        private var selectGestureStartItem: Int?
+        private var selectGestureInitialSelection: Set<String> = []
+        private var selectGestureMode: Bool = true
 
         init(_ parent: AlbumGridCollectionView) {
             self.parent = parent
@@ -236,32 +241,71 @@ struct AlbumGridCollectionView: UIViewRepresentable {
             }
         }
 
-        // Drag select vuốt tự do (cũ)
+        // Rect select (giống All Photos): vuốt ngang bật select,
+        // kéo lên/xuống mở rộng hình chữ nhật từ cell bắt đầu đến
+        // cell hiện tại; kéo ngược co rect, cell ra khỏi rect trở
+        // về trạng thái ban đầu. Mode cố định theo cell đầu tiên.
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard parent.selecting, collectionView != nil else { return }
-            let location = gesture.location(in: nil)
+            guard parent.selecting, let cv = collectionView else {
+                resetSelectGesture()
+                return
+            }
+            let locInCV = gesture.location(in: cv)
             switch gesture.state {
             case .began:
-                dragSelect.reset()
-                applyDrag(at: location, start: location)
+                resetSelectGesture()
+                selectGestureInitialSelection = parent.selectedIDs
+                if let ip = cv.indexPathForItem(at: locInCV) {
+                    selectGestureStartItem = ip.item
+                    let id = parent.items[ip.item].id
+                    selectGestureMode = !parent.selectedIDs.contains(id)
+                }
             case .changed:
-                applyDrag(at: location, start: location)
+                if !selectGestureActive, selectGestureStartItem != nil {
+                    let t = gesture.translation(in: cv)
+                    if abs(t.x) > abs(t.y) && abs(t.x) > 5 {
+                        selectGestureActive = true
+                        cv.isScrollEnabled = false
+                    }
+                }
+                if selectGestureActive, let startItem = selectGestureStartItem {
+                    if let ip = cv.indexPathForItem(at: locInCV) {
+                        applyRectSelection(from: startItem, to: ip.item)
+                    }
+                }
             default:
-                dragSelect.reset()
+                resetSelectGesture()
             }
         }
 
-        private func applyDrag(at current: CGPoint, start: CGPoint) {
-            let updated = dragSelect.update(
-                start: start,
-                current: current,
-                toGlobal: { $0 },
-                frames: parent.frameCache.frames,
-                selection: parent.selectedIDs
-            )
-            if updated != parent.selectedIDs {
-                parent.onDragSelect(updated)
+        private func applyRectSelection(from startItem: Int, to endItem: Int) {
+            guard parent.columnCount > 0 else { return }
+            let minItem = min(startItem, endItem)
+            let maxItem = max(startItem, endItem)
+
+            var cellsInRange: Set<String> = []
+            for idx in minItem...maxItem {
+                if idx < parent.items.count {
+                    cellsInRange.insert(parent.items[idx].id)
+                }
             }
+
+            let newSelection: Set<String>
+            if selectGestureMode {
+                newSelection = selectGestureInitialSelection.union(cellsInRange)
+            } else {
+                newSelection = selectGestureInitialSelection.subtracting(cellsInRange)
+            }
+            if newSelection != parent.selectedIDs {
+                parent.onDragSelect(newSelection)
+            }
+        }
+
+        private func resetSelectGesture() {
+            if let cv = collectionView { cv.isScrollEnabled = true }
+            selectGestureActive = false
+            selectGestureStartItem = nil
+            selectGestureInitialSelection = []
         }
 
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
@@ -333,6 +377,10 @@ final class AlbumGridCell: UICollectionViewCell {
             frameCache: frameCache
         )
         .environmentObject(viewModel) // PhotosGridCell cần viewModel? Thực ra không cần nếu truyền frameCache.
+        // FIX BUG 1: Ép SwiftUI huỷ state cũ và tạo mới khi cell
+        // được tái sử dụng sang item khác. Nếu thiếu dòng này, ảnh
+        // của item cũ sẽ bị giữ lại trong @State của AuthenticatedThumbnail.
+        .id(item.id)
 
         let content = selecting ? AnyView(base) : AnyView(base.contextMenu { contextMenu })
 
