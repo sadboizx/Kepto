@@ -74,6 +74,8 @@ struct PhotoCollectionScreen: View {
     /// cell when the viewer pages). Populated by
     /// `AlbumGridCollectionView` via a weak reference.
     @State private var gridScroll = GridScrollController()
+    /// Capture contentOffset trước khi mở Add to Album, restore sau khi đóng.
+    @State private var savedGridOffset: CGPoint? = nil
     /// The grid's visible viewport (same pattern as LibraryView):
     /// the viewer-follow check scrolls unless the current cell is
     /// fully inside it.
@@ -173,6 +175,14 @@ struct PhotoCollectionScreen: View {
                     onRequestPop?()
                 } else {
                     scrollToBottomAnimated()
+                }
+            }
+            .onChange(of: viewModel.showingImportAlbumPicker) { oldValue, newValue in
+                if oldValue && !newValue, let offset = savedGridOffset {
+                    savedGridOffset = nil
+                    DispatchQueue.main.async {
+                        gridScroll.collectionView?.setContentOffset(offset, animated: false)
+                    }
                 }
             }
             .confirmationDialog(L10n.deleteSavedItemsTitle(1),
@@ -357,6 +367,7 @@ struct PhotoCollectionScreen: View {
                 if isSelecting {
                     // Recents = All Photos: không hiện Select All.
                     // (AlbumSource: Hashable nên so sánh != được.)
+                    // Recently Added HAS Select All (user choice).
                     if source != .kind(.recents) {
                         ToolbarItem(placement: .cancellationAction) {
                             Button {
@@ -522,7 +533,7 @@ struct PhotoCollectionScreen: View {
     /// True when a cached metadata row belongs to this album.
     private static func matchesSource(_ m: ItemMetadata, source: AlbumSource) -> Bool {
         switch source {
-        case .kind(.recents):
+        case .kind(.recents), .kind(.recentlyAdded):
             return true
         case .kind(.favorites):
             return m.isFavorite
@@ -546,7 +557,7 @@ struct PhotoCollectionScreen: View {
     /// collection ids on Item), so it returns false here.
     private static func matchesSource(_ item: Item, source: AlbumSource) -> Bool {
         switch source {
-        case .kind(.recents):
+        case .kind(.recents), .kind(.recentlyAdded):
             return true
         case .kind(.favorites):
             return item.isFavorite
@@ -800,6 +811,8 @@ struct PhotoCollectionScreen: View {
             return L10n.favoriteHint
         case .kind(.recents):
             return L10n.videosWillAppearHere
+        case .kind(.recentlyAdded):
+            return L10n.videosWillAppearHere
         case .myCollection:
             return L10n.addFromFeedMenu
         case .creator(let collection):
@@ -850,6 +863,7 @@ struct PhotoCollectionScreen: View {
         let resolved = sortedItems.filter { selectedIDs.contains($0.id) }
         guard !resolved.isEmpty else { return }
         slideshowItems = resolved
+        exitSelectionMode()
         showingSlideshow = true
     }
 
@@ -861,6 +875,7 @@ struct PhotoCollectionScreen: View {
             return
         }
         guard let item = await resolveItem(id: id) else { return }
+        savedGridOffset = gridScroll.collectionView?.contentOffset
         viewModel.importPickerItems = [item]
         viewModel.chosenImportAlbum = nil
         viewModel.pendingAddSource = .albumBrowser
@@ -880,6 +895,7 @@ struct PhotoCollectionScreen: View {
             viewModel.showToast(L10n.loadItemsToAddFailed, isError: true)
             return
         }
+        savedGridOffset = gridScroll.collectionView?.contentOffset
         viewModel.importPickerItems = resolved
         viewModel.chosenImportAlbum = nil
         viewModel.pendingAddSource = .albumBrowser
@@ -943,7 +959,7 @@ struct PhotoCollectionScreen: View {
         do {
             let (page, cursor): ([Item], String?)
             switch source {
-            case .kind(.recents):
+            case .kind(.recents), .kind(.recentlyAdded):
                 (page, cursor) = try await viewModel.listAll(
                     limit: 50, cursor: reset ? nil : nextCursor
                 )
@@ -1001,7 +1017,7 @@ struct PhotoCollectionScreen: View {
         do {
             let (page, cursor): ([Item], String?)
             switch source {
-            case .kind(.recents):
+            case .kind(.recents), .kind(.recentlyAdded):
                 (page, cursor) = try await viewModel.listAll(limit: 50, cursor: nextCursor)
             case .kind(.favorites):
                 (page, cursor) = try await viewModel.listFavorites(limit: 50, cursor: nextCursor)
@@ -1163,6 +1179,7 @@ struct PhotoCollectionScreen: View {
                 items[idx] = updated
             }
         }
+        exitSelectionMode()
     }
 
     private func saveSelectionToPhotos() async {
@@ -1180,5 +1197,6 @@ struct PhotoCollectionScreen: View {
         } else {
             viewModel.showToast(L10n.savedToPhotosPartial(saved, failed), isError: true)
         }
+        exitSelectionMode()
     }
 }

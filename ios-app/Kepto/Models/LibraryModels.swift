@@ -40,14 +40,16 @@ enum LibraryZoom: Int, CaseIterable, Identifiable {
 /// Utilities row: Recently Deleted, note-only — Kepto has no trash).
 /// Dropped Photos cases and why: `shared` (Kepto has no sharing by
 /// design), `hidden` (Hide dropped, Q3), `imports` (no auto-Imports
-/// album since v56), `utility` (no such case — the Utilities section
-/// is built from plain rows).
+/// album since v56 — re-added 2026-11-20 as `recentlyAdded`: a Utilities
+/// smart album, every Library item, newest added at the bottom like Recents),
+/// `utility` (no such case — the Utilities section is built from plain rows).
 enum AlbumKind: String, Hashable {
-    case recents, favorites, user, people, media, deleted
+    case recents, recentlyAdded, favorites, user, people, media, deleted
 
     var title: String {
         switch self {
         case .recents: return L10n.recents
+        case .recentlyAdded: return L10n.recentlyAdded
         case .favorites: return L10n.favorites
         case .user: return L10n.myAlbums
         case .people: return L10n.creators

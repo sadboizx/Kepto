@@ -145,7 +145,7 @@ struct AssetThumbnail: View {
             // In select mode unselected cells dim slightly (Photos);
             // the overlays below are added after, so the checkmark
             // and badges stay full-strength.
-            .opacity(selecting && !selected ? 0.7 : 1)
+            .opacity(selecting && !selected ? 0.5 : 1)
             .overlay { pendingOverlay }
             .overlay(alignment: .bottomLeading) { if showBadge && !selecting { badgeRow } }
             .overlay(alignment: .bottomLeading) { favoriteMark }

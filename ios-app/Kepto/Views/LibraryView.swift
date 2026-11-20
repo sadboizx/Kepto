@@ -102,6 +102,12 @@ struct LibraryView: View {
     /// stays populated across state changes, cleared when All Photos
     /// is torn down (zoom switches away).
     @State private var gridScroll = GridScrollController()
+    /// UIScrollView đang bao Days/Months/Years (qua resolver). Dùng để
+    /// capture/restore contentOffset khi mở/đóng sheet Add to Album —
+    /// tránh bug iOS 17 re-layout ScrollView làm trôi offset khi
+    /// viewModel.showingImportAlbumPicker đổi.
+    @State private var enclosingScrollView: UIScrollView? = nil
+    @State private var savedGridOffset: CGPoint? = nil
     /// Items resolved for the slideshow (empty = closed).
     @State private var slideshowItems: [Item] = []
     @State private var showingSlideshow = false
@@ -188,6 +194,9 @@ struct LibraryView: View {
             // bottom (newest). scrollToBottomAnimated guards
             // itself (already at bottom / viewer open / empty).
             .onChange(of: retapRequest) { _, _ in scrollToBottomAnimated() }
+            .onChange(of: viewModel.showingImportAlbumPicker) { oldValue, newValue in
+                if oldValue && !newValue { restoreGridOffset() }
+            }
             .toolbar {
                 if selecting {
                     ToolbarItem(placement: .confirmationAction) {
@@ -534,6 +543,12 @@ struct LibraryView: View {
                             // above. Kept for exhaustiveness.
                             EmptyView()
                         }
+                        // Track the enclosing UIScrollView (Days/Months/Years share
+                        // one ScrollView). Zero-size, invisible.
+                        ScrollViewOffsetResolver { sv in
+                            enclosingScrollView = sv
+                        }
+                        .frame(width: 0, height: 0)
                     }
                     // The ScrollView ignores the top safe area: its top
                     // inset is always 0, so hiding/showing the nav bar +
@@ -754,6 +769,11 @@ struct LibraryView: View {
                     .aspectRatio(1, contentMode: .fit)
             }
         }
+        // Fix: Days cell checkmark sai vị trí sau khi chuyển zoom.
+        // Ép identity mới per id để @State của AssetThumbnail không
+        // bị reuse nhầm khi branch if-let source flip hoặc structural
+        // position trùng giữa các lần render lại body.
+        .id(id)
         // Report this cell's global frame for the viewer's
         // shrink-to-thumbnail dismiss: written straight into the
         // cache (no PreferenceKey — preference propagation on every
@@ -1256,6 +1276,7 @@ struct LibraryView: View {
         }
         guard !resolved.isEmpty else { return }
         slideshowItems = resolved
+        exitSelection()
         showingSlideshow = true
     }
 
@@ -1303,6 +1324,7 @@ struct LibraryView: View {
             guard let item = await resolveItem(id: id) else { continue }
             _ = await viewModel.toggleFavorite(item: item)
         }
+        exitSelection()
     }
 
     private func presentAddToAlbum() async {
@@ -1318,6 +1340,7 @@ struct LibraryView: View {
             viewModel.showToast(L10n.loadItemsToAddFailed, isError: true)
             return
         }
+        captureGridOffset()
         viewModel.importPickerItems = resolved
         viewModel.chosenImportAlbum = nil
         viewModel.pendingAddSource = .library
@@ -1339,6 +1362,7 @@ struct LibraryView: View {
         } else {
             viewModel.showToast(L10n.savedToPhotosPartial(saved, failed), isError: true)
         }
+        exitSelection()
     }
 
     // MARK: - Single-item actions (context menu)
@@ -1369,12 +1393,37 @@ struct LibraryView: View {
         _ = await viewModel.toggleFavorite(item: item)
     }
 
+    /// Ghi lại contentOffset của grid hiện tại (Days/Months/Years = ScrollView
+    /// UIKit, All Photos = UICollectionView) để restore sau khi sheet Add to
+    /// Album đóng — viewModel.showingImportAlbumPicker đổi làm body re-render,
+    /// iOS 17 có thể làm trôi offset LazyVGrid + pinnedViews.
+    private func captureGridOffset() {
+        if zoom == .all {
+            savedGridOffset = gridScroll.collectionView?.contentOffset
+        } else {
+            savedGridOffset = enclosingScrollView?.contentOffset
+        }
+    }
+
+    private func restoreGridOffset() {
+        guard let offset = savedGridOffset else { return }
+        savedGridOffset = nil
+        DispatchQueue.main.async {
+            if self.zoom == .all {
+                self.gridScroll.collectionView?.setContentOffset(offset, animated: false)
+            } else {
+                self.enclosingScrollView?.setContentOffset(offset, animated: false)
+            }
+        }
+    }
+
     private func openAddToAlbum(_ id: String) async {
         guard !viewModel.isUploading else {
             viewModel.showToast("Đang tải lên, vui lòng chờ.", isError: true)
             return
         }
         guard let item = await resolveItem(id: id) else { return }
+        captureGridOffset()
         viewModel.importPickerItems = [item]
         viewModel.chosenImportAlbum = nil
         viewModel.pendingAddSource = .library
@@ -1465,7 +1514,7 @@ struct PhotosGridCell: View {
     var body: some View {
         ZStack {
             AspectThumbnail(itemId: item.id)
-                .opacity(isSelectionMode && !isSelected ? 0.7 : 1)
+                .opacity(isSelectionMode && !isSelected ? 0.5 : 1)
             // An uploading placeholder is not dimmed (the file
             // already exists on device) — it shows the progress
             // ring at the top-right instead. Other pending items
@@ -1972,6 +2021,9 @@ struct ImportAlbumPickerView: View {
                     Text(L10n.deleteAlbumMessage(collection.count))
                 }
             }
+            .task {
+                await viewModel.fetchMyCollections()
+            }
         }
     }
 
@@ -1984,4 +2036,30 @@ struct ImportAlbumPickerView: View {
             viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
+}
+
+/// Zero-size UIViewRepresentable: resolve the enclosing UIScrollView from
+/// its view hierarchy once after mount, hand it to the caller. Used to
+/// capture/restore contentOffset around sheet presentation.
+private struct ScrollViewOffsetResolver: UIViewRepresentable {
+    let onResolve: (UIScrollView) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isHidden = true
+        view.isUserInteractionEnabled = false
+        DispatchQueue.main.async {
+            var current: UIView? = view.superview
+            while let v = current {
+                if let scroll = v as? UIScrollView {
+                    onResolve(scroll)
+                    return
+                }
+                current = v.superview
+            }
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }

@@ -587,6 +587,11 @@ struct AlbumsView: View {
                 .textCase(.uppercase)
                 .padding(.horizontal)
             VStack(spacing: 0) {
+                Button { select(recentlyAddedItem) } label: {
+                    utilityRow(recentlyAddedItem)
+                }
+                .buttonStyle(.plain)
+                Divider().padding(.leading, 58)
                 Button { showingRecentlyDeleted = true } label: {
                     utilityRow(recentlyDeletedItem)
                 }
@@ -594,6 +599,16 @@ struct AlbumsView: View {
             }
             .padding(.horizontal)
         }
+    }
+
+    /// The Recently Added row: PhotosClone's Utilities smart album
+    /// (square.and.arrow.down, blue). Count = all Library items; the
+    /// browser sorts them like Recents (oldest first, newest added
+    /// at the bottom) and HAS Select All, unlike Recents.
+    private var recentlyAddedItem: AlbumItem {
+        AlbumItem(id: "utilities:recentlyAdded", title: L10n.recentlyAdded, count: recentsCount,
+                  coverID: nil, kind: .recentlyAdded, symbol: "square.and.arrow.down", tint: .blue,
+                  collectionID: nil)
     }
 
     /// The Recently Deleted row: trash icon, red tint (PhotosClone),
@@ -691,7 +706,7 @@ struct AlbumsView: View {
     private func isDeletable(_ album: AlbumItem) -> Bool {
         switch album.kind {
         case .user, .people: return true
-        case .recents, .favorites, .media, .deleted: return false
+        case .recents, .recentlyAdded, .favorites, .media, .deleted: return false
         }
     }
 
@@ -734,7 +749,7 @@ struct AlbumsView: View {
             } catch {
                 viewModel.errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
-        case .recents, .favorites, .media, .deleted:
+        case .recents, .recentlyAdded, .favorites, .media, .deleted:
             break
         }
     }
@@ -778,7 +793,7 @@ struct AlbumsView: View {
     /// album kind — see `AlbumSource`).
     private func select(_ album: AlbumItem) {
         switch album.kind {
-        case .recents, .favorites:
+        case .recents, .recentlyAdded, .favorites:
             selectedSource = .kind(album.kind)
         case .user:
             if let id = album.collectionID,
